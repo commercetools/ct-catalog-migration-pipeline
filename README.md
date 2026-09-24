@@ -72,6 +72,31 @@ The engagement lives **beside** this repo, not inside it:
 `--out` defaults to `out` **relative to the config**, so pointing `--config` at
 the engagement writes the artefacts there.
 
+## Configuration
+
+One JSON file per engagement, copied from `migration.config.json` at this
+repository's root and edited. Five of its values are **decisions, not
+settings**: each is either irreversible or fails silently, so the loader
+refuses an absent or placeholder value rather than defaulting one.
+
+| Value | Why it cannot be defaulted |
+| :--- | :--- |
+| `keys.prefix` | Written into every key the migration creates, and what bounds a teardown to its own work. Ships as `REPLACE-ME`, which the loader refuses. |
+| `target.catalogModel` | `Classic` or `Modular`. Decides the whole import shape, and must match the project's own setting. |
+| `target.priceMode` | `embedded` or `standalone`. A product whose mode disagrees with where its prices are imports cleanly, reports success, and shows no price. |
+| `market.defaultLocale` | Derived labels and slugs land here. A locale the project does not accept makes every affected record fail. |
+| `market.currencyFractionDigits` | Minor-unit conversion per currency. A wrong value is a silently wrong price, not an error. |
+
+Two more shape the model rather than the load: `productTypes.onMissingDefinitions`
+(`require` or `infer` — whether the feed declares its own attribute types) and
+`productTypes.productLevelStrategy` (`sameForAll` or `native` — note the names
+read backwards, `sameForAll` is the safe default and `native` is the one that
+makes attributes invisible to Product Projection Search).
+
+The skill that accompanies this pipeline conducts these as an interview and
+writes the config from the answers, which is the intended path. The template
+exists as a reference and a fallback.
+
 ## Credentials
 
 From the environment or a `.env` file, never from the committed config. Copy

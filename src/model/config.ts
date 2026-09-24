@@ -268,7 +268,7 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
         'this migration creates and is what bounds a teardown to its own work, so it\n' +
         'has to name this engagement — there is no defensible default.\n' +
         'Before running, settle the five values that are decisions rather than\n' +
-        'settings: see "Configuration, and the decisions it holds" in the README.',
+        'settings: see "Configuration" in this repository\'s README.',
     );
   }
 
@@ -289,10 +289,10 @@ export function loadConfig(configPath: string): LoadedConfig {
   } catch {
     throw new Error(
       `Cannot read pipeline config at ${configPath}.\n` +
-        'A template ships at pipeline/migration.config.json — copy it, edit the copy to\n' +
-        'describe your target project, then pass --config <path>. The five values that\n' +
-        'are decisions rather than settings are listed under "Configuration, and the\n' +
-        'decisions it holds" in the README.',
+        'A template ships as migration.config.json at the root of this repository —\n' +
+        'copy it next to your engagement, edit the copy to describe your target\n' +
+        'project, then pass --config <path>. The five values that are decisions rather\n' +
+        'than settings are listed under "Configuration" in the README.',
     );
   }
 
