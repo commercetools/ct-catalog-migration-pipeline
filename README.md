@@ -22,12 +22,28 @@ so the contract is the only thing the pipeline knows about.
 ## Install
 
 ```bash
+# from the engagement root, BEFORE cloning, if it is a git repository
+echo '/ct-catalog-migration-pipeline/' >> .gitignore
+
 git clone https://github.com/commercetools/ct-catalog-migration-pipeline
 cd ct-catalog-migration-pipeline
 npm install
+npm test               # 371 tests, no network, no credentials, ~5 seconds
 ```
 
 Node 20 or newer. No global install; every command runs through `npm run`.
+
+**Ignore this checkout before cloning it.** Clone it inside a git repository
+without ignoring it first and `git add -A` records it as a **gitlink** — mode
+`160000`, this repo's commit pinned in the outer index, no `.gitmodules` to
+explain it. It looks tracked and is not: anyone cloning the outer repository
+gets an empty directory. `.gitignore` does not undo that afterwards, because
+ignore rules do not apply to what is already in the index —
+`git rm -r --cached -f ct-catalog-migration-pipeline` does.
+
+Pin the version by recording the commit (`git rev-parse --short HEAD`) in the
+engagement's decision log, not with a submodule: the point is a line a human
+can read, without every clone of the engagement fetching a second repository.
 
 ## Stages
 
@@ -59,7 +75,8 @@ The engagement lives **beside** this repo, not inside it:
 
 ```
 <engagement-root>/
-  ct-catalog-migration-pipeline/   this repo — the tool
+  .gitignore                       /ct-catalog-migration-pipeline/ — see above
+  ct-catalog-migration-pipeline/   this repo — the tool, cloned and ignored
   source-export/                   what the customer handed over
   migration/                       the engagement
     migration.config.json            written from the step-0 interview
