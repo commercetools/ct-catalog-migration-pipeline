@@ -1,0 +1,11 @@
+{
+  "categories": {
+    "tops": "mig-tops"
+  },
+  "products": {
+    "TEE": "mig-TEE"
+  },
+  "variants": {
+    "TEE-1": "mig-TEE-1"
+  }
+}

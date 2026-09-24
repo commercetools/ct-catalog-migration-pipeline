@@ -1,0 +1,75 @@
+[
+  {
+    "key": "mig-apparel-basic",
+    "name": "Apparel (basic)",
+    "description": "Derived from the catalog feed for 1 product(s).",
+    "attributes": [
+      {
+        "name": "colour",
+        "label": {
+          "en-GB": "Colour"
+        },
+        "type": {
+          "name": "enum",
+          "values": [
+            {
+              "key": "BLK",
+              "label": "Black"
+            },
+            {
+              "key": "NVY",
+              "label": "Navy"
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "fabricWeight",
+        "label": {
+          "en-GB": "Fabric Weight"
+        },
+        "type": {
+          "name": "number"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "internalNote",
+        "label": {
+          "en-GB": "Internal Note"
+        },
+        "type": {
+          "name": "text"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": false
+      },
+      {
+        "name": "material",
+        "label": {
+          "en-GB": "Material"
+        },
+        "type": {
+          "name": "text"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      }
+    ]
+  }
+]

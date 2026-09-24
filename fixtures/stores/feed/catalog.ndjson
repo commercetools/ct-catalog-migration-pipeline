@@ -1,0 +1,9 @@
+{"_type": "channel", "code": "retail-uk", "roles": ["ProductDistribution"], "name": {"en-GB": "Retail UK"}}
+{"_type": "channel", "code": "warehouse-gb", "roles": ["InventorySupply"], "name": {"en-GB": "Warehouse GB"}}
+{"_type": "productSelection", "code": "uk-assortment", "name": {"en-GB": "UK assortment"}, "mode": "Individual"}
+{"_type": "store", "code": "northwind-uk", "name": {"en-GB": "Northwind UK"}, "languages": ["en-GB"], "countries": ["GB"], "distributionChannels": ["retail-uk"], "supplyChannels": ["warehouse-gb"], "productSelections": [{"code": "uk-assortment", "active": true}]}
+{"_type": "attributeDefinition", "name": "material", "type": "text", "level": "product"}
+{"_type": "attributeDefinition", "name": "sz", "type": "text", "level": "variant", "axis": true}
+{"_type": "product", "code": "TEE", "name": {"en-GB": "Tee"}, "attributes": {"material": "Cotton"}, "axes": ["sz"], "selections": [{"code": "uk-assortment", "includeSkus": ["TEE-S"]}]}
+{"_type": "variant", "sku": "TEE-S", "product": "TEE", "axisValues": {"sz": "S"}, "prices": [{"currency": "GBP", "amount": "19.99", "country": "GB", "channel": "retail-uk"}]}
+{"_type": "variant", "sku": "TEE-M", "product": "TEE", "axisValues": {"sz": "M"}, "prices": [{"currency": "GBP", "amount": "19.99", "country": "GB", "channel": "retail-uk"}]}

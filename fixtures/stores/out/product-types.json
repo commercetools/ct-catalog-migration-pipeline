@@ -1,0 +1,37 @@
+[
+  {
+    "key": "mig-apparel-basic",
+    "name": "Apparel (basic)",
+    "description": "Derived from the catalog feed for 1 product(s).",
+    "attributes": [
+      {
+        "name": "material",
+        "label": {
+          "en-GB": "Material"
+        },
+        "type": {
+          "name": "text"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "sz",
+        "label": {
+          "en-GB": "Sz"
+        },
+        "type": {
+          "name": "text"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      }
+    ]
+  }
+]

@@ -1,0 +1,6 @@
+{"_type": "category", "code": "all", "name": {"en-GB": "All"}}
+{"_type": "product", "code": "DATES", "name": {"en-GB": "Date-shaped strings"}, "productType": "dated", "categories": ["all"], "axes": ["pack"]}
+{"_type": "variant", "sku": "DATES-1", "product": "DATES", "attributes": {"releasedOn": "2026-03-01", "launchAt": "2026-03-01T09:00:00.000Z", "tags": ["new", "seasonal"]}, "axisValues": {"pack": "1"}}
+{"_type": "variant", "sku": "DATES-2", "product": "DATES", "attributes": {"releasedOn": "2026-04-15", "launchAt": "2026-04-15T09:00:00.000Z", "tags": ["clearance"]}, "axisValues": {"pack": "2"}}
+{"_type": "product", "code": "LONGTEXT", "name": {"en-GB": "Long prose attribute"}, "productType": "dated", "categories": ["all"]}
+{"_type": "variant", "sku": "LONGTEXT-1", "product": "LONGTEXT", "attributes": {"careInstructions": "Machine wash at thirty degrees with similar colours, do not tumble dry, warm iron on the reverse only, and do not dry clean under any circumstances whatsoever."}}

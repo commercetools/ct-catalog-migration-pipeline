@@ -1,0 +1,5 @@
+{"_type": "category", "code": "all", "name": {"en-GB": "All"}}
+{"_type": "product", "code": "TEXTUAL", "name": {"en-GB": "Grade is words here"}, "productType": "pt-words", "categories": ["all"]}
+{"_type": "variant", "sku": "TEXTUAL-1", "product": "TEXTUAL", "attributes": {"grade": "premium"}}
+{"_type": "product", "code": "NUMERIC", "name": {"en-GB": "Grade is a number here"}, "productType": "pt-numbers", "categories": ["all"]}
+{"_type": "variant", "sku": "NUMERIC-1", "product": "NUMERIC", "attributes": {"grade": 1}}

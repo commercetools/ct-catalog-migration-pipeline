@@ -1,0 +1,33 @@
+[
+  {
+    "key": "mig-apparel-basic",
+    "name": "Apparel (basic)",
+    "description": "Derived from the catalog feed for 2 product(s).",
+    "attributes": [
+      {
+        "name": "size",
+        "label": {
+          "en-GB": "Size"
+        },
+        "type": {
+          "name": "enum",
+          "values": [
+            {
+              "key": "S",
+              "label": "S"
+            },
+            {
+              "key": "M",
+              "label": "M"
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      }
+    ]
+  }
+]

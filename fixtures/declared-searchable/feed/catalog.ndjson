@@ -1,0 +1,7 @@
+{"_type": "attributeDefinition", "name": "colour", "type": "enum", "level": "variant", "axis": true, "searchable": false, "values": [{"key": "BLK", "label": "Black"}, {"key": "NVY", "label": "Navy"}]}
+{"_type": "attributeDefinition", "name": "material", "type": "text", "level": "product", "searchable": true}
+{"_type": "attributeDefinition", "name": "internalNote", "type": "text", "level": "product", "searchable": false}
+{"_type": "attributeDefinition", "name": "fabricWeight", "type": "number", "level": "product"}
+{"_type": "product", "code": "TEE", "name": {"en-GB": "Tee"}, "axes": ["colour"], "attributes": {"material": "Cotton", "internalNote": "do not facet", "fabricWeight": 180}}
+{"_type": "variant", "sku": "TEE-BLK", "product": "TEE", "axisValues": {"colour": "BLK"}}
+{"_type": "variant", "sku": "TEE-NVY", "product": "TEE", "axisValues": {"colour": "NVY"}}

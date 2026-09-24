@@ -1,0 +1,22 @@
+{
+  "categories": {
+    "accessories": "mig-accessories",
+    "apparel": "mig-apparel",
+    "outerwear": "mig-outerwear",
+    "tops": "mig-tops"
+  },
+  "products": {
+    "CAP-LOGO": "mig-CAP-LOGO",
+    "JKT-FIELD": "mig-JKT-FIELD",
+    "TEE-CLASSIC": "mig-TEE-CLASSIC"
+  },
+  "variants": {
+    "CAP-LOGO-OS": "mig-CAP-LOGO-OS",
+    "JKT-FIELD-OAT-L": "mig-JKT-FIELD-OAT-L",
+    "JKT-FIELD-OAT-M": "mig-JKT-FIELD-OAT-M",
+    "TEE-CLASSIC-BLK-M": "mig-TEE-CLASSIC-BLK-M",
+    "TEE-CLASSIC-BLK-S": "mig-TEE-CLASSIC-BLK-S",
+    "TEE-CLASSIC-NVY-L": "mig-TEE-CLASSIC-NVY-L",
+    "TEE-CLASSIC-NVY-M": "mig-TEE-CLASSIC-NVY-M"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "feed": {
+    "dir": "../declared-types/feed"
+  },
+  "target": {
+    "catalogModel": "Classic",
+    "priceMode": "standalone"
+  },
+  "market": {
+    "defaultLocale": "en-GB",
+    "requiredLocales": [
+      "en-GB",
+      "de-DE"
+    ],
+    "requiredCurrencies": [
+      "GBP",
+      "EUR"
+    ],
+    "currencyFractionDigits": {
+      "GBP": 2,
+      "EUR": 2
+    }
+  },
+  "keys": {
+    "prefix": "mig"
+  },
+  "productTypes": {
+    "onMissingDefinitions": "require",
+    "defaultKey": "apparel-basic",
+    "defaultName": "Apparel (basic)",
+    "productLevelStrategy": "sameForAll",
+    "searchableByDefault": true
+  },
+  "load": {
+    "batchSize": 20,
+    "maxOperationsPerContainer": 200000
+  }
+}

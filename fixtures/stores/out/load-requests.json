@@ -1,0 +1,226 @@
+{
+  "executed": false,
+  "prerequisites": [
+    {
+      "stage": "channel",
+      "existing": [],
+      "created": [],
+      "unusable": [],
+      "unknown": [
+        "retail-uk",
+        "warehouse-gb"
+      ]
+    },
+    {
+      "stage": "store",
+      "existing": [],
+      "created": [],
+      "unusable": [],
+      "unknown": [
+        "northwind-uk"
+      ]
+    }
+  ],
+  "containers": [
+    {
+      "key": "mig-product-type",
+      "resourceType": "product-type",
+      "stage": "product-type",
+      "operations": 1
+    },
+    {
+      "key": "mig-product-draft",
+      "resourceType": "product-draft",
+      "stage": "product-draft",
+      "operations": 1
+    },
+    {
+      "key": "mig-product-selection",
+      "resourceType": "product-selection",
+      "stage": "product-selection",
+      "operations": 1
+    }
+  ],
+  "requests": [
+    {
+      "stage": "product-type",
+      "containerKey": "mig-product-type",
+      "index": 1,
+      "resourceKeys": [
+        "mig-apparel-basic"
+      ],
+      "body": {
+        "type": "product-type",
+        "resources": [
+          {
+            "key": "mig-apparel-basic",
+            "name": "Apparel (basic)",
+            "description": "Derived from the catalog feed for 1 product(s).",
+            "attributes": [
+              {
+                "name": "material",
+                "label": {
+                  "en-GB": "Material"
+                },
+                "type": {
+                  "name": "text"
+                },
+                "isRequired": false,
+                "level": "Variant",
+                "attributeConstraint": "SameForAll",
+                "inputHint": "SingleLine",
+                "isSearchable": true
+              },
+              {
+                "name": "sz",
+                "label": {
+                  "en-GB": "Sz"
+                },
+                "type": {
+                  "name": "text"
+                },
+                "isRequired": false,
+                "level": "Variant",
+                "attributeConstraint": "CombinationUnique",
+                "inputHint": "SingleLine",
+                "isSearchable": true
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "stage": "product-draft",
+      "containerKey": "mig-product-draft",
+      "index": 1,
+      "resourceKeys": [
+        "mig-TEE"
+      ],
+      "body": {
+        "type": "product-draft",
+        "resources": [
+          {
+            "key": "mig-TEE",
+            "productType": {
+              "typeId": "product-type",
+              "key": "mig-apparel-basic"
+            },
+            "name": {
+              "en-GB": "Tee"
+            },
+            "slug": {
+              "en-GB": "tee",
+              "de-DE": "tee"
+            },
+            "categories": [],
+            "masterVariant": {
+              "key": "mig-TEE-M",
+              "sku": "TEE-M",
+              "attributes": [
+                {
+                  "type": "text",
+                  "name": "material",
+                  "value": "Cotton"
+                },
+                {
+                  "type": "text",
+                  "name": "sz",
+                  "value": "M"
+                }
+              ],
+              "images": [],
+              "prices": [
+                {
+                  "key": "mig-TEE-M-GBP-GB-retail-uk",
+                  "value": {
+                    "type": "centPrecision",
+                    "currencyCode": "GBP",
+                    "centAmount": 1999,
+                    "fractionDigits": 2
+                  },
+                  "country": "GB",
+                  "channel": {
+                    "typeId": "channel",
+                    "key": "retail-uk"
+                  }
+                }
+              ]
+            },
+            "variants": [
+              {
+                "key": "mig-TEE-S",
+                "sku": "TEE-S",
+                "attributes": [
+                  {
+                    "type": "text",
+                    "name": "material",
+                    "value": "Cotton"
+                  },
+                  {
+                    "type": "text",
+                    "name": "sz",
+                    "value": "S"
+                  }
+                ],
+                "images": [],
+                "prices": [
+                  {
+                    "key": "mig-TEE-S-GBP-GB-retail-uk",
+                    "value": {
+                      "type": "centPrecision",
+                      "currencyCode": "GBP",
+                      "centAmount": 1999,
+                      "fractionDigits": 2
+                    },
+                    "country": "GB",
+                    "channel": {
+                      "typeId": "channel",
+                      "key": "retail-uk"
+                    }
+                  }
+                ]
+              }
+            ],
+            "priceMode": "Embedded",
+            "publish": false
+          }
+        ]
+      }
+    },
+    {
+      "stage": "product-selection",
+      "containerKey": "mig-product-selection",
+      "index": 1,
+      "resourceKeys": [
+        "mig-uk-assortment"
+      ],
+      "body": {
+        "type": "product-selection",
+        "resources": [
+          {
+            "key": "mig-uk-assortment",
+            "name": {
+              "en-GB": "UK assortment"
+            },
+            "mode": "Individual",
+            "assignments": [
+              {
+                "product": {
+                  "typeId": "product",
+                  "key": "mig-TEE"
+                },
+                "variantSelection": {
+                  "type": "includeOnly",
+                  "skus": [
+                    "TEE-S"
+                  ]
+                }
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

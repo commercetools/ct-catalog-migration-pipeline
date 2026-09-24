@@ -1,0 +1,178 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-apparel-basic",
+      "name": "Apparel (basic)",
+      "description": "Derived from the catalog feed for 1 product(s).",
+      "attributes": [
+        {
+          "name": "colour",
+          "label": {
+            "en-GB": "Colour"
+          },
+          "type": {
+            "name": "enum",
+            "values": [
+              {
+                "key": "BLK",
+                "label": "Black"
+              },
+              {
+                "key": "NVY",
+                "label": "Navy"
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "fabricWeight",
+          "label": {
+            "en-GB": "Fabric Weight"
+          },
+          "type": {
+            "name": "number"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "internalNote",
+          "label": {
+            "en-GB": "Internal Note"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": false
+        },
+        {
+          "name": "material",
+          "label": {
+            "en-GB": "Material"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [],
+  "products": [
+    {
+      "key": "mig-TEE",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Tee"
+      },
+      "slug": {
+        "en-GB": "tee",
+        "de-DE": "tee"
+      },
+      "categories": [],
+      "masterVariant": {
+        "key": "mig-TEE-BLK",
+        "sku": "TEE-BLK",
+        "attributes": [
+          {
+            "type": "enum",
+            "name": "colour",
+            "value": "BLK"
+          },
+          {
+            "type": "number",
+            "name": "fabricWeight",
+            "value": 180
+          },
+          {
+            "type": "text",
+            "name": "internalNote",
+            "value": "do not facet"
+          },
+          {
+            "type": "text",
+            "name": "material",
+            "value": "Cotton"
+          }
+        ],
+        "images": [],
+        "prices": []
+      },
+      "variants": [
+        {
+          "key": "mig-TEE-NVY",
+          "sku": "TEE-NVY",
+          "attributes": [
+            {
+              "type": "enum",
+              "name": "colour",
+              "value": "NVY"
+            },
+            {
+              "type": "number",
+              "name": "fabricWeight",
+              "value": 180
+            },
+            {
+              "type": "text",
+              "name": "internalNote",
+              "value": "do not facet"
+            },
+            {
+              "type": "text",
+              "name": "material",
+              "value": "Cotton"
+            }
+          ],
+          "images": [],
+          "prices": []
+        }
+      ],
+      "priceMode": "Embedded",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [],
+  "productSelections": [],
+  "prerequisites": {
+    "channels": [],
+    "customerGroups": [],
+    "stores": []
+  },
+  "provenance": {
+    "feedDigest": "sha256:62816a9c4ac13b6e94235c574218e0c7efa2ddc44d228fa37e1db40b583768b3",
+    "generatedAt": "2026-09-24T03:09:16.314Z"
+  }
+}

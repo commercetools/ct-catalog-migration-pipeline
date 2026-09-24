@@ -1,0 +1,700 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://commercetools.local/catalog-feed.schema.json",
+  "title": "Canonical catalog feed record",
+  "description": "One record per line of an NDJSON feed. The source boundary of the pipeline: adapters emit these, the pipeline reads nothing else. No source system is named anywhere in this schema, by design.",
+  "type": "object",
+  "required": [
+    "_type"
+  ],
+  "oneOf": [
+    {
+      "$ref": "#/$defs/category"
+    },
+    {
+      "$ref": "#/$defs/attributeDefinition"
+    },
+    {
+      "$ref": "#/$defs/product"
+    },
+    {
+      "$ref": "#/$defs/variant"
+    },
+    {
+      "$ref": "#/$defs/channel"
+    },
+    {
+      "$ref": "#/$defs/customerGroup"
+    },
+    {
+      "$ref": "#/$defs/productSelection"
+    },
+    {
+      "$ref": "#/$defs/store"
+    }
+  ],
+  "$defs": {
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "description": "A language-independent identifier from the source. Becomes part of a commercetools key, so it must be stable across exports.",
+      "pattern": "^[A-Za-z0-9_-]+$"
+    },
+    "localizedString": {
+      "type": "object",
+      "description": "Locale tag to text. Tags must be IETF form (en-GB), not underscore form (en_GB).",
+      "minProperties": 1,
+      "propertyNames": {
+        "pattern": "^[a-z]{2}(-[A-Z]{2})?$"
+      },
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "decimalAmount": {
+      "type": "string",
+      "description": "A monetary amount as a decimal string, e.g. \"19.99\". Never a JSON number: floats cannot represent decimal money exactly. Minor units are derived from the currency's fractionDigits at map time, and an amount with more decimal places than the currency allows is a hard error rather than a silent rounding.",
+      "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
+    },
+    "price": {
+      "type": "object",
+      "required": [
+        "currency",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "amount": {
+          "$ref": "#/$defs/decimalAmount"
+        },
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "customerGroup": {
+          "$ref": "#/$defs/code"
+        },
+        "channel": {
+          "$ref": "#/$defs/code"
+        },
+        "validFrom": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "validTo": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "image": {
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri-reference",
+          "minLength": 1,
+          "description": "Absolute, or relative as the source stores it. A relative URL needs media.baseUrl in the config to resolve against \u2014 validate refuses the pair rather than letting a host be guessed. This was `format: uri`, which made a relative path a schema violation and so forced adapter authors to invent a hostname to get the feed to validate."
+        },
+        "label": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "attributeValue": {
+      "description": "A plain scalar, a localized string, or a set of either. The declared attributeDefinition decides how it is coerced; never infer the type from the value's shape alone. A set of localized strings is legal \u2014 the Import API has ltext-set \u2014 so array items may themselves be localized strings.",
+      "oneOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "$ref": "#/$defs/localizedString"
+        },
+        {
+          "type": "array",
+          "description": "A set. Element kind follows the declared type, not the value shape.",
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "number"
+              },
+              {
+                "type": "boolean"
+              },
+              {
+                "$ref": "#/$defs/localizedString"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "category": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code",
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "_type": {
+          "const": "category"
+        },
+        "code": {
+          "$ref": "#/$defs/code"
+        },
+        "name": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "description": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "parent": {
+          "$ref": "#/$defs/code",
+          "description": "Code of the parent category. Omit for a root. Forward references are allowed: order within the feed is not significant."
+        },
+        "slug": {
+          "$ref": "#/$defs/localizedString",
+          "description": "Optional. When omitted the pipeline derives one from name and disambiguates it, because commercetools requires category slugs to be unique project-wide per locale."
+        },
+        "orderHint": {
+          "type": "string",
+          "description": "Optional sort position. commercetools expects a string in the open interval (0,1), NOT an integer. Supply a numeric source order in sourceOrder instead and let the pipeline encode it."
+        },
+        "sourceOrder": {
+          "type": "integer",
+          "description": "A numeric sibling ordering from the source. The pipeline converts it to a valid orderHint preserving sequence."
+        },
+        "externalId": {
+          "type": "string"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          },
+          "description": "Media assets. Prefer these over `images` when the source has multiple renditions per shot."
+        }
+      }
+    },
+    "attributeDefinition": {
+      "type": "object",
+      "description": "Emit these when the source declares a type system. When absent, the pipeline infers definitions from observed values and forces an explicit review step \u2014 inference is a fallback, not the happy path.",
+      "required": [
+        "_type",
+        "name",
+        "type",
+        "level"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "_type": {
+          "const": "attributeDefinition"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "description": "commercetools attribute name. Must be language-independent."
+        },
+        "label": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "type": {
+          "enum": [
+            "text",
+            "ltext",
+            "enum",
+            "lenum",
+            "number",
+            "boolean",
+            "date",
+            "datetime",
+            "time",
+            "money",
+            "reference"
+          ],
+          "description": "The commercetools attribute type. Drive value coercion from this, never from a list of field names: a name allowlist fails silently on the next export."
+        },
+        "level": {
+          "enum": [
+            "product",
+            "variant"
+          ],
+          "description": "product = invariant across variants, mapped to the SameForAll constraint. variant = may differ per variant."
+        },
+        "axis": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when this attribute forms part of variant identity. Mapped to CombinationUnique. Only valid when level is variant."
+        },
+        "set": {
+          "type": "boolean",
+          "default": false
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        },
+        "values": {
+          "type": "array",
+          "description": "Permitted values for enum and lenum types.",
+          "items": {
+            "type": "object",
+            "required": [
+              "key"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "key": {
+                "$ref": "#/$defs/code"
+              },
+              "label": {
+                "oneOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "$ref": "#/$defs/localizedString"
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "unit": {
+          "type": "string",
+          "description": "Recorded as a decision and appended to the label. commercetools has no unit concept on attributes, so a bare number loses its unit otherwise."
+        },
+        "searchable": {
+          "type": "boolean",
+          "description": "Per-attribute searchability, when the source declares it. Absent falls back to productTypes.searchableByDefault. An axis is always searchable regardless."
+        }
+      }
+    },
+    "product": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code",
+        "name"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "_type": {
+          "const": "product"
+        },
+        "code": {
+          "$ref": "#/$defs/code"
+        },
+        "name": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "description": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "slug": {
+          "$ref": "#/$defs/localizedString",
+          "description": "Optional; derived from name when omitted. Product slugs must be unique project-wide per locale."
+        },
+        "productType": {
+          "$ref": "#/$defs/code",
+          "description": "Groups products that share an attribute set. Omit to let the pipeline assign one; it will not invent a ProductType per product."
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/code"
+          }
+        },
+        "axes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Ordered list of attribute names that distinguish this product's variants. Every variant must supply a value for each. An empty or absent list means a single-variant product."
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/attributeValue"
+          },
+          "description": "Product-level attribute values, invariant across variants."
+        },
+        "externalId": {
+          "type": "string",
+          "description": "The raw source identifier. Preserved separately from the key so downstream systems can still join on it."
+        },
+        "selections": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/selectionMembership"
+          },
+          "description": "Which product selections carry this product. Authored on the product because one record per line is this contract's defining property; `plan` inverts it into ProductSelectionImport.assignments."
+        }
+      }
+    },
+    "variant": {
+      "type": "object",
+      "required": [
+        "_type",
+        "sku",
+        "product"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "_type": {
+          "const": "variant"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Unique across the whole feed. The permanent machine-readable identity of the sellable item."
+        },
+        "product": {
+          "$ref": "#/$defs/code",
+          "description": "Code of the owning product. Forward references are allowed."
+        },
+        "key": {
+          "$ref": "#/$defs/code"
+        },
+        "axisValues": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Language-independent CODE per axis, e.g. {\"colour\":\"BLK\"}. Display text belongs in axisLabels. This split is what stops a localized value becoming variant identity, which would make the same SKU key differently per language."
+        },
+        "axisLabels": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/localizedString"
+          },
+          "description": "Display text per axis. Never used for identity or keying."
+        },
+        "attributes": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/attributeValue"
+          }
+        },
+        "prices": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/price"
+          },
+          "description": "Every price must be explicit. If the source inherits prices down a hierarchy, resolve the inheritance in the adapter: commercetools does not inherit prices between variants."
+        },
+        "images": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/image"
+          }
+        },
+        "isMaster": {
+          "type": "boolean",
+          "description": "Optional hint for which variant is the master. When no variant claims it, the pipeline picks deterministically by sorted SKU so the choice cannot drift between runs."
+        },
+        "externalId": {
+          "type": "string"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          },
+          "description": "Media assets. Prefer these over `images` when the source has multiple renditions per shot."
+        }
+      }
+    },
+    "assetSource": {
+      "type": "object",
+      "required": [
+        "uri"
+      ],
+      "additionalProperties": false,
+      "description": "One renderable file behind an asset. An asset may hold several, which is why a source with thumbnail/product/zoom renditions belongs in an asset rather than an image \u2014 an image carries exactly one URL.",
+      "properties": {
+        "uri": {
+          "type": "string",
+          "format": "uri-reference",
+          "minLength": 1,
+          "description": "Absolute, or relative as the source stores it \u2014 resolved against media.baseUrl exactly as an image URL is."
+        },
+        "key": {
+          "type": "string",
+          "description": "Distinguishes renditions within one asset, e.g. `zoom`."
+        },
+        "contentType": {
+          "type": "string"
+        },
+        "width": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "height": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "required": [
+        "code",
+        "sources"
+      ],
+      "additionalProperties": false,
+      "description": "A media asset on a variant or category. commercetools requires a key and at least one source; `name` is derived from `code` when absent and the derivation is recorded.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/code"
+        },
+        "name": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "description": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/assetSource"
+          }
+        },
+        "tags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "channel": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code",
+        "roles"
+      ],
+      "additionalProperties": false,
+      "description": "A channel a price is scoped to. Declares a PREREQUISITE, not a resource this migration creates: the Import API has no channel resource, so the channel must already exist in the project and preflight verifies it. `code` is therefore the channel's actual key, used verbatim and never prefixed.",
+      "properties": {
+        "_type": {
+          "const": "channel"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The channel's key in the project, verbatim."
+        },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "enum": [
+              "InventorySupply",
+              "OrderExport",
+              "OrderImport",
+              "Primary",
+              "ProductDistribution"
+            ]
+          },
+          "description": "A price-scoped channel must include ProductDistribution; the API rejects a StandalonePrice referencing a channel without it."
+        },
+        "name": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "description": {
+          "$ref": "#/$defs/localizedString"
+        }
+      }
+    },
+    "customerGroup": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code"
+      ],
+      "additionalProperties": false,
+      "description": "A customer group a price is scoped to. A prerequisite like `channel`: the Import API cannot create one, so an unverified reference expires silently after 48 hours.",
+      "properties": {
+        "_type": {
+          "const": "customerGroup"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The customer group's key in the project, verbatim."
+        },
+        "name": {
+          "type": "string",
+          "description": "Required by the API; derived from the code when absent."
+        }
+      }
+    },
+    "selectionMembership": {
+      "type": "object",
+      "required": [
+        "code"
+      ],
+      "additionalProperties": false,
+      "description": "One product's membership of one product selection. `includeSkus` and `excludeSkus` are mutually exclusive: the API accepts a variantSelection OR a variantExclusion, never both. With neither, every variant is included.",
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/code",
+          "description": "Code of a declared productSelection."
+        },
+        "includeSkus": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "excludeSkus": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      },
+      "not": {
+        "required": [
+          "includeSkus",
+          "excludeSkus"
+        ]
+      }
+    },
+    "productSelection": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code",
+        "name"
+      ],
+      "additionalProperties": false,
+      "description": "A named subset of the catalog. Unlike channel and store this IS importable (Import API resource `product-selection`), so the key is prefixed like every other resource the migration creates. Inert until a store references it. `mode` is FIXED at creation and cannot be changed afterwards.",
+      "properties": {
+        "_type": {
+          "const": "productSelection"
+        },
+        "code": {
+          "$ref": "#/$defs/code"
+        },
+        "name": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "mode": {
+          "enum": [
+            "Individual",
+            "IndividualExclusion"
+          ],
+          "description": "Individual = allowlist, IndividualExclusion = denylist. Permanent. Defaults to Individual."
+        }
+      }
+    },
+    "store": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code"
+      ],
+      "additionalProperties": false,
+      "description": "A shopping context. A PREREQUISITE like channel \u2014 the Import API has no store resource \u2014 so `code` is the project's actual key, verbatim. distributionChannels decide which prices apply (a price carries a channel; there is no store field on a price). productSelections decide which products exist; empty means all of them. supplyChannels is carried for fidelity but this pipeline imports no inventory. storefront URLs and custom fields are deliberately not supported.",
+      "properties": {
+        "_type": {
+          "const": "store"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The store's key in the project, verbatim."
+        },
+        "name": {
+          "$ref": "#/$defs/localizedString"
+        },
+        "languages": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z]{2,3}(-[A-Z]{2})?$"
+          }
+        },
+        "countries": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Z]{2}$"
+          }
+        },
+        "distributionChannels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/code"
+          },
+          "description": "Codes of declared channels; each needs the ProductDistribution role."
+        },
+        "supplyChannels": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/code"
+          },
+          "description": "Codes of declared channels; each needs the InventorySupply role."
+        },
+        "productSelections": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "type": "object",
+            "required": [
+              "code"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/code"
+              },
+              "active": {
+                "type": "boolean",
+                "description": "Defaults to true."
+              }
+            }
+          },
+          "description": "At most 100. If every entry is inactive and at least one is Individual, the store exposes no products at all."
+        }
+      }
+    }
+  }
+}

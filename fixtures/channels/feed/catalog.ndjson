@@ -1,0 +1,5 @@
+{"_type": "channel", "code": "retail-uk", "roles": ["ProductDistribution"], "name": {"en-GB": "Retail UK"}}
+{"_type": "customerGroup", "code": "trade", "name": "Trade"}
+{"_type": "attributeDefinition", "name": "material", "type": "text", "level": "product"}
+{"_type": "product", "code": "TEE", "name": {"en-GB": "Tee"}, "attributes": {"material": "Cotton"}}
+{"_type": "variant", "sku": "TEE-1", "product": "TEE", "prices": [{"currency": "GBP", "amount": "19.99", "country": "GB"}, {"currency": "GBP", "amount": "17.99", "country": "GB", "channel": "retail-uk"}, {"currency": "GBP", "amount": "14.99", "country": "GB", "customerGroup": "trade"}]}

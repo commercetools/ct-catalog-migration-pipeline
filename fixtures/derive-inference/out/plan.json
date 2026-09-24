@@ -1,0 +1,254 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-dated",
+      "name": "Dated",
+      "description": "Derived from the catalog feed for 2 product(s).",
+      "attributes": [
+        {
+          "name": "careInstructions",
+          "label": {
+            "en-GB": "Care Instructions"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "MultiLine",
+          "isSearchable": true
+        },
+        {
+          "name": "launchAt",
+          "label": {
+            "en-GB": "Launch At"
+          },
+          "type": {
+            "name": "datetime"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "pack",
+          "label": {
+            "en-GB": "Pack"
+          },
+          "type": {
+            "name": "enum",
+            "values": [
+              {
+                "key": "1",
+                "label": "1"
+              },
+              {
+                "key": "2",
+                "label": "2"
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "releasedOn",
+          "label": {
+            "en-GB": "Released On"
+          },
+          "type": {
+            "name": "date"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "tags",
+          "label": {
+            "en-GB": "Tags"
+          },
+          "type": {
+            "name": "set",
+            "elementType": {
+              "name": "text"
+            }
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "key": "mig-all",
+      "name": {
+        "en-GB": "All"
+      },
+      "slug": {
+        "en-GB": "all",
+        "de-DE": "all"
+      },
+      "orderHint": "0.11",
+      "externalId": "all"
+    }
+  ],
+  "products": [
+    {
+      "key": "mig-DATES",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-dated"
+      },
+      "name": {
+        "en-GB": "Date-shaped strings"
+      },
+      "slug": {
+        "en-GB": "date-shaped-strings",
+        "de-DE": "dates"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-all"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-DATES-1",
+        "sku": "DATES-1",
+        "attributes": [
+          {
+            "type": "datetime",
+            "name": "launchAt",
+            "value": "2026-03-01T09:00:00.000Z"
+          },
+          {
+            "type": "enum",
+            "name": "pack",
+            "value": "1"
+          },
+          {
+            "type": "date",
+            "name": "releasedOn",
+            "value": "2026-03-01"
+          },
+          {
+            "type": "text-set",
+            "name": "tags",
+            "value": [
+              "new",
+              "seasonal"
+            ]
+          }
+        ],
+        "images": [],
+        "prices": []
+      },
+      "variants": [
+        {
+          "key": "mig-DATES-2",
+          "sku": "DATES-2",
+          "attributes": [
+            {
+              "type": "datetime",
+              "name": "launchAt",
+              "value": "2026-04-15T09:00:00.000Z"
+            },
+            {
+              "type": "enum",
+              "name": "pack",
+              "value": "2"
+            },
+            {
+              "type": "date",
+              "name": "releasedOn",
+              "value": "2026-04-15"
+            },
+            {
+              "type": "text-set",
+              "name": "tags",
+              "value": [
+                "clearance"
+              ]
+            }
+          ],
+          "images": [],
+          "prices": []
+        }
+      ],
+      "priceMode": "Embedded",
+      "publish": false
+    },
+    {
+      "key": "mig-LONGTEXT",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-dated"
+      },
+      "name": {
+        "en-GB": "Long prose attribute"
+      },
+      "slug": {
+        "en-GB": "long-prose-attribute",
+        "de-DE": "longtext"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-all"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-LONGTEXT-1",
+        "sku": "LONGTEXT-1",
+        "attributes": [
+          {
+            "type": "text",
+            "name": "careInstructions",
+            "value": "Machine wash at thirty degrees with similar colours, do not tumble dry, warm iron on the reverse only, and do not dry clean under any circumstances whatsoever."
+          }
+        ],
+        "images": [],
+        "prices": []
+      },
+      "variants": [],
+      "priceMode": "Embedded",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [],
+  "productSelections": [],
+  "prerequisites": {
+    "channels": [],
+    "customerGroups": [],
+    "stores": []
+  },
+  "provenance": {
+    "feedDigest": "sha256:9d8f3dde04e482c09d3821f1315dae96c3bf8e20c28e1237a6bb4dc3da048bc1",
+    "generatedAt": "2026-09-24T03:09:31.128Z"
+  }
+}

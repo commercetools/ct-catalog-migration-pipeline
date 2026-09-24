@@ -1,0 +1,247 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-apparel-basic",
+      "name": "Apparel (basic)",
+      "description": "Derived from the catalog feed for 2 product(s).",
+      "attributes": [
+        {
+          "name": "size",
+          "label": {
+            "en-GB": "Size"
+          },
+          "type": {
+            "name": "enum",
+            "values": [
+              {
+                "key": "S",
+                "label": "S"
+              },
+              {
+                "key": "M",
+                "label": "M"
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "key": "mig-mens",
+      "name": {
+        "en-GB": "Menswear",
+        "de-DE": "Herren"
+      },
+      "slug": {
+        "en-GB": "menswear",
+        "de-DE": "herren"
+      },
+      "orderHint": "0.11",
+      "externalId": "mens"
+    },
+    {
+      "key": "mig-mens-acc",
+      "name": {
+        "en-GB": "Accessories",
+        "de-DE": "Accessoires"
+      },
+      "slug": {
+        "en-GB": "accessories",
+        "de-DE": "accessoires"
+      },
+      "parent": {
+        "typeId": "category",
+        "key": "mig-mens"
+      },
+      "orderHint": "0.11",
+      "externalId": "mens-acc"
+    },
+    {
+      "key": "mig-symbols",
+      "name": {
+        "en-GB": "!!!",
+        "de-DE": "???"
+      },
+      "slug": {
+        "en-GB": "symbols",
+        "de-DE": "symbols"
+      },
+      "orderHint": "0.21",
+      "externalId": "symbols"
+    },
+    {
+      "key": "mig-womens",
+      "name": {
+        "en-GB": "Womenswear",
+        "de-DE": "Damen"
+      },
+      "slug": {
+        "en-GB": "womenswear",
+        "de-DE": "damen"
+      },
+      "orderHint": "0.31",
+      "externalId": "womens"
+    },
+    {
+      "key": "mig-womens-acc",
+      "name": {
+        "en-GB": "Accessories",
+        "de-DE": "Accessoires"
+      },
+      "slug": {
+        "en-GB": "accessories-womens-acc",
+        "de-DE": "accessoires-womens-acc"
+      },
+      "parent": {
+        "typeId": "category",
+        "key": "mig-womens"
+      },
+      "orderHint": "0.11",
+      "externalId": "womens-acc"
+    }
+  ],
+  "products": [
+    {
+      "key": "mig-SCARF-A",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Wool Scarf",
+        "de-DE": "Wollschal"
+      },
+      "slug": {
+        "en-GB": "wool-scarf",
+        "de-DE": "wollschal"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-mens-acc"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-SCARF-A-S",
+        "sku": "SCARF-A-S",
+        "attributes": [
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "S"
+          }
+        ],
+        "images": [],
+        "prices": [
+          {
+            "key": "mig-SCARF-A-S-JPY",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "JPY",
+              "centAmount": 4500,
+              "fractionDigits": 0
+            }
+          },
+          {
+            "key": "mig-SCARF-A-S-BHD",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "BHD",
+              "centAmount": 12345,
+              "fractionDigits": 3
+            }
+          },
+          {
+            "key": "mig-SCARF-A-S-GBP",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 2999,
+              "fractionDigits": 2
+            }
+          }
+        ]
+      },
+      "variants": [],
+      "priceMode": "Embedded",
+      "publish": false
+    },
+    {
+      "key": "mig-SCARF-B",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Wool Scarf",
+        "de-DE": "Wollschal"
+      },
+      "slug": {
+        "en-GB": "wool-scarf-scarf-b",
+        "de-DE": "wollschal-scarf-b"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-womens-acc"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-SCARF-B-M",
+        "sku": "SCARF-B-M",
+        "attributes": [
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "M"
+          }
+        ],
+        "images": [],
+        "prices": [
+          {
+            "key": "mig-SCARF-B-M-GBP",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 2999,
+              "fractionDigits": 2
+            }
+          }
+        ]
+      },
+      "variants": [],
+      "priceMode": "Embedded",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [],
+  "productSelections": [],
+  "prerequisites": {
+    "channels": [],
+    "customerGroups": [],
+    "stores": []
+  },
+  "provenance": {
+    "feedDigest": "sha256:036e226e0ab8dca457a973fc9fdac2bb65cb1e2b9b98b53977da14cf8d53e67c",
+    "generatedAt": "2026-09-24T03:09:53.345Z"
+  }
+}

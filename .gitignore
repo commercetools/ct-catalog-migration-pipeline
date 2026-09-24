@@ -1,0 +1,14 @@
+.idea/
+
+node_modules/
+dist/
+dist-test/
+*.tsbuildinfo
+
+# Credentials and generated run artefacts never belong in the repo.
+.env
+.env.*
+!.env.example
+# Anchored to the package root: an unanchored `out/` would also swallow the
+# audit fixtures at fixtures/*/out/plan.json, which are committed on purpose.
+/out/

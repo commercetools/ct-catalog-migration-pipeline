@@ -1,0 +1,518 @@
+{
+  "loadOrder": [
+    "product-type",
+    "category",
+    "product-draft"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-pt-main",
+      "name": "Main",
+      "description": "Audit fixture",
+      "attributes": [
+        {
+          "name": "colour",
+          "label": {
+            "en-GB": "Colour"
+          },
+          "type": {
+            "name": "enum",
+            "values": [
+              {
+                "key": "BLK",
+                "label": "Black"
+              },
+              {
+                "key": "NVY",
+                "label": "Navy"
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "size",
+          "label": {
+            "en-GB": "Size"
+          },
+          "type": {
+            "name": "enum",
+            "values": [
+              {
+                "key": "S",
+                "label": "S"
+              },
+              {
+                "key": "M",
+                "label": "M"
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "material",
+          "label": {
+            "en-GB": "Material"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "weight",
+          "label": {
+            "en-GB": "Weight"
+          },
+          "type": {
+            "name": "number"
+          },
+          "isRequired": true,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "neverSet",
+          "label": {
+            "en-GB": "Never set"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "key": "mig-a",
+      "name": {
+        "en-GB": "Alpha"
+      },
+      "slug": {
+        "en-GB": "shared-slug"
+      },
+      "orderHint": "0.11"
+    },
+    {
+      "key": "mig-b",
+      "name": {
+        "en-GB": "Beta"
+      },
+      "slug": {
+        "en-GB": "shared-slug"
+      },
+      "orderHint": "0.21"
+    },
+    {
+      "key": "mig-c",
+      "name": {
+        "en-GB": "Gamma"
+      },
+      "slug": {
+        "en-GB": "gamma"
+      },
+      "orderHint": "0.10"
+    },
+    {
+      "key": "mig-d",
+      "name": {
+        "en-GB": "Delta"
+      },
+      "slug": {
+        "en-GB": "delta"
+      },
+      "orderHint": "0.31",
+      "parent": {
+        "typeId": "category",
+        "key": "mig-missing"
+      }
+    },
+    {
+      "key": "mig-empty",
+      "name": {
+        "en-GB": "Empty"
+      },
+      "slug": {
+        "en-GB": "empty"
+      },
+      "orderHint": "0.41"
+    },
+    {
+      "key": "mig-a",
+      "name": {
+        "en-GB": "Alpha again"
+      },
+      "slug": {
+        "en-GB": "alpha-again"
+      },
+      "orderHint": "0.51"
+    },
+    {
+      "key": "mig-nohint",
+      "name": {
+        "en-GB": "No hint"
+      },
+      "slug": {
+        "en-GB": "no-hint"
+      }
+    }
+  ],
+  "products": [
+    {
+      "key": "mig-P1",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-pt-main"
+      },
+      "name": {
+        "en-GB": "Product One"
+      },
+      "slug": {
+        "en-GB": "product-one"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-a"
+        }
+      ],
+      "priceMode": "Embedded",
+      "publish": false,
+      "masterVariant": {
+        "key": "mig-P1-1",
+        "attributes": [
+          {
+            "type": "enum",
+            "name": "colour",
+            "value": "BLK"
+          },
+          {
+            "type": "text",
+            "name": "material",
+            "value": "cotton"
+          },
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "S"
+          },
+          {
+            "type": "number",
+            "name": "weight",
+            "value": 100
+          }
+        ],
+        "prices": [
+          {
+            "key": "mig-P1-1-GBP-GB",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1000,
+              "fractionDigits": 2
+            },
+            "country": "GB"
+          }
+        ],
+        "images": [],
+        "sku": "P1-1"
+      },
+      "variants": [
+        {
+          "key": "mig-P1-2",
+          "attributes": [
+            {
+              "type": "enum",
+              "name": "colour",
+              "value": "BLK"
+            },
+            {
+              "type": "text",
+              "name": "material",
+              "value": "wool"
+            },
+            {
+              "type": "enum",
+              "name": "size",
+              "value": "S"
+            }
+          ],
+          "prices": [
+            {
+              "key": "mig-P1-2-GBP-GB",
+              "value": {
+                "type": "centPrecision",
+                "currencyCode": "GBP",
+                "centAmount": 1100,
+                "fractionDigits": 2
+              },
+              "country": "GB"
+            }
+          ],
+          "images": [],
+          "sku": "P1-2"
+        }
+      ]
+    },
+    {
+      "key": "mig-P2",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-pt-main"
+      },
+      "name": {
+        "en-GB": "Product Two"
+      },
+      "slug": {
+        "en-GB": "product-two"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-nonexistent"
+        }
+      ],
+      "priceMode": "Embedded",
+      "publish": false,
+      "masterVariant": {
+        "key": "mig-P2-1",
+        "attributes": [
+          {
+            "type": "enum",
+            "name": "colour",
+            "value": "PUCE"
+          },
+          {
+            "type": "text",
+            "name": "material",
+            "value": {
+              "en-GB": "cotton"
+            }
+          },
+          {
+            "type": "number",
+            "name": "weight",
+            "value": "heavy"
+          },
+          {
+            "type": "text",
+            "name": "mystery",
+            "value": "?"
+          },
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "M"
+          },
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "M"
+          }
+        ],
+        "prices": [
+          {
+            "key": "mig-P2-1-GBP-GB",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1000,
+              "fractionDigits": 2
+            },
+            "country": "GB"
+          },
+          {
+            "key": "mig-P2-1-GBP-GB",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1200,
+              "fractionDigits": 2
+            },
+            "country": "GB"
+          }
+        ],
+        "images": [],
+        "sku": "P2-1"
+      },
+      "variants": []
+    },
+    {
+      "key": "mig-P3",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-pt-main"
+      },
+      "name": {
+        "en-GB": "Product Three"
+      },
+      "slug": {
+        "en-GB": "product-three"
+      },
+      "categories": [],
+      "priceMode": "Embedded",
+      "publish": false,
+      "masterVariant": {
+        "key": "mig-P3-1",
+        "attributes": [
+          {
+            "type": "enum",
+            "name": "colour",
+            "value": "NVY"
+          },
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "M"
+          },
+          {
+            "type": "text",
+            "name": "material",
+            "value": "cotton"
+          },
+          {
+            "type": "number",
+            "name": "weight",
+            "value": 50
+          }
+        ],
+        "prices": [
+          {
+            "key": "mig-P3-1-GBP-GB-a",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 900,
+              "fractionDigits": 2
+            },
+            "country": "GB",
+            "validFrom": "2026-01-01T00:00:00.000Z",
+            "validUntil": "2026-06-01T00:00:00.000Z"
+          },
+          {
+            "key": "mig-P3-1-GBP-GB-b",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 800,
+              "fractionDigits": 2
+            },
+            "country": "GB",
+            "validFrom": "2026-05-01T00:00:00.000Z",
+            "validUntil": "2026-12-01T00:00:00.000Z"
+          },
+          {
+            "key": "mig-P3-1-JPY",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "JPY",
+              "centAmount": 500,
+              "fractionDigits": 0
+            }
+          },
+          {
+            "key": "mig-P3-1-EUR-DE",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "EUR",
+              "centAmount": 1000,
+              "fractionDigits": 3
+            },
+            "country": "DE"
+          }
+        ],
+        "images": [],
+        "sku": "P3-1"
+      },
+      "variants": [
+        {
+          "key": "mig-P3-2",
+          "attributes": [
+            {
+              "type": "enum",
+              "name": "colour",
+              "value": "NVY"
+            },
+            {
+              "type": "enum",
+              "name": "size",
+              "value": "S"
+            },
+            {
+              "type": "text",
+              "name": "material",
+              "value": "cotton"
+            },
+            {
+              "type": "number",
+              "name": "weight",
+              "value": 60
+            }
+          ],
+          "prices": [],
+          "images": []
+        }
+      ]
+    },
+    {
+      "key": "mig-P4",
+      "productType": {
+        "typeId": "product-type",
+        "key": "pt-missing"
+      },
+      "name": {
+        "en-GB": "Product Four"
+      },
+      "slug": {
+        "en-GB": "product-four"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-c"
+        }
+      ],
+      "priceMode": "Embedded",
+      "publish": false,
+      "masterVariant": {
+        "key": "mig-P4-1",
+        "attributes": [],
+        "prices": [
+          {
+            "key": "mig-P4-1-GBP",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 100,
+              "fractionDigits": 2
+            }
+          }
+        ],
+        "images": [],
+        "sku": "P4-1"
+      },
+      "variants": []
+    }
+  ]
+}

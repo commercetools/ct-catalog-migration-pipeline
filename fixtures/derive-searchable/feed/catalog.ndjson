@@ -1,0 +1,6 @@
+{"_type": "category", "code": "all", "name": {"en-GB": "All"}}
+{"_type": "product", "code": "AXED", "name": {"en-GB": "Tone is an axis here"}, "productType": "pt-axis", "categories": ["all"], "axes": ["tone"]}
+{"_type": "variant", "sku": "AXED-WARM", "product": "AXED", "axisValues": {"tone": "WARM"}}
+{"_type": "variant", "sku": "AXED-COOL", "product": "AXED", "axisValues": {"tone": "COOL"}}
+{"_type": "product", "code": "PLAIN", "name": {"en-GB": "Tone is a plain attribute here"}, "productType": "pt-plain", "categories": ["all"]}
+{"_type": "variant", "sku": "PLAIN-1", "product": "PLAIN", "attributes": {"tone": "WARM"}}

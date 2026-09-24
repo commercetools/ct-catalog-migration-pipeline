@@ -1,0 +1,17 @@
+{
+  "categories": {
+    "mens": "mig-mens",
+    "mens-acc": "mig-mens-acc",
+    "symbols": "mig-symbols",
+    "womens": "mig-womens",
+    "womens-acc": "mig-womens-acc"
+  },
+  "products": {
+    "SCARF-A": "mig-SCARF-A",
+    "SCARF-B": "mig-SCARF-B"
+  },
+  "variants": {
+    "SCARF-A-S": "mig-SCARF-A-S",
+    "SCARF-B-M": "mig-SCARF-B-M"
+  }
+}

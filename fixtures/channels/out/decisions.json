@@ -1,0 +1,26 @@
+[
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "label derived as \"Material\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "isSearchable true (from searchableByDefault)",
+    "rationale": "The declaration did not state searchability, so the configured default applies. If the source does carry the flag, emit it as `searchable` on the attributeDefinition rather than losing it."
+  },
+  {
+    "subject": "product:TEE",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  }
+]

@@ -1,0 +1,10 @@
+{"_type": "category", "code": "mens", "name": {"en-GB": "Menswear", "de-DE": "Herren"}}
+{"_type": "category", "code": "womens", "name": {"en-GB": "Womenswear", "de-DE": "Damen"}}
+{"_type": "category", "code": "mens-acc", "name": {"en-GB": "Accessories", "de-DE": "Accessoires"}, "parent": "mens"}
+{"_type": "category", "code": "womens-acc", "name": {"en-GB": "Accessories", "de-DE": "Accessoires"}, "parent": "womens"}
+{"_type": "category", "code": "symbols", "name": {"en-GB": "!!!", "de-DE": "???"}}
+{"_type": "attributeDefinition", "name": "size", "type": "enum", "level": "variant", "axis": true, "values": [{"key": "S", "label": "S"}, {"key": "M", "label": "M"}]}
+{"_type": "product", "code": "SCARF-A", "name": {"en-GB": "Wool Scarf", "de-DE": "Wollschal"}, "productType": "apparel-basic", "categories": ["mens-acc"], "axes": ["size"]}
+{"_type": "variant", "sku": "SCARF-A-S", "product": "SCARF-A", "axisValues": {"size": "S"}, "prices": [{"currency": "JPY", "amount": "4500"}, {"currency": "BHD", "amount": "12.345"}, {"currency": "GBP", "amount": "29.9900"}]}
+{"_type": "product", "code": "SCARF-B", "name": {"en-GB": "Wool Scarf", "de-DE": "Wollschal"}, "productType": "apparel-basic", "categories": ["womens-acc"], "axes": ["size"]}
+{"_type": "variant", "sku": "SCARF-B-M", "product": "SCARF-B", "axisValues": {"size": "M"}, "prices": [{"currency": "GBP", "amount": "29.99"}]}

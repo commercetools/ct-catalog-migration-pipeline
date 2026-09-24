@@ -1,0 +1,138 @@
+[
+  {
+    "subject": "mig-apparel-basic.colour",
+    "outcome": "enum with 3 value(s)",
+    "rationale": "Used as a variant axis with no axisLabels, so the code doubles as the label. Supply axisLabels in the adapter to get human-readable text in the Merchant Center.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.colour",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.colour",
+    "outcome": "label derived as \"Colour\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "ltext",
+    "rationale": "Every observed value was a locale-keyed map.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "label derived as \"Material\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.organicCertified",
+    "outcome": "boolean",
+    "rationale": "Every observed value was a JSON boolean.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.organicCertified",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.organicCertified",
+    "outcome": "label derived as \"Organic Certified\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.size",
+    "outcome": "enum with 3 value(s)",
+    "rationale": "Used as a variant axis with no axisLabels, so the code doubles as the label. Supply axisLabels in the adapter to get human-readable text in the Merchant Center.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.size",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.size",
+    "outcome": "label derived as \"Size\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.weightGrams",
+    "outcome": "number",
+    "rationale": "Every observed value was a JSON number.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.weightGrams",
+    "outcome": "label derived as \"Weight Grams\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "category:accessories",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:apparel",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:outerwear",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:tops",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "product:CAP-LOGO",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:JKT-FIELD",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:JKT-FIELD",
+    "outcome": "masterVariant is 'JKT-FIELD-OAT-L' (lowest SKU)",
+    "rationale": "No variant claimed isMaster, so the lowest SKU was chosen. The choice has to be deterministic: the master variant is what a storefront shows by default, and a feed-order-dependent choice would silently change it between runs.",
+    "review": true
+  },
+  {
+    "subject": "product:TEE-CLASSIC",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  }
+]

@@ -1,0 +1,186 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-apparel-basic",
+      "name": "Apparel (basic)",
+      "description": "Derived from the catalog feed for 1 product(s).",
+      "attributes": [
+        {
+          "name": "material",
+          "label": {
+            "en-GB": "Material"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "key": "mig-tops",
+      "name": {
+        "en-GB": "Tops"
+      },
+      "slug": {
+        "en-GB": "tops",
+        "de-DE": "tops"
+      },
+      "orderHint": "0.11",
+      "externalId": "tops",
+      "assets": [
+        {
+          "key": "mig-tops-hero",
+          "name": {
+            "en-GB": "Tops hero"
+          },
+          "tags": [
+            "banner"
+          ],
+          "sources": [
+            {
+              "uri": "https://cdn.example.com/media/cat/tops-hero.jpg",
+              "key": "wide",
+              "contentType": "image/jpeg",
+              "dimensions": {
+                "w": 1600,
+                "h": 600
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "products": [
+    {
+      "key": "mig-TEE",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Tee"
+      },
+      "slug": {
+        "en-GB": "tee",
+        "de-DE": "tee"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-tops"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-TEE-1",
+        "sku": "TEE-1",
+        "attributes": [
+          {
+            "type": "text",
+            "name": "material",
+            "value": "Cotton"
+          }
+        ],
+        "images": [],
+        "assets": [
+          {
+            "key": "mig-TEE-1-shot-01",
+            "name": {
+              "en-GB": "Front",
+              "de-DE": "Vorderseite"
+            },
+            "description": {
+              "en-GB": "Front of the tee"
+            },
+            "tags": [
+              "front",
+              "pdp"
+            ],
+            "sources": [
+              {
+                "uri": "https://cdn.example.com/media/p/tee-front-thumb.jpg",
+                "key": "thumbnail",
+                "dimensions": {
+                  "w": 80,
+                  "h": 80
+                }
+              },
+              {
+                "uri": "https://cdn.example.com/media/p/tee-front.jpg",
+                "key": "product",
+                "dimensions": {
+                  "w": 515,
+                  "h": 515
+                }
+              },
+              {
+                "uri": "https://other.example.com/tee-front-zoom.jpg",
+                "key": "zoom",
+                "dimensions": {
+                  "w": 1400,
+                  "h": 1400
+                }
+              }
+            ]
+          },
+          {
+            "key": "mig-TEE-1-shot-02",
+            "name": {
+              "en-GB": "TEE-1-shot-02"
+            },
+            "sources": [
+              {
+                "uri": "https://cdn.example.com/media/p/tee-back.jpg"
+              }
+            ]
+          }
+        ],
+        "prices": [
+          {
+            "key": "mig-TEE-1-GBP-GB",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1999,
+              "fractionDigits": 2
+            },
+            "country": "GB"
+          }
+        ]
+      },
+      "variants": [],
+      "priceMode": "Embedded",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [],
+  "productSelections": [],
+  "prerequisites": {
+    "channels": [],
+    "customerGroups": [],
+    "stores": []
+  },
+  "provenance": {
+    "feedDigest": "sha256:c234e6c5422b380486d98d5c4ddcc141971563f0e4824798d524ed2df5d9d527",
+    "generatedAt": "2026-09-24T03:08:53.460Z"
+  }
+}

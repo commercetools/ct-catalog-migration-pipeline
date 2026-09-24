@@ -1,0 +1,112 @@
+[
+  {
+    "subject": "mig-apparel-basic.colour",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "isSearchable true (from searchableByDefault)",
+    "rationale": "The declaration did not state searchability, so the configured default applies. If the source does carry the flag, emit it as `searchable` on the attributeDefinition rather than losing it."
+  },
+  {
+    "subject": "mig-apparel-basic.organicCertified",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.organicCertified",
+    "outcome": "isSearchable true (from searchableByDefault)",
+    "rationale": "The declaration did not state searchability, so the configured default applies. If the source does carry the flag, emit it as `searchable` on the attributeDefinition rather than losing it."
+  },
+  {
+    "subject": "mig-apparel-basic.size",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.weightGrams",
+    "outcome": "unit 'g' appended to the label",
+    "rationale": "commercetools attributes carry no unit, so the unit is preserved in the label only. It is no longer machine-readable — a consumer cannot convert or compare across units.",
+    "lossy": true
+  },
+  {
+    "subject": "mig-apparel-basic.weightGrams",
+    "outcome": "isSearchable true (from searchableByDefault)",
+    "rationale": "The declaration did not state searchability, so the configured default applies. If the source does carry the flag, emit it as `searchable` on the attributeDefinition rather than losing it."
+  },
+  {
+    "subject": "category:accessories",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:apparel",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:outerwear",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:tops",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "product:CAP-LOGO",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:JKT-FIELD",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:JKT-FIELD",
+    "outcome": "masterVariant is 'JKT-FIELD-OAT-L' (lowest SKU)",
+    "rationale": "No variant claimed isMaster, so the lowest SKU was chosen. The choice has to be deterministic: the master variant is what a storefront shows by default, and a feed-order-dependent choice would silently change it between runs.",
+    "review": true
+  },
+  {
+    "subject": "product:TEE-CLASSIC",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "defaultVariant",
+    "outcome": "not set on 3 product(s)",
+    "rationale": "Modular replaces the master variant with Product.defaultVariant, and the Import API has no field for it — so the deterministic choice this pipeline makes cannot be imported. Products load with no default variant, and a storefront picking one arbitrarily is the visible symptom. Setting them needs a pass over the HTTP API after the load, which this pipeline does not do.",
+    "lossy": true,
+    "review": true
+  },
+  {
+    "subject": "pricing",
+    "outcome": "15 Standalone Price(s); product priceMode 'Standalone'",
+    "rationale": "target.priceMode is standalone, so prices are written as StandalonePrice resources keyed by SKU rather than inside the variants. The load needs the manage_standalone_prices scope, which manage_products does not grant. Price selection reads Standalone Prices only for products whose priceMode says so, which is why it is set explicitly on every product draft.",
+    "review": true
+  }
+]

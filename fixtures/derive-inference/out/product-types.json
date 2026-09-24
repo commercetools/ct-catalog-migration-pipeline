@@ -1,0 +1,92 @@
+[
+  {
+    "key": "mig-dated",
+    "name": "Dated",
+    "description": "Derived from the catalog feed for 2 product(s).",
+    "attributes": [
+      {
+        "name": "careInstructions",
+        "label": {
+          "en-GB": "Care Instructions"
+        },
+        "type": {
+          "name": "text"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "None",
+        "inputHint": "MultiLine",
+        "isSearchable": true
+      },
+      {
+        "name": "launchAt",
+        "label": {
+          "en-GB": "Launch At"
+        },
+        "type": {
+          "name": "datetime"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "None",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "pack",
+        "label": {
+          "en-GB": "Pack"
+        },
+        "type": {
+          "name": "enum",
+          "values": [
+            {
+              "key": "1",
+              "label": "1"
+            },
+            {
+              "key": "2",
+              "label": "2"
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "releasedOn",
+        "label": {
+          "en-GB": "Released On"
+        },
+        "type": {
+          "name": "date"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "None",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "tags",
+        "label": {
+          "en-GB": "Tags"
+        },
+        "type": {
+          "name": "set",
+          "elementType": {
+            "name": "text"
+          }
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "None",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      }
+    ]
+  }
+]

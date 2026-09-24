@@ -1,0 +1,99 @@
+[
+  {
+    "subject": "mig-dated.careInstructions",
+    "outcome": "text",
+    "rationale": "Observed values were plain strings with no localization and no recognizable date format.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.careInstructions",
+    "outcome": "label derived as \"Care Instructions\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.launchAt",
+    "outcome": "datetime",
+    "rationale": "All 2 distinct value(s) match an ISO timestamp. Inferred as datetime so range queries work.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.launchAt",
+    "outcome": "label derived as \"Launch At\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.pack",
+    "outcome": "enum with 2 value(s)",
+    "rationale": "Used as a variant axis with no axisLabels, so the code doubles as the label. Supply axisLabels in the adapter to get human-readable text in the Merchant Center.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.pack",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": true
+  },
+  {
+    "subject": "mig-dated.pack",
+    "outcome": "label derived as \"Pack\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.releasedOn",
+    "outcome": "date",
+    "rationale": "All 2 distinct value(s) match an ISO calendar date. Inferred as date so range queries work; if these are really opaque codes, declare the attribute as text.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.releasedOn",
+    "outcome": "label derived as \"Released On\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.tags",
+    "outcome": "set of text",
+    "rationale": "Every observed value was an array of string.",
+    "review": true
+  },
+  {
+    "subject": "mig-dated.tags",
+    "outcome": "label derived as \"Tags\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "category:all",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:all",
+    "outcome": "orderHint '0.11' assigned by code order",
+    "rationale": "The feed gave neither an orderHint nor a sourceOrder, so siblings were ordered by their source code. Navigation order is a merchandising decision, not a migration one — confirm it or supply sourceOrder in the adapter.",
+    "review": true
+  },
+  {
+    "subject": "product:DATES",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:DATES",
+    "outcome": "masterVariant is 'DATES-1' (lowest SKU)",
+    "rationale": "No variant claimed isMaster, so the lowest SKU was chosen. The choice has to be deterministic: the master variant is what a storefront shows by default, and a feed-order-dependent choice would silently change it between runs.",
+    "review": true
+  },
+  {
+    "subject": "product:LONGTEXT",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  }
+]

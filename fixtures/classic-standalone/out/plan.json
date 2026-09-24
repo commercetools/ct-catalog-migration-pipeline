@@ -1,0 +1,719 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-apparel-basic",
+      "name": "Apparel (basic)",
+      "description": "Derived from the catalog feed for 3 product(s).",
+      "attributes": [
+        {
+          "name": "colour",
+          "label": {
+            "en-GB": "Colour",
+            "de-DE": "Farbe"
+          },
+          "type": {
+            "name": "lenum",
+            "values": [
+              {
+                "key": "BLK",
+                "label": {
+                  "en-GB": "Black",
+                  "de-DE": "Schwarz"
+                }
+              },
+              {
+                "key": "NVY",
+                "label": {
+                  "en-GB": "Navy",
+                  "de-DE": "Marineblau"
+                }
+              },
+              {
+                "key": "OAT",
+                "label": {
+                  "en-GB": "Oatmeal",
+                  "de-DE": "Haferbeige"
+                }
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "material",
+          "label": {
+            "en-GB": "Material",
+            "de-DE": "Material"
+          },
+          "type": {
+            "name": "ltext"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "organicCertified",
+          "label": {
+            "en-GB": "Organic certified",
+            "de-DE": "Bio-zertifiziert"
+          },
+          "type": {
+            "name": "boolean"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "size",
+          "label": {
+            "en-GB": "Size",
+            "de-DE": "Größe"
+          },
+          "type": {
+            "name": "enum",
+            "values": [
+              {
+                "key": "S",
+                "label": "S"
+              },
+              {
+                "key": "M",
+                "label": "M"
+              },
+              {
+                "key": "L",
+                "label": "L"
+              }
+            ]
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "weightGrams",
+          "label": {
+            "en-GB": "Weight (g)",
+            "de-DE": "Gewicht (g)"
+          },
+          "type": {
+            "name": "number"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "None",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [
+    {
+      "key": "mig-accessories",
+      "name": {
+        "en-GB": "Accessories",
+        "de-DE": "Accessoires"
+      },
+      "slug": {
+        "en-GB": "accessories",
+        "de-DE": "accessoires"
+      },
+      "orderHint": "0.21",
+      "externalId": "accessories"
+    },
+    {
+      "key": "mig-apparel",
+      "name": {
+        "en-GB": "Apparel",
+        "de-DE": "Bekleidung"
+      },
+      "slug": {
+        "en-GB": "apparel",
+        "de-DE": "bekleidung"
+      },
+      "orderHint": "0.11",
+      "externalId": "apparel"
+    },
+    {
+      "key": "mig-outerwear",
+      "name": {
+        "en-GB": "Outerwear",
+        "de-DE": "Oberbekleidung"
+      },
+      "slug": {
+        "en-GB": "outerwear",
+        "de-DE": "oberbekleidung"
+      },
+      "parent": {
+        "typeId": "category",
+        "key": "mig-apparel"
+      },
+      "orderHint": "0.21",
+      "externalId": "outerwear"
+    },
+    {
+      "key": "mig-tops",
+      "name": {
+        "en-GB": "Tops",
+        "de-DE": "Oberteile"
+      },
+      "slug": {
+        "en-GB": "tops",
+        "de-DE": "oberteile"
+      },
+      "parent": {
+        "typeId": "category",
+        "key": "mig-apparel"
+      },
+      "orderHint": "0.11",
+      "externalId": "tops"
+    }
+  ],
+  "products": [
+    {
+      "key": "mig-CAP-LOGO",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Logo Cap",
+        "de-DE": "Logo-Kappe"
+      },
+      "slug": {
+        "en-GB": "logo-cap",
+        "de-DE": "logo-kappe"
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-accessories"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-CAP-LOGO-OS",
+        "sku": "CAP-LOGO-OS",
+        "attributes": [
+          {
+            "type": "ltext",
+            "name": "material",
+            "value": {
+              "en-GB": "Cotton twill",
+              "de-DE": "Baumwoll-Twill"
+            }
+          },
+          {
+            "type": "boolean",
+            "name": "organicCertified",
+            "value": false
+          },
+          {
+            "type": "number",
+            "name": "weightGrams",
+            "value": 95
+          }
+        ],
+        "images": []
+      },
+      "variants": [],
+      "priceMode": "Standalone",
+      "publish": false
+    },
+    {
+      "key": "mig-JKT-FIELD",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Field Jacket",
+        "de-DE": "Feldjacke"
+      },
+      "slug": {
+        "en-GB": "field-jacket",
+        "de-DE": "feldjacke"
+      },
+      "description": {
+        "en-GB": "Waxed cotton, four pockets.",
+        "de-DE": "Gewachste Baumwolle, vier Taschen."
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-outerwear"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-JKT-FIELD-OAT-L",
+        "sku": "JKT-FIELD-OAT-L",
+        "attributes": [
+          {
+            "type": "lenum",
+            "name": "colour",
+            "value": "OAT"
+          },
+          {
+            "type": "ltext",
+            "name": "material",
+            "value": {
+              "en-GB": "Waxed cotton",
+              "de-DE": "Gewachste Baumwolle"
+            }
+          },
+          {
+            "type": "boolean",
+            "name": "organicCertified",
+            "value": false
+          },
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "L"
+          },
+          {
+            "type": "number",
+            "name": "weightGrams",
+            "value": 880
+          }
+        ],
+        "images": []
+      },
+      "variants": [
+        {
+          "key": "mig-JKT-FIELD-OAT-M",
+          "sku": "JKT-FIELD-OAT-M",
+          "attributes": [
+            {
+              "type": "lenum",
+              "name": "colour",
+              "value": "OAT"
+            },
+            {
+              "type": "ltext",
+              "name": "material",
+              "value": {
+                "en-GB": "Waxed cotton",
+                "de-DE": "Gewachste Baumwolle"
+              }
+            },
+            {
+              "type": "boolean",
+              "name": "organicCertified",
+              "value": false
+            },
+            {
+              "type": "enum",
+              "name": "size",
+              "value": "M"
+            },
+            {
+              "type": "number",
+              "name": "weightGrams",
+              "value": 840
+            }
+          ],
+          "images": []
+        }
+      ],
+      "priceMode": "Standalone",
+      "publish": false
+    },
+    {
+      "key": "mig-TEE-CLASSIC",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Classic T-Shirt",
+        "de-DE": "Klassisches T-Shirt"
+      },
+      "slug": {
+        "en-GB": "classic-t-shirt",
+        "de-DE": "klassisches-t-shirt"
+      },
+      "description": {
+        "en-GB": "A midweight cotton tee.",
+        "de-DE": "Ein T-Shirt aus mittelschwerer Baumwolle."
+      },
+      "categories": [
+        {
+          "typeId": "category",
+          "key": "mig-tops"
+        }
+      ],
+      "masterVariant": {
+        "key": "mig-TEE-CLASSIC-BLK-S",
+        "sku": "TEE-CLASSIC-BLK-S",
+        "attributes": [
+          {
+            "type": "lenum",
+            "name": "colour",
+            "value": "BLK"
+          },
+          {
+            "type": "ltext",
+            "name": "material",
+            "value": {
+              "en-GB": "100% organic cotton",
+              "de-DE": "100% Bio-Baumwolle"
+            }
+          },
+          {
+            "type": "boolean",
+            "name": "organicCertified",
+            "value": true
+          },
+          {
+            "type": "enum",
+            "name": "size",
+            "value": "S"
+          },
+          {
+            "type": "number",
+            "name": "weightGrams",
+            "value": 180
+          }
+        ],
+        "images": [
+          {
+            "url": "https://cdn.example.com/tee-blk.jpg",
+            "dimensions": {
+              "w": 1200,
+              "h": 1600
+            }
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "mig-TEE-CLASSIC-BLK-M",
+          "sku": "TEE-CLASSIC-BLK-M",
+          "attributes": [
+            {
+              "type": "lenum",
+              "name": "colour",
+              "value": "BLK"
+            },
+            {
+              "type": "ltext",
+              "name": "material",
+              "value": {
+                "en-GB": "100% organic cotton",
+                "de-DE": "100% Bio-Baumwolle"
+              }
+            },
+            {
+              "type": "boolean",
+              "name": "organicCertified",
+              "value": true
+            },
+            {
+              "type": "enum",
+              "name": "size",
+              "value": "M"
+            },
+            {
+              "type": "number",
+              "name": "weightGrams",
+              "value": 190
+            }
+          ],
+          "images": [
+            {
+              "url": "https://cdn.example.com/tee-blk.jpg",
+              "dimensions": {
+                "w": 1200,
+                "h": 1600
+              }
+            }
+          ]
+        },
+        {
+          "key": "mig-TEE-CLASSIC-NVY-L",
+          "sku": "TEE-CLASSIC-NVY-L",
+          "attributes": [
+            {
+              "type": "lenum",
+              "name": "colour",
+              "value": "NVY"
+            },
+            {
+              "type": "ltext",
+              "name": "material",
+              "value": {
+                "en-GB": "100% organic cotton",
+                "de-DE": "100% Bio-Baumwolle"
+              }
+            },
+            {
+              "type": "boolean",
+              "name": "organicCertified",
+              "value": true
+            },
+            {
+              "type": "enum",
+              "name": "size",
+              "value": "L"
+            },
+            {
+              "type": "number",
+              "name": "weightGrams",
+              "value": 205
+            }
+          ],
+          "images": []
+        },
+        {
+          "key": "mig-TEE-CLASSIC-NVY-M",
+          "sku": "TEE-CLASSIC-NVY-M",
+          "attributes": [
+            {
+              "type": "lenum",
+              "name": "colour",
+              "value": "NVY"
+            },
+            {
+              "type": "ltext",
+              "name": "material",
+              "value": {
+                "en-GB": "100% organic cotton",
+                "de-DE": "100% Bio-Baumwolle"
+              }
+            },
+            {
+              "type": "boolean",
+              "name": "organicCertified",
+              "value": true
+            },
+            {
+              "type": "enum",
+              "name": "size",
+              "value": "M"
+            },
+            {
+              "type": "number",
+              "name": "weightGrams",
+              "value": 190
+            }
+          ],
+          "images": [
+            {
+              "url": "https://cdn.example.com/tee-nvy.jpg",
+              "dimensions": {
+                "w": 1200,
+                "h": 1600
+              }
+            }
+          ]
+        }
+      ],
+      "priceMode": "Standalone",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [
+    {
+      "key": "mig-CAP-LOGO-OS-GBP-GB",
+      "sku": "CAP-LOGO-OS",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 2400,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-CAP-LOGO-OS-EUR-DE",
+      "sku": "CAP-LOGO-OS",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 2800,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    },
+    {
+      "key": "mig-JKT-FIELD-OAT-L-GBP-GB",
+      "sku": "JKT-FIELD-OAT-L",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 14900,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-JKT-FIELD-OAT-L-EUR-DE",
+      "sku": "JKT-FIELD-OAT-L",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 17500,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    },
+    {
+      "key": "mig-JKT-FIELD-OAT-M-GBP-GB",
+      "sku": "JKT-FIELD-OAT-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 14900,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-JKT-FIELD-OAT-M-EUR-DE",
+      "sku": "JKT-FIELD-OAT-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 17500,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    },
+    {
+      "key": "mig-JKT-FIELD-OAT-M-GBP-GB-20261127-20261202",
+      "sku": "JKT-FIELD-OAT-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 11900,
+        "fractionDigits": 2
+      },
+      "country": "GB",
+      "validFrom": "2026-11-27T00:00:00.000Z",
+      "validUntil": "2026-12-02T00:00:00.000Z"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-BLK-M-GBP-GB",
+      "sku": "TEE-CLASSIC-BLK-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 1999,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-BLK-M-EUR-DE",
+      "sku": "TEE-CLASSIC-BLK-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 2350,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-BLK-S-GBP-GB",
+      "sku": "TEE-CLASSIC-BLK-S",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 1999,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-BLK-S-EUR-DE",
+      "sku": "TEE-CLASSIC-BLK-S",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 2350,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-NVY-L-GBP-GB",
+      "sku": "TEE-CLASSIC-NVY-L",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 1999,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-NVY-L-EUR-DE",
+      "sku": "TEE-CLASSIC-NVY-L",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 2350,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-NVY-M-GBP-GB",
+      "sku": "TEE-CLASSIC-NVY-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "GBP",
+        "centAmount": 1999,
+        "fractionDigits": 2
+      },
+      "country": "GB"
+    },
+    {
+      "key": "mig-TEE-CLASSIC-NVY-M-EUR-DE",
+      "sku": "TEE-CLASSIC-NVY-M",
+      "value": {
+        "type": "centPrecision",
+        "currencyCode": "EUR",
+        "centAmount": 2350,
+        "fractionDigits": 2
+      },
+      "country": "DE"
+    }
+  ],
+  "productSelections": [],
+  "prerequisites": {
+    "channels": [],
+    "customerGroups": [],
+    "stores": []
+  },
+  "provenance": {
+    "feedDigest": "sha256:1d62c9c63b5633e19214b48bcce6925b1e3d898afd543816b1dd24df49713e67",
+    "generatedAt": "2026-09-24T03:09:08.893Z"
+  }
+}

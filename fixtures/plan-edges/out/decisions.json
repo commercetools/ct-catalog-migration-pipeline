@@ -1,0 +1,115 @@
+[
+  {
+    "subject": "mig-apparel-basic.size",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.size",
+    "outcome": "label derived as \"Size\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "category:mens",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:mens",
+    "outcome": "orderHint '0.11' assigned by code order",
+    "rationale": "The feed gave neither an orderHint nor a sourceOrder, so siblings were ordered by their source code. Navigation order is a merchandising decision, not a migration one — confirm it or supply sourceOrder in the adapter.",
+    "review": true
+  },
+  {
+    "subject": "category:mens-acc",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:mens-acc",
+    "outcome": "orderHint '0.11' assigned by code order",
+    "rationale": "The feed gave neither an orderHint nor a sourceOrder, so siblings were ordered by their source code. Navigation order is a merchandising decision, not a migration one — confirm it or supply sourceOrder in the adapter.",
+    "review": true
+  },
+  {
+    "subject": "category:symbols",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:symbols",
+    "outcome": "orderHint '0.21' assigned by code order",
+    "rationale": "The feed gave neither an orderHint nor a sourceOrder, so siblings were ordered by their source code. Navigation order is a merchandising decision, not a migration one — confirm it or supply sourceOrder in the adapter.",
+    "review": true
+  },
+  {
+    "subject": "category:womens",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:womens",
+    "outcome": "orderHint '0.31' assigned by code order",
+    "rationale": "The feed gave neither an orderHint nor a sourceOrder, so siblings were ordered by their source code. Navigation order is a merchandising decision, not a migration one — confirm it or supply sourceOrder in the adapter.",
+    "review": true
+  },
+  {
+    "subject": "category:womens-acc",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "The feed supplied no slug for those locales, so one was generated from the category name. Slugs are part of the storefront URL, so whoever owns SEO should see these before go-live.",
+    "review": true
+  },
+  {
+    "subject": "category:womens-acc",
+    "outcome": "slug disambiguated to 'accessories-womens-acc' in en-GB",
+    "rationale": "Category slugs are unique across the whole Project per locale, and another category already claimed the natural slug. The source code was appended so the result stays traceable. This changes the URL the migration produces.",
+    "lossy": true,
+    "review": true
+  },
+  {
+    "subject": "category:womens-acc",
+    "outcome": "slug disambiguated to 'accessoires-womens-acc' in de-DE",
+    "rationale": "Category slugs are unique across the whole Project per locale, and another category already claimed the natural slug. The source code was appended so the result stays traceable. This changes the URL the migration produces.",
+    "lossy": true,
+    "review": true
+  },
+  {
+    "subject": "category:womens-acc",
+    "outcome": "orderHint '0.11' assigned by code order",
+    "rationale": "The feed gave neither an orderHint nor a sourceOrder, so siblings were ordered by their source code. Navigation order is a merchandising decision, not a migration one — confirm it or supply sourceOrder in the adapter.",
+    "review": true
+  },
+  {
+    "subject": "product:SCARF-A",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:SCARF-B",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:SCARF-B",
+    "outcome": "slug disambiguated to 'wool-scarf-scarf-b' in en-GB",
+    "rationale": "Product slugs are unique across the Project per locale and the natural slug was already taken. The source code was appended to keep it traceable, which changes the URL this product will have.",
+    "lossy": true,
+    "review": true
+  },
+  {
+    "subject": "product:SCARF-B",
+    "outcome": "slug disambiguated to 'wollschal-scarf-b' in de-DE",
+    "rationale": "Product slugs are unique across the Project per locale and the natural slug was already taken. The source code was appended to keep it traceable, which changes the URL this product will have.",
+    "lossy": true,
+    "review": true
+  }
+]

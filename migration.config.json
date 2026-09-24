@@ -1,0 +1,31 @@
+{
+  "feed": {
+    "dir": "./feed"
+  },
+  "target": {
+    "catalogModel": "Classic",
+    "priceMode": "embedded"
+  },
+  "market": {
+    "defaultLocale": "en-GB",
+    "requiredLocales": ["en-GB"],
+    "requiredCurrencies": ["GBP"],
+    "currencyFractionDigits": {
+      "GBP": 2
+    }
+  },
+  "keys": {
+    "prefix": "REPLACE-ME"
+  },
+  "productTypes": {
+    "onMissingDefinitions": "require",
+    "defaultKey": "catalog-default",
+    "defaultName": "Catalog default",
+    "productLevelStrategy": "sameForAll",
+    "searchableByDefault": true
+  },
+  "load": {
+    "batchSize": 20,
+    "maxOperationsPerContainer": 200000
+  }
+}

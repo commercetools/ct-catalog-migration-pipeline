@@ -1,0 +1,33 @@
+{
+  "name": "ct-catalog-migration-pipeline",
+  "version": "0.1.0",
+  "description": "Source-agnostic pipeline that loads a canonical catalog feed into a commercetools project.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/commercetools/ct-catalog-migration-pipeline"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "pipeline": "npm run --silent build && node dist/cli.js",
+    "validate": "npm run --silent build && node dist/cli.js validate",
+    "test": "tsc -p tsconfig.test.json && node --test dist-test/test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@commercetools/importapi-sdk": "^7.1.1",
+    "@commercetools/platform-sdk": "^9.5.0",
+    "@commercetools/ts-client": "^5.0.3",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}

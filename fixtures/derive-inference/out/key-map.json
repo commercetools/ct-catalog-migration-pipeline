@@ -1,0 +1,14 @@
+{
+  "categories": {
+    "all": "mig-all"
+  },
+  "products": {
+    "DATES": "mig-DATES",
+    "LONGTEXT": "mig-LONGTEXT"
+  },
+  "variants": {
+    "DATES-1": "mig-DATES-1",
+    "DATES-2": "mig-DATES-2",
+    "LONGTEXT-1": "mig-LONGTEXT-1"
+  }
+}

@@ -1,0 +1,18 @@
+{"_type": "category", "code": "all", "name": {"en-GB": "All"}}
+{"_type": "product", "code": "AXIS-YES", "name": {"en-GB": "Uses finish as an axis"}, "productType": "shared", "categories": ["all"], "axes": ["finish"]}
+{"_type": "variant", "sku": "AXIS-YES-MATTE", "product": "AXIS-YES", "axisValues": {"finish": "MATTE"}}
+{"_type": "variant", "sku": "AXIS-YES-GLOSS", "product": "AXIS-YES", "axisValues": {"finish": "GLOSS"}}
+{"_type": "product", "code": "AXIS-NO", "name": {"en-GB": "Uses finish as a plain attribute"}, "productType": "shared", "categories": ["all"], "attributes": {"finish": "MATTE"}}
+{"_type": "variant", "sku": "AXIS-NO-1", "product": "AXIS-NO"}
+{"_type": "product", "code": "LEVEL-A", "name": {"en-GB": "Sets warranty at product level"}, "productType": "shared", "categories": ["all"], "attributes": {"warranty": "2 years"}}
+{"_type": "variant", "sku": "LEVEL-A-1", "product": "LEVEL-A"}
+{"_type": "product", "code": "LEVEL-B", "name": {"en-GB": "Sets warranty at variant level"}, "productType": "shared", "categories": ["all"]}
+{"_type": "variant", "sku": "LEVEL-B-1", "product": "LEVEL-B", "attributes": {"warranty": "3 years"}}
+{"_type": "product", "code": "MIXED", "name": {"en-GB": "Mixed value kinds for one name"}, "productType": "shared", "categories": ["all"], "axes": ["pack"]}
+{"_type": "variant", "sku": "MIXED-1", "product": "MIXED", "attributes": {"capacity": "large"}, "axisValues": {"pack": "1"}}
+{"_type": "variant", "sku": "MIXED-2", "product": "MIXED", "attributes": {"capacity": 500}, "axisValues": {"pack": "2"}}
+{"_type": "product", "code": "DATES", "name": {"en-GB": "Date-shaped strings"}, "productType": "dated", "categories": ["all"], "axes": ["pack"]}
+{"_type": "variant", "sku": "DATES-1", "product": "DATES", "attributes": {"releasedOn": "2026-03-01", "launchAt": "2026-03-01T09:00:00.000Z", "tags": ["new", "seasonal"]}, "axisValues": {"pack": "1"}}
+{"_type": "variant", "sku": "DATES-2", "product": "DATES", "attributes": {"releasedOn": "2026-04-15", "launchAt": "2026-04-15T09:00:00.000Z", "tags": ["clearance"]}, "axisValues": {"pack": "2"}}
+{"_type": "product", "code": "LONGTEXT", "name": {"en-GB": "Long prose attribute"}, "productType": "dated", "categories": ["all"]}
+{"_type": "variant", "sku": "LONGTEXT-1", "product": "LONGTEXT", "attributes": {"careInstructions": "Machine wash at thirty degrees with similar colours, do not tumble dry, warm iron on the reverse only, and do not dry clean under any circumstances whatsoever."}}

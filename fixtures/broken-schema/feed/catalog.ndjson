@@ -1,0 +1,32 @@
+{"_type":"category","code":"root","name":{"en-GB":"Root"}}
+{"_type":"category","code":"orphan-branch","name":{"en-GB":"Orphan branch"},"parent":"does-not-exist"}
+{"_type":"category","code":"loop-a","name":{"en-GB":"Loop A"},"parent":"loop-b"}
+{"_type":"category","code":"loop-b","name":{"en-GB":"Loop B"},"parent":"loop-a"}
+{"_type":"attributeDefinition","name":"colourName","type":"ltext","level":"variant","axis":true,"label":{"en-GB":"Colour"}}
+{"_type":"attributeDefinition","name":"size","type":"enum","level":"variant","axis":true,"values":[{"key":"S","label":"S"},{"key":"M","label":"M"}]}
+{"_type":"attributeDefinition","name":"neverUsed","type":"text","level":"product","label":{"en-GB":"Never used"}}
+{"_type":"attributeDefinition","name":"fabric","type":"text","level":"product","label":{"en-GB":"Fabric"}}
+{"_type":"product","code":"DUPE","name":{"en-GB":"First declaration"},"categories":["root"],"axes":["size"]}
+{"_type":"variant","sku":"DUPE-S","product":"DUPE","axisValues":{"size":"S"}}
+{"_type":"product","code":"DUPE","name":{"en-GB":"Second declaration, silently overwriting"},"categories":["root"],"axes":["size"]}
+{"_type":"product","code":"LOCALIZED-AXIS","name":{"en-GB":"Localized axis product"},"categories":["root"],"axes":["colourName"]}
+{"_type":"variant","sku":"LOC-BLACK","product":"LOCALIZED-AXIS","axisValues":{"colourName":"Black"}}
+{"_type":"variant","sku":"LOC-NAVY","product":"LOCALIZED-AXIS","axisValues":{"colourName":"Navy"}}
+{"_type":"product","code":"COLLAPSED","name":{"en-GB":"Badly collapsed hierarchy"},"categories":["root"],"axes":["size"]}
+{"_type":"variant","sku":"COLLAPSED-M-1","product":"COLLAPSED","axisValues":{"size":"M"},"isMaster":true}
+{"_type":"variant","sku":"COLLAPSED-M-2","product":"COLLAPSED","axisValues":{"size":"M"},"isMaster":true}
+{"_type":"variant","sku":"COLLAPSED-NOSIZE","product":"COLLAPSED","attributes":{"fabric":"cotton"}}
+{"_type":"product","code":"NO-VARIANTS","name":{"en-GB":"Product with no variants"},"categories":["root"]}
+{"_type":"product","code":"BAD-CATEGORY","name":{"en-GB":"References a missing category"},"categories":["nope"]}
+{"_type":"variant","sku":"BAD-CATEGORY-1","product":"BAD-CATEGORY"}
+{"_type":"product","code":"NO-AXES","name":{"en-GB":"Multiple variants, no axes declared"},"categories":["root"]}
+{"_type":"variant","sku":"NO-AXES-1","product":"NO-AXES"}
+{"_type":"variant","sku":"NO-AXES-2","product":"NO-AXES"}
+{"_type":"variant","sku":"UNDECLARED-ATTR","product":"NO-AXES","attributes":{"mysteryField":"whatever"}}
+{"_type":"variant","sku":"TOTALLY-ORPHANED","product":"NEVER-DECLARED"}
+{"_type":"product","code":"BAD-LOCALE","name":{"en_GB":"Underscore locale tag is rejected"},"categories":["root"]}
+{"_type":"product","code":"FLOAT-PRICE","name":{"en-GB":"Float amount is rejected"},"categories":["root"]}
+{"_type":"variant","sku":"FLOAT-PRICE-1","product":"FLOAT-PRICE","prices":[{"currency":"GBP","amount":19.99}]}
+{"_type":"variant","sku":"LEVEL-MISMATCH","product":"NO-AXES","attributes":{"fabric":"declared as product level"}}
+{"_type":"product","code":"MALFORMED-NEXT","name":{"en-GB":"The next line is not JSON"},"categories":["root"]}
+{ this is not json at all }

@@ -1,0 +1,136 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-apparel-basic",
+      "name": "Apparel (basic)",
+      "description": "Derived from the catalog feed for 1 product(s).",
+      "attributes": [
+        {
+          "name": "material",
+          "label": {
+            "en-GB": "Material"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [],
+  "products": [
+    {
+      "key": "mig-TEE",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Tee"
+      },
+      "slug": {
+        "en-GB": "tee",
+        "de-DE": "tee"
+      },
+      "categories": [],
+      "masterVariant": {
+        "key": "mig-TEE-1",
+        "sku": "TEE-1",
+        "attributes": [
+          {
+            "type": "text",
+            "name": "material",
+            "value": "Cotton"
+          }
+        ],
+        "images": [],
+        "prices": [
+          {
+            "key": "mig-TEE-1-GBP-GB",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1999,
+              "fractionDigits": 2
+            },
+            "country": "GB"
+          },
+          {
+            "key": "mig-TEE-1-GBP-GB-retail-uk",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1799,
+              "fractionDigits": 2
+            },
+            "country": "GB",
+            "channel": {
+              "typeId": "channel",
+              "key": "retail-uk"
+            }
+          },
+          {
+            "key": "mig-TEE-1-GBP-GB-trade",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1499,
+              "fractionDigits": 2
+            },
+            "country": "GB",
+            "customerGroup": {
+              "typeId": "customer-group",
+              "key": "trade"
+            }
+          }
+        ]
+      },
+      "variants": [],
+      "priceMode": "Embedded",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [],
+  "productSelections": [],
+  "prerequisites": {
+    "channels": [
+      {
+        "key": "retail-uk",
+        "roles": [
+          "ProductDistribution"
+        ],
+        "name": {
+          "en-GB": "Retail UK"
+        }
+      }
+    ],
+    "customerGroups": [
+      {
+        "key": "trade",
+        "name": "Trade"
+      }
+    ],
+    "stores": []
+  },
+  "provenance": {
+    "feedDigest": "sha256:26369b313ab2ddf6689a0832e3d2df527dec8c6e77272f16f1fc95feddb2101e",
+    "generatedAt": "2026-09-24T03:09:01.179Z"
+  }
+}

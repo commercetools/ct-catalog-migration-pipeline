@@ -1,0 +1,216 @@
+{
+  "loadOrder": [
+    "channel",
+    "customer-group",
+    "product-type",
+    "category",
+    "product-draft",
+    "variant",
+    "standalone-price",
+    "product-selection",
+    "store"
+  ],
+  "productTypes": [
+    {
+      "key": "mig-apparel-basic",
+      "name": "Apparel (basic)",
+      "description": "Derived from the catalog feed for 1 product(s).",
+      "attributes": [
+        {
+          "name": "material",
+          "label": {
+            "en-GB": "Material"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "SameForAll",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        },
+        {
+          "name": "sz",
+          "label": {
+            "en-GB": "Sz"
+          },
+          "type": {
+            "name": "text"
+          },
+          "isRequired": false,
+          "level": "Variant",
+          "attributeConstraint": "CombinationUnique",
+          "inputHint": "SingleLine",
+          "isSearchable": true
+        }
+      ]
+    }
+  ],
+  "categories": [],
+  "products": [
+    {
+      "key": "mig-TEE",
+      "productType": {
+        "typeId": "product-type",
+        "key": "mig-apparel-basic"
+      },
+      "name": {
+        "en-GB": "Tee"
+      },
+      "slug": {
+        "en-GB": "tee",
+        "de-DE": "tee"
+      },
+      "categories": [],
+      "masterVariant": {
+        "key": "mig-TEE-M",
+        "sku": "TEE-M",
+        "attributes": [
+          {
+            "type": "text",
+            "name": "material",
+            "value": "Cotton"
+          },
+          {
+            "type": "text",
+            "name": "sz",
+            "value": "M"
+          }
+        ],
+        "images": [],
+        "prices": [
+          {
+            "key": "mig-TEE-M-GBP-GB-retail-uk",
+            "value": {
+              "type": "centPrecision",
+              "currencyCode": "GBP",
+              "centAmount": 1999,
+              "fractionDigits": 2
+            },
+            "country": "GB",
+            "channel": {
+              "typeId": "channel",
+              "key": "retail-uk"
+            }
+          }
+        ]
+      },
+      "variants": [
+        {
+          "key": "mig-TEE-S",
+          "sku": "TEE-S",
+          "attributes": [
+            {
+              "type": "text",
+              "name": "material",
+              "value": "Cotton"
+            },
+            {
+              "type": "text",
+              "name": "sz",
+              "value": "S"
+            }
+          ],
+          "images": [],
+          "prices": [
+            {
+              "key": "mig-TEE-S-GBP-GB-retail-uk",
+              "value": {
+                "type": "centPrecision",
+                "currencyCode": "GBP",
+                "centAmount": 1999,
+                "fractionDigits": 2
+              },
+              "country": "GB",
+              "channel": {
+                "typeId": "channel",
+                "key": "retail-uk"
+              }
+            }
+          ]
+        }
+      ],
+      "priceMode": "Embedded",
+      "publish": false
+    }
+  ],
+  "variants": [],
+  "standalonePrices": [],
+  "productSelections": [
+    {
+      "key": "mig-uk-assortment",
+      "name": {
+        "en-GB": "UK assortment"
+      },
+      "mode": "Individual",
+      "assignments": [
+        {
+          "product": {
+            "typeId": "product",
+            "key": "mig-TEE"
+          },
+          "variantSelection": {
+            "type": "includeOnly",
+            "skus": [
+              "TEE-S"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "prerequisites": {
+    "channels": [
+      {
+        "key": "retail-uk",
+        "roles": [
+          "ProductDistribution"
+        ],
+        "name": {
+          "en-GB": "Retail UK"
+        }
+      },
+      {
+        "key": "warehouse-gb",
+        "roles": [
+          "InventorySupply"
+        ],
+        "name": {
+          "en-GB": "Warehouse GB"
+        }
+      }
+    ],
+    "customerGroups": [],
+    "stores": [
+      {
+        "key": "northwind-uk",
+        "name": {
+          "en-GB": "Northwind UK"
+        },
+        "languages": [
+          "en-GB"
+        ],
+        "countries": [
+          "GB"
+        ],
+        "distributionChannels": [
+          "retail-uk"
+        ],
+        "supplyChannels": [
+          "warehouse-gb"
+        ],
+        "productSelections": [
+          {
+            "key": "mig-uk-assortment",
+            "active": true
+          }
+        ]
+      }
+    ]
+  },
+  "provenance": {
+    "feedDigest": "sha256:f9aeaea0fb54c8d71e2ed9fb1eadbf5c6839c1fd02a62bee652950593982030a",
+    "generatedAt": "2026-09-24T03:10:00.759Z"
+  }
+}

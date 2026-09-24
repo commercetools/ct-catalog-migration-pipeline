@@ -1,0 +1,107 @@
+[
+  {
+    "key": "mig-apparel-basic",
+    "name": "Apparel (basic)",
+    "description": "Derived from the catalog feed for 3 product(s).",
+    "attributes": [
+      {
+        "name": "colour",
+        "label": {
+          "en-GB": "Colour"
+        },
+        "type": {
+          "name": "enum",
+          "values": [
+            {
+              "key": "BLK",
+              "label": "BLK"
+            },
+            {
+              "key": "NVY",
+              "label": "NVY"
+            },
+            {
+              "key": "OAT",
+              "label": "OAT"
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "material",
+        "label": {
+          "en-GB": "Material"
+        },
+        "type": {
+          "name": "ltext"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "organicCertified",
+        "label": {
+          "en-GB": "Organic Certified"
+        },
+        "type": {
+          "name": "boolean"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "size",
+        "label": {
+          "en-GB": "Size"
+        },
+        "type": {
+          "name": "enum",
+          "values": [
+            {
+              "key": "S",
+              "label": "S"
+            },
+            {
+              "key": "M",
+              "label": "M"
+            },
+            {
+              "key": "L",
+              "label": "L"
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "weightGrams",
+        "label": {
+          "en-GB": "Weight Grams"
+        },
+        "type": {
+          "name": "number"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "None",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      }
+    ]
+  }
+]

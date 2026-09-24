@@ -1,0 +1,77 @@
+[
+  {
+    "subject": "mig-apparel-basic.colour",
+    "outcome": "CombinationUnique (level Variant)",
+    "rationale": "Part of variant identity, so the platform enforces one variant per combination. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.colour",
+    "outcome": "label derived as \"Colour\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.fabricWeight",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.fabricWeight",
+    "outcome": "label derived as \"Fabric Weight\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.fabricWeight",
+    "outcome": "isSearchable true (from searchableByDefault)",
+    "rationale": "The declaration did not state searchability, so the configured default applies. If the source does carry the flag, emit it as `searchable` on the attributeDefinition rather than losing it."
+  },
+  {
+    "subject": "mig-apparel-basic.internalNote",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.internalNote",
+    "outcome": "label derived as \"Internal Note\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.internalNote",
+    "outcome": "isSearchable false (declared, overriding the default)",
+    "rationale": "The source declared searchability for this attribute and it disagrees with productTypes.searchableByDefault, so the declaration was honoured. Note that a shared attribute name must agree on this value across every ProductType, or it becomes unavailable for search, filters and facets everywhere — derive reports any disagreement as an error.",
+    "review": true
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "SameForAll (level Variant)",
+    "rationale": "Invariant across variants, modelled at variant level with SameForAll so it stays usable from both Product Search and Product Projection Search. changeAttributeConstraint accepts only None, so this can later be relaxed but never tightened or switched — it has to be right before the first load.",
+    "irreversible": true,
+    "review": false
+  },
+  {
+    "subject": "mig-apparel-basic.material",
+    "outcome": "label derived as \"Material\" in en-GB only",
+    "rationale": "No label was supplied. The attribute name was humanized for the default locale; other locales are left empty rather than filled with untranslated text.",
+    "review": true
+  },
+  {
+    "subject": "product:TEE",
+    "outcome": "slug derived from name for en-GB, de-DE",
+    "rationale": "No slug was supplied for those locales, so one was generated from the product name. This is the product URL.",
+    "review": true
+  },
+  {
+    "subject": "product:TEE",
+    "outcome": "masterVariant is 'TEE-BLK' (lowest SKU)",
+    "rationale": "No variant claimed isMaster, so the lowest SKU was chosen. The choice has to be deterministic: the master variant is what a storefront shows by default, and a feed-order-dependent choice would silently change it between runs.",
+    "review": true
+  }
+]

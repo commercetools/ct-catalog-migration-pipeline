@@ -1,0 +1,121 @@
+[
+  {
+    "key": "mig-apparel-basic",
+    "name": "Apparel (basic)",
+    "description": "Derived from the catalog feed for 3 product(s).",
+    "attributes": [
+      {
+        "name": "colour",
+        "label": {
+          "en-GB": "Colour",
+          "de-DE": "Farbe"
+        },
+        "type": {
+          "name": "lenum",
+          "values": [
+            {
+              "key": "BLK",
+              "label": {
+                "en-GB": "Black",
+                "de-DE": "Schwarz"
+              }
+            },
+            {
+              "key": "NVY",
+              "label": {
+                "en-GB": "Navy",
+                "de-DE": "Marineblau"
+              }
+            },
+            {
+              "key": "OAT",
+              "label": {
+                "en-GB": "Oatmeal",
+                "de-DE": "Haferbeige"
+              }
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "material",
+        "label": {
+          "en-GB": "Material",
+          "de-DE": "Material"
+        },
+        "type": {
+          "name": "ltext"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "organicCertified",
+        "label": {
+          "en-GB": "Organic certified",
+          "de-DE": "Bio-zertifiziert"
+        },
+        "type": {
+          "name": "boolean"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "SameForAll",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "size",
+        "label": {
+          "en-GB": "Size",
+          "de-DE": "Größe"
+        },
+        "type": {
+          "name": "enum",
+          "values": [
+            {
+              "key": "S",
+              "label": "S"
+            },
+            {
+              "key": "M",
+              "label": "M"
+            },
+            {
+              "key": "L",
+              "label": "L"
+            }
+          ]
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "CombinationUnique",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      },
+      {
+        "name": "weightGrams",
+        "label": {
+          "en-GB": "Weight (g)",
+          "de-DE": "Gewicht (g)"
+        },
+        "type": {
+          "name": "number"
+        },
+        "isRequired": false,
+        "level": "Variant",
+        "attributeConstraint": "None",
+        "inputHint": "SingleLine",
+        "isSearchable": true
+      }
+    ]
+  }
+]
