@@ -48,5 +48,10 @@
     "rationale": "A selection's mode is fixed when it is created — there is no update action that changes it — so Individual is permanent for this key. As an allowlist, only the assigned products are offered in any store using it.",
     "irreversible": true,
     "review": true
+  },
+  {
+    "subject": "inventory",
+    "outcome": "3 InventoryEntry resource(s), 2 channel-scoped",
+    "rationale": "Stock is loaded as InventoryEntry resources keyed on (sku, supplyChannel), so a later run over refreshed stock updates rather than duplicating. quantityOnStock is taken as overall stock including anything reserved; availableQuantity is computed by the platform and is not importable."
   }
 ]

@@ -27,7 +27,9 @@ import { loadPlan } from '../src/audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from '../src/contract/digest.js';
 import { stringifyArtefact } from '../src/model/artefact.js';
 import { writePlan } from '../src/map/report.js';
+import { indexVariants } from '../src/model/plan.js';
 import type {
+  InventoryImport,
   MigrationPlan,
   PriceDraftImport,
   StandalonePriceImport,
@@ -242,6 +244,7 @@ function auditPrices(prices: PriceDraftImport[]) {
     variants: [],
     standalonePrices: [],
     productSelections: [],
+    inventory: [],
     prerequisites: { channels: [], customerGroups: [], stores: [] },
     decisions: [],
     keyMap: { categories: {}, products: {}, variants: {} },
@@ -347,6 +350,7 @@ test('a slug or key shorter than two characters is rejected', () => {
     variants: [],
     standalonePrices: [],
     productSelections: [],
+    inventory: [],
     prerequisites: { channels: [], customerGroups: [], stores: [] },
     decisions: [],
     keyMap: { categories: {}, products: {}, variants: {} },
@@ -1207,4 +1211,103 @@ test('artefact size: a non-RangeError is not swallowed', () => {
       return err instanceof TypeError;
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+/** The stores fixture's plan, with its inventory replaced. */
+function auditInventory(entries: InventoryImport[]) {
+  const { config: cfg, feedDir } = config('stores');
+  const { feed } = validateFeed(feedDir, SCHEMA, cfg);
+  const model = deriveProductTypes(feed, cfg);
+  const { plan } = buildPlan(feed, model, cfg);
+  return auditPlan({ ...plan, inventory: entries }, cfg).diagnostics;
+}
+
+function stock(key: string, sku: string, extra: Partial<InventoryImport> = {}): InventoryImport {
+  return { key, sku, quantityOnStock: 1, ...extra };
+}
+
+test('inventory: the stores fixture audits clean, stock included', () => {
+  const { checked, diagnostics } = auditFixturePlan('stores');
+  assert.ok(checked.inventory > 0, 'the fixture must actually exercise inventory');
+  assert.ok(
+    !codes(diagnostics).some((c) => c.startsWith('inventory-') || c === 'duplicate-inventory-scope'),
+    `unexpected inventory findings: ${codes(diagnostics).join(', ')}`,
+  );
+});
+
+test('inventory: stock for a SKU absent from the plan is caught by the gate too', () => {
+  // `validate` checked the SKU against the feed. This is the *plan*, which can
+  // have lost the variant in between — a mapping failure, or a hand edit.
+  const d = auditInventory([stock('mig-ghost', 'TEE-XXL')]).find(
+    (x) => x.code === 'inventory-sku-not-in-plan',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+});
+
+test('inventory: two entries for one supply scope are refused', () => {
+  const d = auditInventory([
+    stock('mig-a', 'TEE-S'),
+    stock('mig-b', 'TEE-S'),
+  ]).find((x) => x.code === 'duplicate-inventory-scope');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /unique per \(sku, supplyChannel\)/);
+});
+
+test('inventory: one SKU stocked in two channels is not a duplicate scope', () => {
+  const found = codes(
+    auditInventory([
+      stock('mig-a', 'TEE-S', { supplyChannel: { typeId: 'channel', key: 'wh-gb' } }),
+      stock('mig-b', 'TEE-S', { supplyChannel: { typeId: 'channel', key: 'wh-eu' } }),
+      stock('mig-c', 'TEE-S'),
+    ]),
+  );
+  assert.ok(!found.includes('duplicate-inventory-scope'));
+});
+
+test('inventory: a hand-edited plan with a fractional quantity is refused', () => {
+  // The schema forbids it, but the gate reads the plan off disk — a plan that
+  // was edited by hand has been through no schema at all.
+  const d = auditInventory([stock('mig-a', 'TEE-S', { quantityOnStock: 2.5 })]).find(
+    (x) => x.code === 'inventory-quantity-invalid',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+});
+
+test('inventory: two entries whose keys collide are reported as a key clash', () => {
+  const d = auditInventory([
+    stock('mig-same', 'TEE-S'),
+    stock('mig-same', 'TEE-M'),
+  ]).find((x) => x.code === 'duplicate-resource-key');
+  assert.ok(d, 'the second import would overwrite the first');
+});
+
+test('inventory: a project-wide entry may share a key with its own variant', () => {
+  // InventoryEntry keys are unique among InventoryEntries, not project-wide —
+  // the same reasoning that took asset keys out of the shared map. The derived
+  // key for project-wide stock on SKU 'TEE-M' is `mig-TEE-M`, which is also
+  // the variant's key, and the API accepts both. Claiming them in one
+  // namespace blocked a load that would have succeeded, which is the worse of
+  // the two mistakes a gate can make: a false error costs trust in every
+  // other finding.
+  const { config: cfg, feedDir } = config('stores');
+  const { feed } = validateFeed(feedDir, SCHEMA, cfg);
+  const model = deriveProductTypes(feed, cfg);
+  const { plan } = buildPlan(feed, model, cfg);
+
+  const variantKeys = new Set(
+    [...indexVariants(plan).values()].flat().map((v) => v.key),
+  );
+  const shared = (plan.inventory ?? []).filter((e) => variantKeys.has(e.key));
+  assert.ok(shared.length > 0, 'the fixture must actually produce a shared key');
+
+  const found = codes(auditPlan(plan, cfg).diagnostics);
+  assert.ok(!found.includes('duplicate-resource-key'));
+  assert.ok(!found.includes('invalid-key'));
 });

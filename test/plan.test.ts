@@ -254,6 +254,7 @@ test('plan: the declared fixture maps cleanly', () => {
     'product-draft',
     'variant',
     'standalone-price',
+    'inventory',
     'product-selection',
     // Also a platform stage, but *last*: a store references product
     // selections, which the Import API creates asynchronously, so it cannot
@@ -265,6 +266,7 @@ test('plan: the declared fixture maps cleanly', () => {
   assert.deepEqual(r.plan.standalonePrices, []);
   assert.deepEqual(r.plan.variants, []);
   assert.deepEqual(r.plan.productSelections, []);
+  assert.deepEqual(r.plan.inventory, []);
   assert.deepEqual(r.plan.prerequisites.stores, []);
 });
 
@@ -1008,4 +1010,101 @@ test('selections: a permanent mode is recorded as an irreversible decision', () 
   );
   assert.ok(d, 'a permanent choice has to reach MODEL-REVIEW.md');
   assert.match(d.rationale, /fixed when it is created/);
+});
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+test('inventory: keys are derived from the identity pair, not supplied', () => {
+  // The Import API requires a key and the feed has none, so it has to be a
+  // function of (sku, supplyChannel). A counter would give the same stock a
+  // different key on every run, and the second run would add a duplicate
+  // entry for a scope that already has one.
+  const r = plan('stores');
+  const keys = (r.plan.inventory ?? []).map((e) => e.key).sort();
+  assert.deepEqual(keys, [
+    'mig-TEE-M',
+    'mig-TEE-M-warehouse-gb',
+    'mig-TEE-S-warehouse-gb',
+  ]);
+
+  const again = plan('stores');
+  assert.deepEqual(
+    (again.plan.inventory ?? []).map((e) => e.key).sort(),
+    keys,
+    'a second run must resolve to the same keys',
+  );
+});
+
+test('inventory: the channel reference is a key reference, and optional', () => {
+  const entries = plan('stores').plan.inventory ?? [];
+  const scoped = entries.find((e) => e.key === 'mig-TEE-S-warehouse-gb')!;
+  assert.deepEqual(scoped.supplyChannel, { typeId: 'channel', key: 'warehouse-gb' });
+  // Verbatim, like every other channel reference: a channel key belongs to
+  // the project, so it is never prefixed.
+  assert.ok(!scoped.supplyChannel!.key.startsWith('mig-'));
+
+  const projectWide = entries.find((e) => e.key === 'mig-TEE-M')!;
+  assert.equal(projectWide.supplyChannel, undefined);
+});
+
+test('inventory: optional fields are omitted rather than sent as undefined', () => {
+  const entries = plan('stores').plan.inventory ?? [];
+  const projectWide = entries.find((e) => e.key === 'mig-TEE-M')!;
+  assert.ok(!('restockableInDays' in projectWide));
+  assert.ok(!('expectedDelivery' in projectWide));
+  // Zero stock, by contrast, is a value and must survive.
+  const outOfStock = entries.find((e) => e.key === 'mig-TEE-M-warehouse-gb')!;
+  assert.equal(outOfStock.quantityOnStock, 0);
+  assert.equal(outOfStock.expectedDelivery, '2026-11-01T09:00:00.000Z');
+});
+
+test('inventory: the mapping is recorded as a decision', () => {
+  const d = plan('stores').plan.decisions.find((x) => x.subject === 'inventory');
+  assert.ok(d);
+  assert.match(d.outcome, /3 InventoryEntry resource\(s\), 2 channel-scoped/);
+  // The one thing a reviewer has to know: what quantityOnStock means.
+  assert.match(d.rationale, /availableQuantity is computed/);
+});
+
+test('inventory: two SKUs whose keys collide drop one, loudly', () => {
+  // Sanitising a SKU for a key is lossy: 'P1/A' and 'P1-A' both become
+  // 'P1-A'. Importing both would leave whichever arrived last holding the
+  // stock for both, with nothing anywhere saying so — so the second is
+  // dropped and the drop is recorded as a lossy decision.
+  const dir = mkdtempSync(join(tmpdir(), 'ct-inv-clash-'));
+  const feedDir = join(dir, 'feed');
+  mkdirSync(feedDir);
+  writeFileSync(
+    join(feedDir, 'catalog.ndjson'),
+    [
+      { _type: 'attributeDefinition', name: 'material', type: 'text', level: 'product' },
+      { _type: 'product', code: 'P1', name: { 'en-GB': 'One' }, attributes: { material: 'Cotton' } },
+      { _type: 'variant', sku: 'P1/A', product: 'P1' },
+      { _type: 'variant', sku: 'P1-A', product: 'P1' },
+      { _type: 'inventoryEntry', sku: 'P1/A', quantityOnStock: 3 },
+      { _type: 'inventoryEntry', sku: 'P1-A', quantityOnStock: 9 },
+    ]
+      .map((r) => JSON.stringify(r))
+      .join('\n'),
+  );
+
+  const config = JSON.parse(
+    readFileSync(resolve(ROOT, 'fixtures', 'declared-types', 'migration.config.json'), 'utf8'),
+  );
+  config.feed.dir = feedDir;
+  const configPath = join(dir, 'migration.config.json');
+  writeFileSync(configPath, JSON.stringify(config));
+
+  const loaded = loadConfig(configPath);
+  const { feed } = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  const model = deriveProductTypes(feed, loaded.config);
+  const { plan: built } = buildPlan(feed, model, loaded.config);
+
+  assert.equal(built.inventory.length, 1, 'the colliding entry is dropped, not overwritten');
+  const d = built.decisions.find((x) => x.subject.startsWith('inventoryEntry:'));
+  assert.ok(d);
+  assert.equal(d.lossy, true);
+  assert.match(d.rationale, /sanitise to the key/);
 });

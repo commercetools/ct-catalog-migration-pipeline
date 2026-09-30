@@ -141,6 +141,7 @@ with a `_type`:
 | `category` | hierarchy, slugs, order hints |
 | `attributeDefinition` | declared attribute types — the alternative is inference, which needs review |
 | `product`, `variant` | the catalog itself, with prices and assets |
+| `inventoryEntry` | stock per `(sku, supplyChannel)`; a record of its own, so stock can be regenerated without rebuilding the catalog |
 
 `fixtures/` doubles as documentation: each directory is a runnable example of
 one behaviour, including the deliberately broken ones.
@@ -155,7 +156,9 @@ one behaviour, including the deliberately broken ones.
 - **Claim zero information loss.** Every approximation is recorded as a
   decision, and `out/MODEL-REVIEW.md` is meant to be read before loading.
 - **Sync after cutover.** This is a one-time migration tool.
-- **Migrate customers, orders, carts, inventory or promotions.** Catalog only.
+- **Migrate customers, orders, carts or promotions.** Catalog and its stock
+  only. Stock is a one-time load to open on, not a sync: whatever owns
+  inventory afterwards will move these numbers within the hour.
 
 ## Scale
 

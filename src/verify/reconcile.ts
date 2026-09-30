@@ -30,6 +30,7 @@ import type {
   Attribute as ReadAttribute,
   AttributeDefinition as ReadAttributeDefinition,
   Category,
+  InventoryEntry,
   Product,
   ProductSelection,
   ProductType,
@@ -44,6 +45,7 @@ import type { PipelineConfig } from '../model/config.js';
 import type {
   Asset,
   Attribute,
+  InventoryImport,
   MigrationPlan,
   PlannedVariant,
   PriceDraftImport,
@@ -69,6 +71,8 @@ export interface ProjectSnapshot {
   variants: Map<string, Variant>;
   standalonePrices: Map<string, StandalonePrice>;
   productSelections: Map<string, ProductSelection>;
+  /** Stock, by the plan's derived key. */
+  inventory: Map<string, InventoryEntry>;
   /** Keyed verbatim, not prefixed — a store's key belongs to the project. */
   stores: Map<string, Store>;
   /** Category id → key, for resolving a product's category references. */
@@ -88,6 +92,7 @@ export interface VerifyResult {
     variants: number;
     prices: number;
     productSelections: number;
+    inventory: number;
     stores: number;
   };
   /** Planned resources found in the project, per kind. */
@@ -97,6 +102,7 @@ export interface VerifyResult {
     products: number;
     prices: number;
     productSelections: number;
+    inventory: number;
     stores: number;
   };
 }
@@ -113,6 +119,7 @@ export function reconcile(
     products: 0,
     prices: 0,
     productSelections: 0,
+    inventory: 0,
     stores: 0,
   };
   // Under Modular the planned variants are a separate collection, so the
@@ -125,6 +132,7 @@ export function reconcile(
     variants: 0,
     prices: 0,
     productSelections: (plan.productSelections ?? []).length,
+    inventory: (plan.inventory ?? []).length,
     stores: (plan.prerequisites?.stores ?? []).length,
   };
 
@@ -190,6 +198,24 @@ export function reconcile(
     }
     found.productSelections++;
     compareProductSelection(planned, actual, diagnostics);
+  }
+
+  for (const planned of plan.inventory ?? []) {
+    const actual = snapshot.inventory.get(planned.key);
+    if (!actual) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'inventory-entry-missing',
+        message:
+          `Inventory entry '${planned.key}' for SKU '${planned.sku}' is not in the ` +
+          'project. Stock is the one thing a storefront reads before it will sell ' +
+          'anything, so a variant that landed without its entry is a product nobody can ' +
+          'buy — and the load reports the request as accepted either way.',
+      });
+      continue;
+    }
+    found.inventory++;
+    compareInventoryEntry(planned, actual, diagnostics);
   }
 
   for (const planned of plan.prerequisites?.stores ?? []) {
@@ -647,6 +673,73 @@ function compareAssets(
  * through a separate paginated endpoint per selection — and a count mismatch
  * is enough to say "go look", which is what a verifier is for.
  */
+/**
+ * Stock, by key.
+ *
+ * `quantityOnStock` is compared and `availableQuantity` deliberately is not:
+ * the platform computes the latter as stock minus reservations, so a cart
+ * holding two of something makes them differ legitimately. Comparing the
+ * computed field would report every reserved item as a migration defect.
+ *
+ * The comparison is also *eventually* consistent by the platform's own
+ * account — an entry can lag its own writes by up to 10 seconds — so a
+ * mismatch immediately after a load is worth re-reading before believing.
+ * That is said in the diagnostic rather than slept away here, because a sleep
+ * in a verification stage is a guess dressed as a fix.
+ */
+function compareInventoryEntry(
+  planned: InventoryImport,
+  actual: InventoryEntry,
+  diagnostics: Diagnostic[],
+): void {
+  if (actual.quantityOnStock !== planned.quantityOnStock) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'inventory-quantity-differs',
+      message:
+        `Inventory entry '${planned.key}' (SKU '${planned.sku}') holds ` +
+        `${actual.quantityOnStock} in the project and ${planned.quantityOnStock} in the ` +
+        'plan. InventoryEntry is eventually consistent for up to 10 seconds after a ' +
+        'write, so re-read before treating a fresh load as wrong; a persistent ' +
+        'difference means something else is writing stock.',
+    });
+  }
+
+  const wantChannel = planned.supplyChannel?.key;
+  const haveChannel = actual.supplyChannel?.id;
+  if (wantChannel === undefined && haveChannel !== undefined) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'inventory-supply-channel-differs',
+      message:
+        `Inventory entry '${planned.key}' is scoped to a supply channel in the project ` +
+        'and project-wide in the plan. The two are different stock, not two views of it: ' +
+        'a channel-scoped entry only counts for shoppers in a store that lists it.',
+    });
+  } else if (wantChannel !== undefined && haveChannel === undefined) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'inventory-supply-channel-differs',
+      message:
+        `Inventory entry '${planned.key}' is project-wide in the project and scoped to ` +
+        `channel '${wantChannel}' in the plan. An entry that lost its channel counts ` +
+        'everywhere, which is the more dangerous direction of the two.',
+    });
+  }
+
+  if (planned.restockableInDays !== undefined &&
+      actual.restockableInDays !== planned.restockableInDays) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'inventory-restockable-differs',
+      message:
+        `Inventory entry '${planned.key}' restocks in ${actual.restockableInDays ?? 'no'} ` +
+        `day(s) in the project and ${planned.restockableInDays} in the plan. Informational ` +
+        'for availability messaging rather than something that blocks a sale.',
+    });
+  }
+}
+
 function compareProductSelection(
   planned: ProductSelectionImport,
   actual: ProductSelection,
@@ -740,8 +833,9 @@ function compareStore(
       code: 'store-supply-channels-differ',
       message:
         `Store '${planned.key}' has ${haveSupply} supply channel(s); the plan wants ` +
-        `${wantSupply}. A warning, not an error: this pipeline imports no inventory, so ` +
-        'the supply wiring affects nothing it loaded.',
+        `${wantSupply}. A warning rather than an error: the wiring only matters for the ` +
+        'SKUs stocked in those channels, and the inventory entries are reconciled ' +
+        'separately and by key.',
     });
   }
 

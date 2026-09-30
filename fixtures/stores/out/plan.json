@@ -7,6 +7,7 @@
     "product-draft",
     "variant",
     "standalone-price",
+    "inventory",
     "product-selection",
     "store"
   ],
@@ -160,6 +161,33 @@
       ]
     }
   ],
+  "inventory": [
+    {
+      "key": "mig-TEE-S-warehouse-gb",
+      "sku": "TEE-S",
+      "quantityOnStock": 42,
+      "supplyChannel": {
+        "typeId": "channel",
+        "key": "warehouse-gb"
+      },
+      "restockableInDays": 3
+    },
+    {
+      "key": "mig-TEE-M-warehouse-gb",
+      "sku": "TEE-M",
+      "quantityOnStock": 0,
+      "supplyChannel": {
+        "typeId": "channel",
+        "key": "warehouse-gb"
+      },
+      "expectedDelivery": "2026-11-01T09:00:00.000Z"
+    },
+    {
+      "key": "mig-TEE-M",
+      "sku": "TEE-M",
+      "quantityOnStock": 7
+    }
+  ],
   "prerequisites": {
     "channels": [
       {
@@ -178,6 +206,15 @@
         ],
         "name": {
           "en-GB": "Warehouse GB"
+        }
+      },
+      {
+        "key": "warehouse-eu",
+        "roles": [
+          "InventorySupply"
+        ],
+        "name": {
+          "en-GB": "Warehouse EU"
         }
       }
     ],
@@ -198,7 +235,8 @@
           "retail-uk"
         ],
         "supplyChannels": [
-          "warehouse-gb"
+          "warehouse-gb",
+          "warehouse-eu"
         ],
         "productSelections": [
           {
@@ -210,7 +248,7 @@
     ]
   },
   "provenance": {
-    "feedDigest": "sha256:f9aeaea0fb54c8d71e2ed9fb1eadbf5c6839c1fd02a62bee652950593982030a",
-    "generatedAt": "2026-09-24T03:10:00.759Z"
+    "feedDigest": "sha256:ca43cdf1c451c5544fa6e2944919029109ad967b8f966d10b2d9aa000b4d9a35",
+    "generatedAt": "2026-09-28T07:32:37.985Z"
   }
 }

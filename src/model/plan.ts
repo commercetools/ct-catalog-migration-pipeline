@@ -32,6 +32,7 @@ import type {
   CategoryImport,
   CategoryKeyReference,
   Image,
+  InventoryImport,
   LocalizedString,
   Money,
   PriceDraftImport,
@@ -62,6 +63,7 @@ export type {
   CategoryImport,
   CategoryKeyReference,
   Image,
+  InventoryImport,
   LocalizedString,
   Money,
   PriceDraftImport,
@@ -171,6 +173,13 @@ export const LOAD_ORDER = [
   'product-draft',
   'variant',
   'standalone-price',
+  // After the variants whose SKUs it names, for the same reason as
+  // standalone-price and with the same caveat: the Import API does not check
+  // that the SKU exists, so this ordering prevents an orphan nobody notices
+  // rather than an error. It must come after `channel`, though, and that one
+  // is not soft — an entry naming a supply channel that does not exist yet
+  // sits unresolved for 48 hours and then expires, taking the stock with it.
+  'inventory',
   'product-selection',
   // Last, and after the Import stages rather than with the other platform
   // prerequisites. A store's `productSelections` reference selections by key,
@@ -204,6 +213,7 @@ export const IMPORT_RESOURCE_TYPE: Record<LoadStage, string | undefined> = {
   'product-draft': 'product-draft',
   variant: 'variant',
   'standalone-price': 'standalone-price',
+  inventory: 'inventory',
   'product-selection': 'product-selection',
   store: undefined,
 };
@@ -305,6 +315,18 @@ export interface MigrationPlan {
    * would silently drop every assignment the others carried.
    */
   productSelections: ProductSelectionImport[];
+  /**
+   * Stock, as `InventoryImport` resources — one per `(sku, supplyChannel)`.
+   *
+   * Empty when the feed declares none, which is the normal case for a
+   * catalog-only migration and is not a finding: a project can be loaded with
+   * stock arriving later from whatever system owns it.
+   *
+   * The key is derived from the identity pair rather than supplied, so a
+   * second run over refreshed stock updates the same entries instead of
+   * creating a parallel set.
+   */
+  inventory: InventoryImport[];
   decisions: MappingDecision[];
   /**
    * What this plan was built from.

@@ -295,10 +295,11 @@ export interface FeedProductSelection {
  * - **`productSelections` decide which products exist.** Empty means all of
  *   them.
  *
- * `supplyChannels` is carried for fidelity, and is the one field here this
- * pipeline cannot follow through on: it imports no inventory, so the channels
- * are created and wired but no `InventoryEntry` ever arrives. `validate` says
- * so rather than letting a correct-looking store imply migrated stock.
+ * `supplyChannels` names the channels stock is held in. They are only wiring:
+ * the stock itself arrives as `inventoryEntry` records. A store listing a
+ * supply channel that no entry ever references is a store whose shelves are
+ * configured and empty, so `validate` says so rather than letting a
+ * correct-looking store imply migrated stock.
  *
  * Deliberately absent: `storefront` URLs, `custom`. Neither is catalog data,
  * and neither can be validated or verified here.
@@ -326,6 +327,47 @@ export interface FeedStore {
   productSelections?: { code: string; active?: boolean }[];
 }
 
+/**
+ * Stock for one SKU, optionally in one supply channel.
+ *
+ * **A record of its own rather than a field on `variant`**, which is the one
+ * design choice here worth defending. Prices are authored on the variant, so
+ * the obvious move is to author stock there too. Two things argue against it:
+ * stock is refreshed on a cadence the catalog is not — often daily against a
+ * catalog that changes monthly — and in most exports it arrives in a different
+ * file from the product data. Keeping it separate means a feed can be
+ * regenerated for stock alone, without rebuilding and re-validating every
+ * variant line to change one number.
+ *
+ * **Identity is the pair `(sku, supplyChannel)`**, which is what the API
+ * treats as unique, and the key is derived from it. Two entries for the same
+ * pair are a contradiction rather than an update, so `validate` refuses them:
+ * the second would silently win at load time.
+ *
+ * The Import API does not check that `sku` matches a variant — an entry for a
+ * SKU that does not exist imports perfectly happily and becomes stock against
+ * nothing. `validate` checks it instead.
+ */
+export interface FeedInventoryEntry {
+  _type: 'inventoryEntry';
+  /** Must match a declared variant's SKU. */
+  sku: string;
+  /** Overall stock including reserved — not `availableQuantity`, which is computed. */
+  quantityOnStock: number;
+  /**
+   * Code of a declared channel with the `InventorySupply` role. Absent means
+   * project-wide stock for the SKU.
+   *
+   * A reference to a channel that does not exist leaves the Import Operation
+   * `unresolved` for 48 hours and then expires — the same trap as a price
+   * scoped to a missing channel — so the channel has to be declared.
+   */
+  supplyChannel?: string;
+  restockableInDays?: number;
+  /** ISO-8601 instant of the next restock. */
+  expectedDelivery?: string;
+}
+
 export type FeedRecord =
   | FeedCategory
   | FeedAttributeDefinition
@@ -334,7 +376,8 @@ export type FeedRecord =
   | FeedChannel
   | FeedCustomerGroup
   | FeedProductSelection
-  | FeedStore;
+  | FeedStore
+  | FeedInventoryEntry;
 
 export const FEED_TYPES = [
   'channel',
@@ -345,7 +388,18 @@ export const FEED_TYPES = [
   'attributeDefinition',
   'product',
   'variant',
+  'inventoryEntry',
 ] as const;
+
+/**
+ * Identity of an inventory entry: SKU, plus supply channel when there is one.
+ *
+ * One function so the feed map, the duplicate check, the derived key and the
+ * verify reconciliation cannot disagree about what "the same entry" means.
+ */
+export function inventoryIdentity(sku: string, supplyChannel?: string): string {
+  return supplyChannel ? `${sku}@${supplyChannel}` : sku;
+}
 
 /**
  * A feed after loading and integrity checking.
@@ -390,6 +444,8 @@ export interface CatalogFeed {
   variants: Map<string, FeedVariant>;
   /** product code → SKUs, in feed order. */
   variantsByProduct: Map<string, string[]>;
+  /** Keyed by `inventoryIdentity`, i.e. SKU plus supply channel where present. */
+  inventoryEntries: Map<string, FeedInventoryEntry>;
   /** Where each record came from, for diagnostics that name a file and line. */
   origin: Map<string, { file: string; line: number }>;
 }
@@ -405,6 +461,7 @@ export function emptyFeed(): CatalogFeed {
     products: new Map(),
     variants: new Map(),
     variantsByProduct: new Map(),
+    inventoryEntries: new Map(),
     origin: new Map(),
   };
 }

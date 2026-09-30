@@ -14,6 +14,7 @@
 
 import type {
   Category,
+  InventoryEntry,
   Product,
   ProductSelection,
   ProductType,
@@ -183,6 +184,21 @@ export async function fetchSnapshot(
   );
   if (!productSelections.readable) unreadable.push('productSelections');
 
+  const inventory = await fetchByKey<InventoryEntry>(
+    'inventory entry(ies)',
+    (plan.inventory ?? []).map((entry) => entry.key),
+    async (where) =>
+      (
+        await clients.platform
+          .inventory()
+          .get({ queryArgs: { where, limit: KEYS_PER_QUERY } })
+          .execute()
+      ).body.results,
+    (entry) => entry.key,
+    diagnostics,
+  );
+  if (!inventory.readable) unreadable.push('inventory');
+
   // Stores are keyed verbatim, not prefixed, so the predicate is built from
   // the prerequisite list rather than from a prefixed plan collection.
   const stores = await fetchByKey<Store>(
@@ -221,6 +237,7 @@ export async function fetchSnapshot(
       variants: variants.byKey,
       standalonePrices: standalonePrices.byKey,
       productSelections: productSelections.byKey,
+      inventory: inventory.byKey,
       stores: stores.byKey,
       categoryKeyById,
       productTypeKeyById,
