@@ -149,10 +149,11 @@ export interface DerivedModel {
  * including its variants, which is what a migration wants. `ProductImport`
  * updates an existing one.
  *
- * `channel` and `customer-group` come first and are **not Import API stages** —
- * the Import API cannot create either, so they go through the platform HTTP
- * API. They lead because prices reference them, and a price whose channel does
- * not exist yet becomes an operation that expires unresolved after 48 hours.
+ * `channel`, `customer-group` and `tax-category` come first and are **not
+ * Import API stages** — the Import API cannot create any of them, so they go
+ * through the platform HTTP API. They lead because prices and products
+ * reference them, and a reference to something that does not exist yet becomes
+ * an operation that expires unresolved after 48 hours.
  *
  * `variant` is the Modular stage and is empty under Classic, where variants
  * travel inside the ProductDraftImport instead. It comes after `product-draft`
@@ -168,6 +169,10 @@ export interface DerivedModel {
 export const LOAD_ORDER = [
   'channel',
   'customer-group',
+  // Before `product-draft`, which references it by key. An unresolved
+  // taxCategory holds up the *whole product*, not one field of it: the draft
+  // sits unresolved and expires after 48 hours, variants and prices with it.
+  'tax-category',
   'product-type',
   'category',
   'product-draft',
@@ -197,8 +202,8 @@ export type LoadStage = (typeof LOAD_ORDER)[number];
  * The Import API resource behind each stage — and the two stages that have
  * none.
  *
- * `channel` and `customer-group` are **created through the platform HTTP API**,
- * because the Import API has no resource for either. They are still load
+ * `channel`, `customer-group` and `tax-category` are **created through the
+ * platform HTTP API**, because the Import API has no resource for any of them. They are still load
  * stages, and first in order, because prices reference them and an unresolved
  * reference expires after 48 hours. But none of the Import API machinery
  * applies to them: no containers, no 20-per-request batching, no Import
@@ -208,6 +213,7 @@ export type LoadStage = (typeof LOAD_ORDER)[number];
 export const IMPORT_RESOURCE_TYPE: Record<LoadStage, string | undefined> = {
   channel: undefined,
   'customer-group': undefined,
+  'tax-category': undefined,
   'product-type': 'product-type',
   category: 'category',
   'product-draft': 'product-draft',
@@ -226,14 +232,16 @@ export function importStages(order: readonly LoadStage[]): LoadStage[] {
 /**
  * When each platform stage runs relative to the Import API stages.
  *
- * Not all of them can go first. Channels and customer groups **must**, because
- * prices reference them and an unresolved price expires. A store **cannot**,
+ * Not all of them can go first. Channels, customer groups and tax categories
+ * **must**, because prices and products reference them and an unresolved
+ * reference expires. A store **cannot**,
  * because it references product selections that the Import API creates — so it
  * runs after, once those operations have resolved.
  */
 export const PLATFORM_PHASE: Partial<Record<LoadStage, 'before' | 'after'>> = {
   channel: 'before',
   'customer-group': 'before',
+  'tax-category': 'before',
   store: 'after',
 };
 
@@ -250,6 +258,23 @@ export function platformStages(
   return order.filter(
     (stage) => IMPORT_RESOURCE_TYPE[stage] === undefined && PLATFORM_PHASE[stage] === phase,
   );
+}
+
+/** A tax category as `load` would create it: TaxCategoryDraft, keyed verbatim. */
+export interface PlannedTaxCategory {
+  key: string;
+  name: string;
+  description?: string;
+  rates: PlannedTaxRate[];
+}
+
+/** TaxRateDraft, minus sub-rates and rounding target, which the feed cannot express. */
+export interface PlannedTaxRate {
+  name: string;
+  amount: number;
+  includedInPrice: boolean;
+  country: string;
+  state?: string;
 }
 
 export interface MigrationPlan {
@@ -291,6 +316,13 @@ export interface MigrationPlan {
   prerequisites: {
     channels: { key: string; roles: string[]; name?: LocalizedString }[];
     customerGroups: { key: string; name: string }[];
+    /**
+     * Created if absent and **never modified** — the rates here are what a
+     * missing category is created with, not what an existing one is changed
+     * to. Optional because a plan written before tax categories existed has no
+     * field; every reader treats absent as empty.
+     */
+    taxCategories?: PlannedTaxCategory[];
     /**
      * Created through the platform API like the two above, but **after** the
      * import stages, because a store references product selections that the

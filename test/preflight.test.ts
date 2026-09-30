@@ -309,6 +309,8 @@ interface FakeOptions {
   /** Channels the project holds, as the API would return them. */
   channels?: { key: string; roles: string[] }[] | Error;
   customerGroups?: { key: string }[] | Error;
+  /** Tax categories the project holds. Returned for any predicate, like the real key-or-name read. */
+  taxCategories?: { id?: string; key?: string; name: string; rates?: unknown[] }[] | Error;
   /** Thrown instead of returning the project. */
   projectError?: unknown;
   /** Thrown on the first update attempt. */
@@ -410,6 +412,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     // Prerequisites the pipeline cannot create, so it can only verify them.
     channels: () => results(options.channels),
     customerGroups: () => results(options.customerGroups),
+    taxCategories: () => results(options.taxCategories),
     productSelections: () => results(options.existingSelections),
     stores: () => results(options.existingStores),
   };
@@ -1334,4 +1337,105 @@ test('stores: a plan with neither stores nor selections reads nothing', async ()
   const r = await preflight(clients, config(), plan());
   assert.ok(!r.diagnostics.some((x) => x.code.startsWith('store')));
   assert.ok(!r.diagnostics.some((x) => x.code.startsWith('product-selection')));
+});
+
+// ---------------------------------------------------------------------------
+// Tax categories
+// ---------------------------------------------------------------------------
+
+function planWithTax() {
+  const base = plan();
+  return {
+    ...base,
+    prerequisites: {
+      channels: [],
+      customerGroups: [],
+      stores: [],
+      taxCategories: [
+        {
+          key: 'standard',
+          name: 'Standard',
+          rates: [
+            { name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB' },
+            { name: 'VAT', amount: 0.23, includedInPrice: true, country: 'IE' },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+test('tax: a category the project lacks is advance notice, with the rate count', async () => {
+  const { clients } = fakeClients({ taxCategories: [] });
+  const r = await preflight(clients, config(), planWithTax());
+  const d = r.diagnostics.find((x) => x.code === 'tax-category-will-be-created');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning', '`load` creates it, so blocking would refuse the fix');
+  assert.match(d.message, /as 'Standard' with 2 rate\(s\)/);
+  assert.match(d.message, /whoever owns tax/);
+});
+
+test('tax: another category already holding the name blocks, because the create would fail', async () => {
+  // Names are unique per project as well as keys. The key query alone would
+  // call this "will be created", and the load would then be refused.
+  const { clients } = fakeClients({
+    taxCategories: [{ id: 'abc', key: 'std-vat', name: 'Standard', rates: [] }],
+  });
+  const r = await preflight(clients, config(), planWithTax());
+  const d = r.diagnostics.find((x) => x.code === 'tax-category-name-taken');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /under key 'std-vat'/);
+  assert.ok(!r.diagnostics.some((x) => x.code === 'tax-category-will-be-created'));
+});
+
+test('tax: an existing category with other rates is named, not changed', async () => {
+  const { clients, recorded } = fakeClients({
+    taxCategories: [
+      {
+        key: 'standard',
+        name: 'Standard',
+        rates: [
+          { country: 'GB', amount: 0.2, includedInPrice: false },
+          { country: 'FR', amount: 0.2, includedInPrice: true },
+        ],
+      },
+    ],
+  });
+  const r = await preflight(clients, config(), planWithTax());
+  const d = r.diagnostics.find((x) => x.code === 'tax-category-rates-differ');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /GB is added in the project, included in the feed/);
+  assert.match(d.message, /IE planned, absent/);
+  assert.match(d.message, /FR present, not planned/);
+  assert.match(d.message, /Not modified/);
+  assert.deepEqual(recorded.updates, [], 'preflight does not touch tax categories');
+});
+
+test('tax: an existing category with the same rates reports nothing', async () => {
+  const { clients } = fakeClients({
+    taxCategories: [
+      {
+        key: 'standard',
+        name: 'Standard',
+        rates: [
+          { country: 'GB', amount: 0.2, includedInPrice: true },
+          { country: 'IE', amount: 0.23, includedInPrice: true },
+        ],
+      },
+    ],
+  });
+  const r = await preflight(clients, config(), planWithTax());
+  assert.ok(!r.diagnostics.some((x) => x.code.startsWith('tax-category-')));
+});
+
+test('tax: an unreadable list is an error naming the read scope', async () => {
+  const { clients } = fakeClients({ taxCategories: httpError(403, 'Insufficient scope') });
+  const r = await preflight(clients, config(), planWithTax());
+  const d = r.diagnostics.find(
+    (x) => x.code === 'prerequisites-unreadable' && /tax categor/.test(x.message),
+  );
+  assert.ok(d);
+  assert.match(d.message, /view_tax_categories, which view_products also grants/);
 });

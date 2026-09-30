@@ -136,6 +136,7 @@ with a `_type`:
 | `_type` | Notes |
 | :--- | :--- |
 | `channel`, `customerGroup` | prerequisites; keys used **verbatim**, created by `load` through the platform API |
+| `taxCategory` | a prerequisite like `channel`, carrying its rates; created if absent and **never modified** if present, so an existing category keeps the project's rates |
 | `productSelection` | an assortment; importable, so its key is prefixed |
 | `store` | a shopping context; key verbatim, created **last** because it references selections |
 | `category` | hierarchy, slugs, order hints |
@@ -150,6 +151,9 @@ one behaviour, including the deliberately broken ones.
 
 - **Parse your source.** That is the adapter's job, and the reason the contract
   exists.
+- **Change a tax category that exists.** Its rates also tax shipping and belong
+  to whoever owns tax. `preflight` names any difference from the feed; `load`
+  only creates what is missing.
 - **Guess at a decision that cannot be undone.** Attribute constraints, catalog
   model, price mode and product-selection modes are all permanent; the pipeline
   refuses an absent value rather than defaulting one.

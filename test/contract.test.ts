@@ -51,9 +51,12 @@ function codes(diagnostics: { code: string }[]): string[] {
   return [...new Set(diagnostics.map((d) => d.code))].sort();
 }
 
-test('declared-types: a well-formed feed produces no diagnostics at all', () => {
+test('declared-types: a well-formed feed reports only that it carries no tax', () => {
+  // The one warning a feed with no taxCategory records should carry: under the
+  // default Platform tax mode its products cannot be taxed at checkout, and
+  // nothing downstream would say so. Everything else must stay silent.
   const r = run('declared-types');
-  assert.deepEqual(codes(r.diagnostics), []);
+  assert.deepEqual(codes(r.diagnostics), ['products-without-tax-category']);
   assert.equal(r.rejected, 0);
   assert.equal(hasErrors(r.diagnostics), false);
   assert.equal(r.feed.categories.size, 4);
@@ -72,7 +75,7 @@ test('declared-types: the single-variant product needs no axes', () => {
 
 test('inferred-types: a feed with no declarations is still valid', () => {
   const r = run('inferred-types');
-  assert.deepEqual(codes(r.diagnostics), []);
+  assert.deepEqual(codes(r.diagnostics), ['products-without-tax-category']);
   assert.equal(r.feed.attributeDefinitions.size, 0);
   // Undeclared-attribute checks must not fire when there is nothing declared:
   // inference derives the definitions from exactly these values.
@@ -124,6 +127,7 @@ test('broken-integrity: every catalog-wide check fires', () => {
     'multiple-master-variants',
     'orphan-variant',
     'product-without-variants',
+    'products-without-tax-category',
   ]);
 });
 
@@ -387,9 +391,13 @@ test('market: a declared currency with no digit count never reaches validate', (
   );
 });
 
-test('market: a fully described feed reports nothing', () => {
+test('market: a fully described feed reports nothing about its market', () => {
   const r = validateWith(() => {});
-  assert.deepEqual(codes(r.diagnostics), [], 'the check must not fire on a clean feed');
+  assert.deepEqual(
+    codes(r.diagnostics),
+    ['products-without-tax-category'],
+    'the check must not fire on a clean feed',
+  );
 });
 
 test('market: an unconfigured currency is not reported twice over', () => {
@@ -625,7 +633,7 @@ function channelFeed(mutate: (rows: Record<string, unknown>[]) => void) {
 
 test('channels: a declared channel and customer group validate clean', () => {
   const r = run('channels');
-  assert.deepEqual(codes(r.diagnostics), []);
+  assert.deepEqual(codes(r.diagnostics), ['products-without-tax-category']);
   assert.equal(r.feed.channels.get('retail-uk')?.roles[0], 'ProductDistribution');
   assert.equal(r.feed.customerGroups.get('trade')?.name, 'Trade');
 });
@@ -1004,4 +1012,143 @@ test('inventory: zero stock is a legitimate figure, not a missing one', () => {
 test('inventory: a negative quantity is refused by the schema', () => {
   const r = inventoryFeed([{ _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: -1 }]);
   assert.ok(codes(r.diagnostics).includes('schema-violation'));
+});
+
+// ---------------------------------------------------------------------------
+// Tax categories
+//
+// A prerequisite like a channel, with one difference that makes the reference
+// check an error: an unresolved taxCategory holds up the *whole product* draft,
+// not one price. Everything that depends on the cart tax mode — which the feed
+// cannot know — is a warning.
+// ---------------------------------------------------------------------------
+
+const GB_VAT = {
+  _type: 'taxCategory',
+  code: 'standard',
+  name: 'Standard',
+  rates: [{ country: 'GB', amount: 0.2, includedInPrice: true, name: 'VAT' }],
+};
+
+/** The channels fixture — one product, GB prices — with tax records applied. */
+function taxFeed(mutate: (rows: Record<string, unknown>[]) => void) {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'standard';
+    rows.push(structuredClone(GB_VAT));
+    mutate(rows);
+  });
+  return validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+}
+
+test('tax: a declared category on every product with a rate per country is clean', () => {
+  const r = taxFeed(() => {});
+  assert.deepEqual(codes(r.diagnostics), []);
+  assert.equal(r.feed.taxCategories.get('standard')?.rates?.[0].amount, 0.2);
+});
+
+test('tax: a product referencing an undeclared category is refused, with a line', () => {
+  const r = taxFeed((rows) => {
+    rows.find((x) => x.code === 'standard' && x._type === 'taxCategory')!.code = 'reduced';
+  });
+  const d = r.diagnostics.find((x) => x.code === 'undeclared-tax-category');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /held up whole/);
+  assert.ok((d.line ?? 0) > 0, 'names the product line an adapter author can fix');
+});
+
+test('tax: two rates for one country and state are refused', () => {
+  const r = taxFeed((rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] };
+    cat.rates.push({ country: 'GB', amount: 0.05, includedInPrice: true, name: 'Reduced' });
+  });
+  const d = r.diagnostics.find((x) => x.code === 'duplicate-tax-rate-scope');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+});
+
+test('tax: the same country with and without a state is two scopes, not a duplicate', () => {
+  const r = taxFeed((rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] };
+    cat.rates.push({ country: 'GB', state: 'Scotland', amount: 0.2, includedInPrice: true });
+  });
+  assert.ok(!codes(r.diagnostics).includes('duplicate-tax-rate-scope'));
+});
+
+test('tax: a percentage where a fraction belongs is refused by the schema', () => {
+  // `20` copied from a source that stores percentages is a 2000% rate that no
+  // later stage would question.
+  const r = taxFeed((rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: { amount: number }[] };
+    cat.rates[0].amount = 20;
+  });
+  assert.ok(codes(r.diagnostics).includes('schema-violation'));
+});
+
+test('tax: includedInPrice has no default and must be stated', () => {
+  const r = taxFeed((rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as {
+      rates: Record<string, unknown>[];
+    };
+    delete cat.rates[0].includedInPrice;
+  });
+  assert.ok(codes(r.diagnostics).includes('schema-violation'));
+});
+
+test('tax: some products taxed and some not names the count and the first', () => {
+  const r = taxFeed((rows) => {
+    rows.push({ _type: 'product', code: 'CAP', name: { 'en-GB': 'Cap' }, attributes: { material: 'Wool' } });
+    rows.push({ _type: 'variant', sku: 'CAP-1', product: 'CAP' });
+  });
+  const d = r.diagnostics.find((x) => x.code === 'products-without-tax-category');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /1 of 2 product\(s\) have no tax category — first 'CAP'/);
+});
+
+test('tax: no tax category anywhere says so once, not once per product', () => {
+  const loaded = channelFeed(() => {});
+  const r = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  const found = r.diagnostics.filter((x) => x.code === 'products-without-tax-category');
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /No tax category is declared/);
+  assert.match(found[0].message, /External or ExternalAmount/);
+});
+
+test('tax: a category with no rates is a warning, because External mode needs none', () => {
+  const r = taxFeed((rows) => {
+    (rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] }).rates = [];
+  });
+  const d = r.diagnostics.find((x) => x.code === 'tax-category-without-rates');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+});
+
+test('tax: a country priced or sold into with no rate is named', () => {
+  const r = taxFeed((rows) => {
+    const variant = rows.find((x) => x._type === 'variant') as { prices: unknown[] };
+    variant.prices.push({ currency: 'EUR', amount: '21.99', country: 'IE' });
+    rows.push({ _type: 'store', code: 'eu', countries: ['DE'] });
+  });
+  const d = r.diagnostics.find((x) => x.code === 'tax-rate-country-missing');
+  assert.ok(d);
+  assert.match(d.message, /no rate for \[DE, IE\]/, 'price countries and store countries both count');
+});
+
+test('tax: a category no product uses is a warning', () => {
+  const r = taxFeed((rows) => {
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+  });
+  const d = r.diagnostics.find((x) => x.code === 'tax-category-never-referenced');
+  assert.ok(d);
+  assert.match(d.message, /'zero'/);
+  // Unused is the finding; its lack of rates would be noise on top.
+  assert.ok(!codes(r.diagnostics).includes('tax-category-without-rates'));
+});
+
+test('tax: a category declared twice is a duplicate record', () => {
+  const r = taxFeed((rows) => {
+    rows.push(structuredClone(GB_VAT));
+  });
+  assert.ok(codes(r.diagnostics).includes('duplicate-record'));
 });

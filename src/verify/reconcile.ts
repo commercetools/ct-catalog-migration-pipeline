@@ -37,6 +37,7 @@ import type {
   ProductVariant,
   StandalonePrice,
   Store,
+  TaxCategory,
   TypedMoney,
   Variant,
 } from '@commercetools/platform-sdk';
@@ -47,6 +48,7 @@ import type {
   Attribute,
   InventoryImport,
   MigrationPlan,
+  PlannedTaxCategory,
   PlannedVariant,
   PriceDraftImport,
   ProductDraftImport,
@@ -81,6 +83,13 @@ export interface ProjectSnapshot {
   productTypeKeyById: Map<string, string>;
   /** ProductSelection id → key, for resolving a store's selection references. */
   productSelectionKeyById: Map<string, string>;
+  /**
+   * Keyed verbatim. Optional so a snapshot built before tax categories existed
+   * — every test fixture, for one — still type-checks; absent reads as empty.
+   */
+  taxCategories?: Map<string, TaxCategory>;
+  /** TaxCategory id → key, for resolving a product's taxCategory reference. */
+  taxCategoryKeyById?: Map<string, string>;
 }
 
 export interface VerifyResult {
@@ -94,6 +103,7 @@ export interface VerifyResult {
     productSelections: number;
     inventory: number;
     stores: number;
+    taxCategories: number;
   };
   /** Planned resources found in the project, per kind. */
   found: {
@@ -104,6 +114,7 @@ export interface VerifyResult {
     productSelections: number;
     inventory: number;
     stores: number;
+    taxCategories: number;
   };
 }
 
@@ -121,6 +132,7 @@ export function reconcile(
     productSelections: 0,
     inventory: 0,
     stores: 0,
+    taxCategories: 0,
   };
   // Under Modular the planned variants are a separate collection, so the
   // comparison reads them through the index rather than off the product.
@@ -134,7 +146,27 @@ export function reconcile(
     productSelections: (plan.productSelections ?? []).length,
     inventory: (plan.inventory ?? []).length,
     stores: (plan.prerequisites?.stores ?? []).length,
+    taxCategories: (plan.prerequisites?.taxCategories ?? []).length,
   };
+
+  // First, because a missing tax category explains every product that is
+  // missing behind it: a draft whose taxCategory did not resolve never lands.
+  for (const planned of plan.prerequisites?.taxCategories ?? []) {
+    const actual = snapshot.taxCategories?.get(planned.key);
+    if (!actual) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'tax-category-missing',
+        message:
+          `Tax category '${planned.key}' is not in the project. Every product referencing ` +
+          'it was held up unresolved and expires after 48 hours, so any of those reported ' +
+          'missing below are missing because of this.',
+      });
+      continue;
+    }
+    found.taxCategories++;
+    compareTaxCategory(planned, actual, diagnostics);
+  }
 
   for (const planned of plan.productTypes) {
     const actual = snapshot.productTypes.get(planned.key);
@@ -445,7 +477,74 @@ function compareProduct(
     });
   }
 
+  // Resolved through the snapshot's map, which holds only the planned
+  // categories — so a product taxed by something outside the plan reads as an
+  // id rather than silently matching.
+  const plannedTax = planned.taxCategory?.key;
+  const actualTax = actual.taxCategory
+    ? (snapshot.taxCategoryKeyById?.get(actual.taxCategory.id) ?? `id ${actual.taxCategory.id}`)
+    : undefined;
+  if (plannedTax !== actualTax) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'product-tax-category-differs',
+      message:
+        `Product '${planned.key}': tax category is ` +
+        `${actualTax ? `'${actualTax}'` : 'unset'} in the project, the plan says ` +
+        `${plannedTax ? `'${plannedTax}'` : 'none'}. Under Platform tax mode the cart ` +
+        "takes its rate from the product's category, so this is what a shopper is " +
+        'charged — or, unset, whether they can be charged at all.',
+    });
+  }
+
   compareVariants(planned, plannedVariants, actual, snapshot, diagnostics);
+}
+
+/**
+ * An existing category's rates against the plan's. A warning, not an error:
+ * `load` never modifies a tax category, so a difference means the project's
+ * category predates the migration and its rates are the tax owner's — which
+ * `preflight` said before the load. Stated again here because verify is the
+ * record of what the project actually holds.
+ */
+function compareTaxCategory(
+  planned: PlannedTaxCategory,
+  actual: TaxCategory,
+  diagnostics: Diagnostic[],
+): void {
+  const scope = (r: { country: string; state?: string }) =>
+    r.state ? `${r.country}/${r.state}` : r.country;
+  const have = new Map((actual.rates ?? []).map((r) => [scope(r), r]));
+  const differences: string[] = [];
+
+  for (const rate of planned.rates) {
+    const other = have.get(scope(rate));
+    if (!other) {
+      differences.push(`${scope(rate)} absent`);
+      continue;
+    }
+    if (other.amount !== rate.amount || other.includedInPrice !== rate.includedInPrice) {
+      differences.push(
+        `${scope(rate)} is ${other.amount} ${other.includedInPrice ? 'included' : 'added'}, ` +
+          `planned ${rate.amount} ${rate.includedInPrice ? 'included' : 'added'}`,
+      );
+    }
+  }
+  const plannedScopes = new Set(planned.rates.map(scope));
+  for (const key of have.keys()) {
+    if (!plannedScopes.has(key)) differences.push(`${key} unplanned`);
+  }
+
+  if (differences.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'tax-category-rates-differ',
+      message:
+        `Tax category '${planned.key}' rates differ from the plan: ${differences.join('; ')}. ` +
+        "The project's rates are the ones products are taxed at; `load` does not modify " +
+        'an existing tax category.',
+    });
+  }
 }
 
 /**

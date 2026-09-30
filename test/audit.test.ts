@@ -1311,3 +1311,75 @@ test('inventory: a project-wide entry may share a key with its own variant', () 
   assert.ok(!found.includes('duplicate-resource-key'));
   assert.ok(!found.includes('invalid-key'));
 });
+
+// ---------------------------------------------------------------------------
+// Tax categories
+// ---------------------------------------------------------------------------
+
+/**
+ * The declared-types plan with `standard` declared and set on every product —
+ * then whatever the test does to it, as a hand edit to plan.json would.
+ */
+function auditTax(mutate: (plan: ReturnType<typeof auditFromFeed>['plan']) => void) {
+  const { config: cfg } = config('declared-types');
+  const { plan } = auditFromFeed('declared-types');
+  plan.prerequisites.taxCategories = [
+    {
+      key: 'standard',
+      name: 'Standard',
+      rates: [{ name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB' }],
+    },
+  ];
+  plan.products = plan.products.map((p) => ({
+    ...p,
+    taxCategory: { typeId: 'tax-category' as const, key: 'standard' },
+  }));
+  mutate(plan);
+  return auditPlan(plan, cfg).diagnostics;
+}
+
+const TAX_CODES = ['dangling-tax-category', 'tax-rate-invalid', 'duplicate-tax-rate-scope'];
+
+test('tax: a plan whose products all reference a declared category audits clean', () => {
+  const found = codes(auditTax(() => {}));
+  assert.deepEqual(found.filter((c) => TAX_CODES.includes(c)), []);
+});
+
+test('tax: a product referencing an undeclared category is caught by the gate too', () => {
+  // `validate` checked the feed. A hand-edited plan has been through nothing.
+  const d = auditTax((plan) => {
+    plan.prerequisites.taxCategories = [];
+  }).find((x) => x.code === 'dangling-tax-category');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /variants and prices with it/);
+});
+
+test('tax: a percentage written as a rate is refused, and the message does the arithmetic', () => {
+  const d = auditTax((plan) => {
+    plan.prerequisites.taxCategories![0].rates[0].amount = 20;
+  }).find((x) => x.code === 'tax-rate-invalid');
+  assert.ok(d);
+  assert.match(d.message, /reads as 2000%; 20% is 0\.2/);
+});
+
+test('tax: a rate missing its name or with a lowercase country is refused', () => {
+  const d = auditTax((plan) => {
+    const rate = plan.prerequisites.taxCategories![0].rates[0] as unknown as Record<string, unknown>;
+    rate.name = '';
+    rate.country = 'gb';
+  }).find((x) => x.code === 'tax-rate-invalid');
+  assert.ok(d);
+  assert.match(d.message, /country "gb" is not ISO 3166-1 alpha-2/);
+  assert.match(d.message, /name is missing/);
+});
+
+test('tax: two rates for one scope are refused by the gate', () => {
+  const found = codes(
+    auditTax((plan) => {
+      const rates = plan.prerequisites.taxCategories![0].rates;
+      rates.push({ ...rates[0], name: 'VAT again' });
+    }),
+  );
+  assert.ok(found.includes('duplicate-tax-rate-scope'));
+});

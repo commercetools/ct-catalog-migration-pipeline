@@ -26,7 +26,12 @@ import type { ImportSummary, OperationStates } from '@commercetools/importapi-sd
 
 import type { Clients } from '../client/factory.js';
 import type { PipelineConfig } from '../model/config.js';
-import { platformStages, type LoadStage, type MigrationPlan } from '../model/plan.js';
+import {
+  platformStages,
+  type LoadStage,
+  type MigrationPlan,
+  type PlannedTaxCategory,
+} from '../model/plan.js';
 import type { Diagnostic } from '../contract/validate.js';
 import { planBatches, summarise, type Batch, type LoadBatches } from './batches.js';
 
@@ -44,7 +49,7 @@ export interface LoadOptions {
 
 /** What the platform stages did, or would do on a dry run. */
 export interface PrerequisiteOutcome {
-  stage: 'channel' | 'customer-group' | 'store';
+  stage: 'channel' | 'customer-group' | 'tax-category' | 'store';
   /** Already in the project, so untouched. */
   existing: string[];
   /** Created by this run, or that would be on `--execute`. */
@@ -203,9 +208,9 @@ export async function runLoad(
           })
           .join('; ') +
         '.\n' +
-        '      Prices scoped to a channel or group the project does not hold become ' +
-        'operations that expire unresolved after 48 hours, so the import is not worth ' +
-        'starting. Resolve the above and re-run — keys are deterministic, so a re-run ' +
+        '      A price or product referencing a channel, group or tax category the ' +
+        'project does not hold becomes an operation that expires unresolved after 48 ' +
+        'hours, so the import is not worth starting. Resolve the above and re-run — keys are deterministic, so a re-run ' +
         'updates rather than duplicates.',
     });
     return {
@@ -276,7 +281,7 @@ export async function runLoad(
 }
 
 /**
- * Channels and customer groups, created if absent.
+ * Channels, customer groups and tax categories, created if absent.
  *
  * Through the **platform API**: the Import API has no resource for either, so
  * none of the import machinery applies — no containers, no batching, no
@@ -291,7 +296,9 @@ export async function runLoad(
  * Existing resources are never modified. A channel present but missing a role
  * the plan needs is reported, not patched: its roles also govern stores and
  * inventory, so widening them is a project decision rather than something a
- * catalog load should do on the way past.
+ * catalog load should do on the way past. A tax category present with other
+ * rates is left alone for the same reason and a stronger one — its rates also
+ * tax shipping, and they belong to whoever owns tax.
  */
 async function runPrerequisites(
   clients: Clients,
@@ -300,10 +307,12 @@ async function runPrerequisites(
   diagnostics: Diagnostic[],
 ): Promise<PrerequisiteOutcome[]> {
   const wanted = plan.prerequisites ?? { channels: [], customerGroups: [], stores: [] };
+  const taxCategories = wanted.taxCategories ?? [];
   const staged = new Set(platformStages(plan.loadOrder, 'before'));
 
   const doChannels = staged.has('channel') && wanted.channels.length > 0;
   const doGroups = staged.has('customer-group') && wanted.customerGroups.length > 0;
+  const doTax = staged.has('tax-category') && taxCategories.length > 0;
 
   // Every read first, then every create. Interleaving them meant a run doomed
   // by the *second* read had already created the first stage's resources — so
@@ -311,9 +320,10 @@ async function runPrerequisites(
   // reported was only half true. Reads are GETs and cost nothing to front-load.
   const channelsFound = doChannels ? await readChannels(clients, wanted.channels) : undefined;
   const groupsFound = doGroups ? await readCustomerGroups(clients, wanted.customerGroups) : undefined;
+  const taxFound = doTax ? await readTaxCategories(clients, taxCategories) : undefined;
 
   const out: PrerequisiteOutcome[] = [];
-  const unreadable = [channelsFound, groupsFound].some((r) => r?.error !== undefined);
+  const unreadable = [channelsFound, groupsFound, taxFound].some((r) => r?.error !== undefined);
 
   if (doChannels) {
     out.push(
@@ -337,6 +347,11 @@ async function runPrerequisites(
         options,
         diagnostics,
       ),
+    );
+  }
+  if (doTax) {
+    out.push(
+      await ensureTaxCategories(clients, taxCategories, taxFound!, unreadable, options, diagnostics),
     );
   }
   return out;
@@ -383,6 +398,27 @@ async function readCustomerGroups(
         res.body.results
           .filter((g) => g.key !== undefined)
           .map((g) => [g.key as string, g as unknown]),
+      ),
+    };
+  } catch (err) {
+    return { error: err };
+  }
+}
+
+async function readTaxCategories(
+  clients: Clients,
+  wanted: PlannedTaxCategory[],
+): Promise<ReadResult<unknown>> {
+  try {
+    const res = await clients.platform
+      .taxCategories()
+      .get({ queryArgs: { where: keysPredicate(wanted.map((t) => t.key)), limit: 500 } })
+      .execute();
+    return {
+      found: new Map(
+        res.body.results
+          .filter((t) => t.key !== undefined)
+          .map((t) => [t.key as string, t as unknown]),
       ),
     };
   } catch (err) {
@@ -716,6 +752,103 @@ async function ensureCustomerGroups(
   return outcome;
 }
 
+/**
+ * Tax categories, created with the plan's rates if absent.
+ *
+ * Present means untouched, rates included. That is the whole policy, and it is
+ * the one a catalog load has to follow: a tax category also taxes shipping,
+ * its rates are set by whoever owns tax, and `replaceTaxRate` on the way past
+ * would change what every existing cart is charged. `preflight` names any
+ * difference in advance; this only creates what is missing.
+ *
+ * The name has to be unique in the project as well as the key, so a create can
+ * fail on a category this read did not find — one with the same name under
+ * another key. The API refuses that one, and it is reported as a failed create
+ * rather than guessed around.
+ */
+async function ensureTaxCategories(
+  clients: Clients,
+  wanted: PlannedTaxCategory[],
+  read: ReadResult<unknown>,
+  anyReadFailed: boolean,
+  options: LoadOptions,
+  diagnostics: Diagnostic[],
+): Promise<PrerequisiteOutcome> {
+  const outcome: PrerequisiteOutcome = {
+    stage: 'tax-category',
+    existing: [],
+    created: [],
+    unusable: [],
+  };
+
+  if (read.error !== undefined) {
+    diagnostics.push({
+      severity: options.execute ? 'error' : 'warning',
+      code: 'prerequisite-read-failed',
+      message:
+        `Could not read tax categories: ${prerequisiteError(read.error)}\n` +
+        '      Reading needs view_tax_categories and creating needs ' +
+        'manage_tax_categories; manage_products also grants both, for backward ' +
+        'compatibility.' +
+        (options.execute
+          ? ' Nothing was attempted, because creating without knowing what exists ' +
+            'risks duplicates.'
+          : ` This dry run therefore cannot say which of the ${wanted.length} planned ` +
+            'tax category(ies) already exist. Nothing was written either way.'),
+    });
+    outcome.unknown = wanted.map((t) => t.key);
+    return outcome;
+  }
+  const found = read.found!;
+
+  if (anyReadFailed) {
+    for (const category of wanted) {
+      if (found.has(category.key)) outcome.existing.push(category.key);
+      else (outcome.deferred ??= []).push(category.key);
+    }
+    return outcome;
+  }
+
+  for (const category of wanted) {
+    if (found.has(category.key)) {
+      outcome.existing.push(category.key);
+      continue;
+    }
+    if (!options.execute) {
+      outcome.created.push(category.key);
+      continue;
+    }
+    try {
+      await clients.platform
+        .taxCategories()
+        .post({
+          body: {
+            key: category.key,
+            name: category.name,
+            ...(category.description ? { description: category.description } : {}),
+            rates: category.rates.map((r) => ({ ...r })),
+          },
+        })
+        .execute();
+      outcome.created.push(category.key);
+    } catch (err) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'prerequisite-create-failed',
+        message:
+          `Could not create tax category '${category.key}': ${prerequisiteError(err)}\n` +
+          '      Creating one needs manage_tax_categories (or manage_products). A likely ' +
+          `cause is another tax category already named '${category.name}' — the name is ` +
+          'unique per project, not only the key. Products referencing this category ' +
+          'would sit unresolved for 48 hours and then expire, so nothing was imported.',
+      });
+      (outcome.failed ??= []).push(category.key);
+    }
+  }
+
+  return outcome;
+}
+
 function dryRunStages(batches: LoadBatches): StageOutcome[] {
   const { byStage } = summarise(batches);
   return Object.entries(byStage).map(([stage, totals]) => ({
@@ -845,9 +978,10 @@ function poster(clients: Clients, batch: Batch) {
         .post({ body: batch.body as never });
     case 'channel':
     case 'customer-group':
+    case 'tax-category':
     case 'store':
       // Unreachable: `planBatches` only produces batches for Import API
-      // stages, and these three are created through the platform API. Throwing
+      // stages, and these four are created through the platform API. Throwing
       // rather than returning undefined keeps the switch exhaustive, so adding
       // a stage is a compile error instead of a runtime one.
       throw new Error(

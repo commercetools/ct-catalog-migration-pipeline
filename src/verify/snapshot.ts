@@ -20,6 +20,7 @@ import type {
   ProductType,
   StandalonePrice,
   Store,
+  TaxCategory,
   Variant,
 } from '@commercetools/platform-sdk';
 
@@ -212,6 +213,20 @@ export async function fetchSnapshot(
   );
   if (!stores.readable) unreadable.push('stores');
 
+  // Verbatim keys again, from the prerequisites. Read even though `load` never
+  // modifies one: a product's taxCategory comes back as an id, and this is
+  // what turns it into a key the plan can be compared against.
+  const taxCategories = await fetchByKey<TaxCategory>(
+    'tax category(ies)',
+    (plan.prerequisites?.taxCategories ?? []).map((t) => t.key),
+    async (where) =>
+      (await clients.platform.taxCategories().get({ queryArgs: { where, limit: KEYS_PER_QUERY } }).execute())
+        .body.results,
+    (t) => t.key,
+    diagnostics,
+  );
+  if (!taxCategories.readable) unreadable.push('taxCategories');
+
   // References come back as ids. These maps are built from what was just
   // fetched, so a reference to something outside the plan stays unresolved —
   // which is information, not a gap: the reconciler reports it as unplanned
@@ -229,6 +244,9 @@ export async function fetchSnapshot(
   const productSelectionKeyById = new Map<string, string>();
   for (const [key, sel] of productSelections.byKey) productSelectionKeyById.set(sel.id, key);
 
+  const taxCategoryKeyById = new Map<string, string>();
+  for (const [key, category] of taxCategories.byKey) taxCategoryKeyById.set(category.id, key);
+
   return {
     snapshot: {
       productTypes: productTypes.byKey,
@@ -239,9 +257,11 @@ export async function fetchSnapshot(
       productSelections: productSelections.byKey,
       inventory: inventory.byKey,
       stores: stores.byKey,
+      taxCategories: taxCategories.byKey,
       categoryKeyById,
       productTypeKeyById,
       productSelectionKeyById,
+      taxCategoryKeyById,
     },
     diagnostics,
     unreadable,

@@ -60,6 +60,7 @@ export function writePlan(
           'standalone price(s)': plan.standalonePrices?.length ?? 0,
           'product selection(s)': plan.productSelections?.length ?? 0,
           'inventory entry(ies)': plan.inventory?.length ?? 0,
+          'tax category(ies)': plan.prerequisites?.taxCategories?.length ?? 0,
           'product type(s)': plan.productTypes.length,
         },
       },
