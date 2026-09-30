@@ -1371,3 +1371,48 @@ test('stores: a dry run does not demand --wait', async () => {
   const r = await runLoad(clients, planWithStore(), config(), { sleep: noSleep });
   assert.ok(!r.diagnostics.some((x) => x.code === 'stores-require-wait'));
 });
+
+// ---------------------------------------------------------------------------
+// Inventory batching
+// ---------------------------------------------------------------------------
+
+function planWithInventory(count: number): MigrationPlan {
+  const plan = basePlan();
+  const inventory = Array.from({ length: count }, (_, i) => ({
+    key: `mig-inv-${String(i).padStart(4, '0')}`,
+    sku: `SKU-${i}`,
+    quantityOnStock: i,
+  }));
+  return { ...plan, inventory };
+}
+
+test('batches: inventory is sent to the inventory resource type, chunked like the rest', () => {
+  const { batches, containers } = planBatches(planWithInventory(45), config());
+  const stock = batches.filter((b) => b.stage === 'inventory');
+
+  assert.equal(stock.length, 3, '45 entries in requests of 20');
+  assert.equal(stock.reduce((n, b) => n + b.resourceKeys.length, 0), 45);
+  for (const b of stock) {
+    assert.equal((b.body as { type: string }).type, 'inventory');
+    assert.ok(b.resourceKeys.length <= MAX_RESOURCES_PER_REQUEST);
+  }
+  assert.ok(containers.some((c) => c.resourceType === 'inventory'));
+});
+
+test('batches: a plan with no stock creates no inventory container at all', () => {
+  // The normal case for a catalog-only migration. An empty container would
+  // count against the project's container limit and report a stage that did
+  // nothing.
+  const { batches, containers } = planBatches(basePlan(), config());
+  assert.ok(!batches.some((b) => b.stage === 'inventory'));
+  assert.ok(!containers.some((c) => c.stage === 'inventory'));
+});
+
+test('batches: stock is loaded after the variants it names', () => {
+  // Soft, unlike the channel ordering — the Import API does not check the SKU
+  // — but an entry landing before its variant is an orphan nobody notices.
+  const { batches } = planBatches(planWithInventory(3), config());
+  const lastDraft = batches.map((b) => b.stage).lastIndexOf('product-draft');
+  const firstStock = batches.map((b) => b.stage).indexOf('inventory');
+  assert.ok(lastDraft >= 0 && firstStock > lastDraft);
+});

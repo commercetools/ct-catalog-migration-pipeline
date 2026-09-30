@@ -21,6 +21,8 @@ import type {
   CategoryImport,
   CategoryImportRequest,
   ImportResourceType,
+  InventoryImport,
+  InventoryImportRequest,
   ProductDraftImport,
   ProductDraftImportRequest,
   ProductSelectionImport,
@@ -49,7 +51,8 @@ export type ImportRequestBody =
   | ProductDraftImportRequest
   | VariantImportRequest
   | StandalonePriceImportRequest
-  | ProductSelectionImportRequest;
+  | ProductSelectionImportRequest
+  | InventoryImportRequest;
 
 /**
  * The `resourceType` a container is restricted to, per Import API stage.
@@ -68,6 +71,7 @@ const RESOURCE_TYPE: Record<ImportStage, ImportResourceType> = {
   'product-draft': 'product-draft',
   variant: 'variant',
   'standalone-price': 'standalone-price',
+  inventory: 'inventory',
   'product-selection': 'product-selection',
 };
 
@@ -128,6 +132,8 @@ function bodyFor(stage: ImportStage, resources: unknown[]): ImportRequestBody {
       return { type: 'variant', resources: resources as VariantImport[] };
     case 'standalone-price':
       return { type: 'standalone-price', resources: resources as StandalonePriceImport[] };
+    case 'inventory':
+      return { type: 'inventory', resources: resources as InventoryImport[] };
   }
 }
 
@@ -157,6 +163,9 @@ export function planBatches(plan: MigrationPlan, config: PipelineConfig): LoadBa
       key: r.key,
       resource: r,
     })),
+    // Empty for a catalog-only migration, which is the normal case. Optional
+    // on the plan so a plan written before inventory existed still loads.
+    inventory: (plan.inventory ?? []).map((r) => ({ key: r.key, resource: r })),
   };
 
   const containers: ContainerPlan[] = [];

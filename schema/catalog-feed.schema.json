@@ -31,6 +31,9 @@
     },
     {
       "$ref": "#/$defs/store"
+    },
+    {
+      "$ref": "#/$defs/inventoryEntry"
     }
   ],
   "$defs": {
@@ -693,6 +696,44 @@
             }
           },
           "description": "At most 100. If every entry is inactive and at least one is Individual, the store exposes no products at all."
+        }
+      }
+    },
+    "inventoryEntry": {
+      "type": "object",
+      "required": [
+        "_type",
+        "sku",
+        "quantityOnStock"
+      ],
+      "additionalProperties": false,
+      "description": "Stock for one SKU, optionally in one supply channel. A separate record rather than a field on `variant`, because stock is refreshed on a different cadence from the catalog and usually comes from a different source file: a feed can be regenerated for stock alone. Identity is (sku, supplyChannel) — the pair the API treats as unique — and the key is derived from it, so a re-run updates rather than duplicating.",
+      "properties": {
+        "_type": {
+          "const": "inventoryEntry"
+        },
+        "sku": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match a declared variant's sku. The Import API does not check this, so `validate` does: an entry for an unknown SKU imports successfully and is stock nobody can sell."
+        },
+        "quantityOnStock": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Overall stock, reserved included. Not availableQuantity, which the platform computes."
+        },
+        "supplyChannel": {
+          "$ref": "#/$defs/code",
+          "description": "Code of a declared channel carrying the InventorySupply role. Absent means project-wide stock for the SKU. A reference to a channel that does not exist leaves the operation unresolved for 48 hours, so the channel must be declared."
+        },
+        "restockableInDays": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "expectedDelivery": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Date and time of the next restock, as an ISO-8601 instant."
         }
       }
     }

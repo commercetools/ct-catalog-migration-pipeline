@@ -843,8 +843,28 @@ test('stores: a supply channel with no prices is not reported as a pricing mista
     { _type: 'store', code: 's1', supplyChannels: ['warehouse'] },
   ]);
   assert.ok(!r.diagnostics.some((x) => x.code === 'distribution-channel-without-prices'));
-  // But the honest warning still fires: no inventory is ever imported.
-  assert.ok(r.diagnostics.some((x) => x.code === 'store-inventory-not-migrated'));
+  // But the honest warning still fires: nothing stocks that channel.
+  assert.ok(r.diagnostics.some((x) => x.code === 'store-supply-channel-unstocked'));
+});
+
+test('stores: a supply channel that inventory stocks is not reported as unstocked', () => {
+  // The counterpart to the test above, and the reason the warning is worth
+  // keeping rather than deleting now that stock is importable: it has to go
+  // quiet exactly when the stock arrives, or it trains its reader to ignore it.
+  const r = validateStoreFeed([
+    { _type: 'channel', code: 'warehouse', roles: ['InventorySupply'] },
+    AXIS_DEF,
+    { _type: 'product', code: 'TEE', name: { 'en-GB': 'Tee' }, axes: ['sz'] },
+    ONE_VARIANT,
+    { _type: 'store', code: 's1', supplyChannels: ['warehouse'] },
+    {
+      _type: 'inventoryEntry',
+      sku: (ONE_VARIANT as { sku: string }).sku,
+      quantityOnStock: 5,
+      supplyChannel: 'warehouse',
+    },
+  ]);
+  assert.ok(!r.diagnostics.some((x) => x.code === 'store-supply-channel-unstocked'));
 });
 
 test('stores: a distribution channel nothing is priced into is reported', () => {
@@ -896,4 +916,92 @@ test('config: a defaultKey that already carries the prefix is flagged', () => {
       (x) => x.code === 'product-type-key-doubles-prefix',
     ),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+/** A feed with one product, one variant, and whatever stock rows are given. */
+function inventoryFeed(extra: unknown[]) {
+  return validateStoreFeed([
+    AXIS_DEF,
+    { _type: 'product', code: 'TEE', name: { 'en-GB': 'Tee' }, axes: ['sz'] },
+    ONE_VARIANT,
+    ...extra,
+  ]);
+}
+
+test('inventory: stock for a SKU no variant carries is an error', () => {
+  // The one the API will not catch for you. An entry for an unknown SKU imports
+  // successfully and holds stock against nothing, forever, silently.
+  const d = inventoryFeed([
+    { _type: 'inventoryEntry', sku: 'TEE-XL', quantityOnStock: 5 },
+  ]).diagnostics.find((x) => x.code === 'inventory-sku-unknown');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /would import cleanly/);
+});
+
+test('inventory: an undeclared supply channel is refused, with the record to paste', () => {
+  const d = inventoryFeed([
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'warehouse' },
+  ]).diagnostics.find((x) => x.code === 'inventory-channel-not-declared');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  // Same 48-hour trap as a price scoped to a missing channel, so it is worded
+  // the same way and carries the same remedy.
+  assert.match(d.message, /unresolved for 48 hours/);
+  assert.match(d.message, /"roles":\["InventorySupply"\]/);
+});
+
+test('inventory: a supply channel without InventorySupply is an error', () => {
+  const d = inventoryFeed([
+    { _type: 'channel', code: 'retail', roles: ['ProductDistribution'] },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'retail' },
+  ]).diagnostics.find((x) => x.code === 'inventory-channel-role-insufficient');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /ProductDistribution/);
+});
+
+test('inventory: two entries for one (sku, channel) pair are a duplicate', () => {
+  const d = inventoryFeed([
+    { _type: 'channel', code: 'warehouse', roles: ['InventorySupply'] },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'warehouse' },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 9, supplyChannel: 'warehouse' },
+  ]).diagnostics.find((x) => x.code === 'duplicate-record');
+  assert.ok(d, 'the second would silently win at load time');
+  assert.match(d.message, /TEE-S@warehouse/);
+});
+
+test('inventory: the same SKU in two channels, and project-wide, is legitimate', () => {
+  // Identity is the pair, not the SKU. Treating a SKU as unique here would
+  // reject the normal multi-warehouse case.
+  const found = codes(
+    inventoryFeed([
+      { _type: 'channel', code: 'wh-gb', roles: ['InventorySupply'] },
+      { _type: 'channel', code: 'wh-eu', roles: ['InventorySupply'] },
+      { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'wh-gb' },
+      { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 3, supplyChannel: 'wh-eu' },
+      { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 8 },
+    ]).diagnostics,
+  );
+  assert.ok(!found.includes('duplicate-record'));
+  assert.ok(!found.includes('inventory-sku-unknown'));
+});
+
+test('inventory: zero stock is a legitimate figure, not a missing one', () => {
+  // A deliberate out-of-stock has to survive the pipeline: rejecting or
+  // dropping it would silently turn "we know there are none" into "we do not
+  // know", which reads as available in most storefronts.
+  const found = codes(
+    inventoryFeed([{ _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 0 }]).diagnostics,
+  );
+  assert.ok(!found.some((c) => c.startsWith('inventory-')));
+});
+
+test('inventory: a negative quantity is refused by the schema', () => {
+  const r = inventoryFeed([{ _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: -1 }]);
+  assert.ok(codes(r.diagnostics).includes('schema-violation'));
 });

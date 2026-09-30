@@ -43,11 +43,13 @@ const addFormats = unwrap<(ajv: unknown) => unknown>(ajvFormatsModule);
 import {
   emptyFeed,
   FEED_TYPES,
+  inventoryIdentity,
   type CatalogFeed,
   type FeedAttributeDefinition,
   type FeedCategory,
   type FeedChannel,
   type FeedCustomerGroup,
+  type FeedInventoryEntry,
   type FeedProduct,
   type FeedProductSelection,
   type FeedRecord,
@@ -329,6 +331,16 @@ function index(
       const siblings = feed.variantsByProduct.get(r.product) ?? [];
       siblings.push(r.sku);
       feed.variantsByProduct.set(r.product, siblings);
+      return;
+    }
+    case 'inventoryEntry': {
+      const r = record as FeedInventoryEntry;
+      // Identity is the pair, not the SKU: the same SKU legitimately has one
+      // entry per supply channel, and a project-wide entry alongside them.
+      const id = inventoryIdentity(r.sku, r.supplyChannel);
+      if (feed.inventoryEntries.has(id)) return duplicate('inventoryEntry', id);
+      feed.inventoryEntries.set(id, r);
+      feed.origin.set(`inventoryEntry:${id}`, { file, line });
       return;
     }
   }
@@ -692,6 +704,7 @@ function checkAgainstConfig(
   checkMediaResolvable(feed, config, diagnostics);
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
+  checkInventory(feed, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
 
   for (const [currency, sku] of firstUse) {
@@ -1047,18 +1060,21 @@ function checkStoresAndSelections(feed: CatalogFeed, diagnostics: Diagnostic[]):
       channelRole(code, 'InventorySupply', 'supplyChannels');
     }
 
-    // Carried for fidelity, but this pipeline imports no inventory. Saying so
-    // is the difference between a correctly configured store and a store that
-    // looks like its stock was migrated.
-    if ((store.supplyChannels ?? []).length > 0) {
+    // A supply channel is wiring; the stock is the inventoryEntry records that
+    // name it. Wiring with nothing behind it is a store that looks like its
+    // stock was migrated and holds none — so the warning is now about the
+    // *empty* channels rather than about the pipeline's own limitations.
+    const unstocked = (store.supplyChannels ?? []).filter(
+      (code) => ![...feed.inventoryEntries.values()].some((e) => e.supplyChannel === code),
+    );
+    if (unstocked.length > 0) {
       diagnostics.push({
         severity: 'warning',
-        code: 'store-inventory-not-migrated',
+        code: 'store-supply-channel-unstocked',
         message:
-          `Store '${store.code}' declares ${store.supplyChannels!.length} supply ` +
-          'channel(s). They will be created and wired to the store, but this pipeline ' +
-          'imports no inventory, so every one of them will hold zero stock until ' +
-          'something else populates it.\n' +
+          `Store '${store.code}' lists supply channel(s) [${unstocked.join(', ')}] that no ` +
+          'inventory entry references. They will be created and wired to the store, and ' +
+          'will hold zero stock until something else populates them.\n' +
           '      Correct as configuration, misleading as a migration result — record it.',
         ...at,
       });
@@ -1116,6 +1132,64 @@ function checkStoresAndSelections(feed: CatalogFeed, diagnostics: Diagnostic[]):
         'effect until a store uses it, so this one will be created and change nothing.',
       ...(feed.origin.get(`productSelection:${code}`) ?? {}),
     });
+  }
+}
+
+/**
+ * Stock references: the SKU, and the supply channel.
+ *
+ * Both are things the Import API will not check for you, and they fail in
+ * opposite ways. An entry for an unknown SKU imports **successfully** and
+ * becomes stock against nothing — no error anywhere, at any stage, ever. An
+ * entry naming a channel that does not exist imports into `unresolved`, waits
+ * 48 hours and expires. The first is silent forever, the second is silent
+ * until long after anyone is watching, so both are errors here.
+ */
+function checkInventory(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
+  for (const [id, entry] of feed.inventoryEntries) {
+    const at = feed.origin.get(`inventoryEntry:${id}`) ?? {};
+
+    if (!feed.variants.has(entry.sku)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'inventory-sku-unknown',
+        message:
+          `Inventory entry for SKU '${entry.sku}' matches no variant in the feed. The ` +
+          'Import API does not check this: the entry would import cleanly and hold stock ' +
+          'against a SKU nothing sells.',
+        ...at,
+      });
+    }
+
+    const code = entry.supplyChannel;
+    if (code === undefined) continue;
+
+    const channel = feed.channels.get(code);
+    if (!channel) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'inventory-channel-not-declared',
+        message:
+          `Inventory entry for SKU '${entry.sku}' is supplied by channel '${code}', which ` +
+          'no channel record declares. An entry referencing a channel that does not exist ' +
+          'stays unresolved for 48 hours and then expires, taking the stock with it.\n' +
+          `      Declare it: {"_type":"channel","code":"${code}","roles":["InventorySupply"]}.`,
+        ...at,
+      });
+      continue;
+    }
+
+    if (!channel.roles.includes('InventorySupply')) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'inventory-channel-role-insufficient',
+        message:
+          `Inventory entry for SKU '${entry.sku}' is supplied by channel '${code}', whose ` +
+          `roles are [${channel.roles.join(', ')}]. Stock needs InventorySupply, and a ` +
+          'store cannot list the channel as a supply channel without it.',
+        ...at,
+      });
+    }
   }
 }
 

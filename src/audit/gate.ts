@@ -62,6 +62,7 @@ export interface AuditResult {
     /** Embedded prices, i.e. prices inside a variant draft. */
     prices: number;
     standalonePrices: number;
+    inventory: number;
     attributeValues: number;
   };
 }
@@ -75,6 +76,7 @@ export function auditPlan(plan: MigrationPlan, config: PipelineConfig): AuditRes
     variants: 0,
     prices: 0,
     standalonePrices: plan.standalonePrices.length,
+    inventory: (plan.inventory ?? []).length,
     attributeValues: 0,
   };
 
@@ -121,6 +123,7 @@ export function auditPlan(plan: MigrationPlan, config: PipelineConfig): AuditRes
   checkCategoryUsage(plan, diagnostics);
   checkPriceModeConsistency(plan, config, diagnostics);
   checkStandalonePrices(plan, config, diagnostics);
+  checkInventory(plan, diagnostics);
 
   return { diagnostics, checked };
 }
@@ -1136,6 +1139,106 @@ function checkStandalonePrices(
 // ---------------------------------------------------------------------------
 // Advisory
 // ---------------------------------------------------------------------------
+
+/**
+ * Stock, re-derived from the written plan.
+ *
+ * `validate` already checked the SKU against the *feed*. This checks it against
+ * the *plan*, which is not the same question: a variant can be dropped between
+ * the two — by a mapping failure, or by a plan that was hand-edited — and an
+ * inventory entry naming it would then import cleanly and hold stock against
+ * nothing. That is the failure this pipeline exists to make impossible: silent,
+ * accepted by the API, and invisible in every report.
+ */
+function checkInventory(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
+  const entries = plan.inventory ?? [];
+  if (entries.length === 0) return;
+
+  const skus = new Set<string>();
+  for (const variants of indexVariants(plan).values()) {
+    for (const variant of variants) {
+      const sku = variantSku(variant);
+      if (sku !== '') skus.add(sku);
+    }
+  }
+
+  const scopes = new Map<string, string>();
+  // Deliberately *not* the project-wide key map in `checkKeysAndSlugs`. An
+  // InventoryEntry key is unique among InventoryEntries only, so a
+  // project-wide entry for SKU 'TEE-M' keyed `<prefix>-TEE-M` sits perfectly
+  // legally beside the variant of the same name — the same reasoning that
+  // moved asset keys out of that map. Checking it there blocked a load the API
+  // would have accepted, which is the worse of the two errors a gate can make.
+  const keys = new Map<string, string>();
+
+  for (const entry of entries) {
+    if (!isValidKey(entry.key)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'invalid-key',
+        message:
+          `Inventory entry for SKU '${entry.sku}' has key '${entry.key}', which is not ` +
+          '2-256 characters of [A-Za-z0-9_-]. The API rejects it.',
+      });
+    }
+
+    const priorKey = keys.get(entry.key);
+    if (priorKey !== undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'duplicate-resource-key',
+        message:
+          `Inventory key '${entry.key}' is claimed by stock for both SKU '${priorKey}' and ` +
+          `SKU '${entry.sku}'. Keys are derived from a sanitised SKU, so two SKUs ` +
+          'differing only outside [A-Za-z0-9_-] collide here — and the second import ' +
+          "would overwrite the first's stock.",
+      });
+    } else {
+      keys.set(entry.key, entry.sku);
+    }
+
+    if (!skus.has(entry.sku)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'inventory-sku-not-in-plan',
+        message:
+          `Inventory entry '${entry.key}' is stock for SKU '${entry.sku}', which no variant ` +
+          'in this plan carries. The Import API does not check this, so the entry would ' +
+          'import successfully and hold stock against a SKU that does not exist.',
+      });
+    }
+
+    // The schema forbids both, but the gate reads the plan off disk rather than
+    // the feed — a hand-edited plan has been through no schema at all.
+    if (!Number.isInteger(entry.quantityOnStock) || entry.quantityOnStock < 0) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'inventory-quantity-invalid',
+        message:
+          `Inventory entry '${entry.key}' has quantityOnStock ` +
+          `${JSON.stringify(entry.quantityOnStock)}. It must be a non-negative integer.`,
+      });
+    }
+
+    const scope = entry.supplyChannel?.key
+      ? `${entry.sku}@${entry.supplyChannel.key}`
+      : entry.sku;
+    const prior = scopes.get(scope);
+    if (prior !== undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'duplicate-inventory-scope',
+        message:
+          `SKU '${entry.sku}' has two inventory entries for the same supply scope — ` +
+          `'${prior}' and '${entry.key}'. InventoryEntry is unique per (sku, ` +
+          'supplyChannel), so the second is rejected and one of the two stock figures is ' +
+          'the one nobody intended.',
+      });
+    } else {
+      scopes.set(scope, entry.key);
+    }
+  }
+}
 
 function checkAdvisory(
   product: ProductDraftImport,

@@ -837,6 +837,12 @@ function poster(clients: Clients, batch: Batch) {
         .importContainers()
         .withImportContainerKeyValue({ importContainerKey: containerKey })
         .post({ body: batch.body as never });
+    case 'inventory':
+      return clients.importApi
+        .inventories()
+        .importContainers()
+        .withImportContainerKeyValue({ importContainerKey: containerKey })
+        .post({ body: batch.body as never });
     case 'channel':
     case 'customer-group':
     case 'store':

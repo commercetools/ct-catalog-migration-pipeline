@@ -351,6 +351,7 @@ function runPlan(opts: Opts): number {
   const populated = plan.loadOrder.filter((stage) => {
     if (stage === 'standalone-price') return plan.standalonePrices.length > 0;
     if (stage === 'variant') return plan.variants.length > 0;
+    if (stage === 'inventory') return (plan.inventory ?? []).length > 0;
     return true;
   });
 
@@ -363,6 +364,9 @@ function runPlan(opts: Opts): number {
       ? `  ${plan.standalonePrices.length} standalone price(s)`
       : `  ${prices} embedded price(s)`,
   );
+  if ((plan.inventory ?? []).length > 0) {
+    console.log(`  ${plan.inventory.length} inventory entry(ies)`);
+  }
   console.log('');
 
   for (const d of shown.filter((x) => x.severity === 'warning')) {
@@ -435,6 +439,7 @@ function runAudit(opts: Opts): number {
     `Audited ${checked.productTypes} product type(s), ${checked.categories} category(ies), ` +
       `${checked.products} product(s), ${checked.variants} variant(s), ` +
       `${checked.prices} embedded price(s), ${checked.standalonePrices} standalone price(s), ` +
+      (checked.inventory > 0 ? `${checked.inventory} inventory entry(ies), ` : '') +
       `${checked.attributeValues} attribute value(s).`,
   );
   console.log('');
@@ -813,6 +818,9 @@ async function runVerify(opts: Opts): Promise<number> {
       (result.checked.productSelections > 0
         ? `, ${result.found.productSelections}/${result.checked.productSelections} product selection(s)`
         : '') +
+      (result.checked.inventory > 0
+        ? `, ${result.found.inventory}/${result.checked.inventory} inventory entry(ies)`
+        : '') +
       (result.checked.stores > 0
         ? `, ${result.found.stores}/${result.checked.stores} store(s)`
         : '') +
@@ -859,6 +867,7 @@ function counts(feed: ReturnType<typeof validateFeed>['feed']) {
     attributeDefinitions: feed.attributeDefinitions.size,
     products: feed.products.size,
     variants: feed.variants.size,
+    inventoryEntries: feed.inventoryEntries.size,
   };
 }
 
@@ -875,6 +884,18 @@ function report(
     `  ${c.categories} categories, ${c.products} products, ${c.variants} variants, ` +
       `${c.attributeDefinitions} attribute definitions`,
   );
+  // Only when there is stock. A catalog-only feed is the normal case, and a
+  // line reading "0 inventory entries" on every run would invite someone to
+  // treat a deliberate omission as a defect.
+  if (c.inventoryEntries > 0) {
+    const scoped = [...result.feed.inventoryEntries.values()].filter(
+      (e) => e.supplyChannel !== undefined,
+    ).length;
+    console.log(
+      `  ${c.inventoryEntries} inventory entries (${scoped} channel-scoped, ` +
+        `${c.inventoryEntries - scoped} project-wide)`,
+    );
+  }
 
   // The catalog model is a project-level decision, and variant counts are the
   // one input to it the feed can answer on its own. Stated even when it fits,

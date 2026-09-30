@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 
 import type {
   Category,
+  InventoryEntry,
   Product,
   ProductSelection,
   ProductType,
@@ -250,6 +251,26 @@ function matchingSnapshot(plan: MigrationPlan, config: ReturnType<typeof fixture
           mode: sel.mode ?? 'Individual',
           productCount: (sel.assignments ?? []).length,
         } as unknown as ProductSelection,
+      ]),
+    ),
+    // Mirrors the plan exactly, including the channel scope: a snapshot that
+    // dropped supplyChannel would make the scope comparison pass vacuously.
+    inventory: new Map(
+      (plan.inventory ?? []).map((entry) => [
+        entry.key,
+        {
+          id: `invid-${entry.key}`,
+          key: entry.key,
+          sku: entry.sku,
+          quantityOnStock: entry.quantityOnStock,
+          availableQuantity: entry.quantityOnStock,
+          ...(entry.restockableInDays !== undefined
+            ? { restockableInDays: entry.restockableInDays }
+            : {}),
+          ...(entry.supplyChannel
+            ? { supplyChannel: { typeId: 'channel', id: `chid-${entry.supplyChannel.key}` } }
+            : {}),
+        } as unknown as InventoryEntry,
       ]),
     ),
     stores: new Map(
@@ -793,7 +814,7 @@ test('verify: an inactive selection on a store is an error, not cosmetic', () =>
   assert.match(d.message, /no products at all/);
 });
 
-test('verify: supply-channel drift is a warning, because no inventory was imported', () => {
+test('verify: supply-channel drift stays a warning, with stock reconciled separately', () => {
   const plan = storeVerifyPlan();
   plan.prerequisites.stores[0].supplyChannels = ['warehouse-gb'];
   const snapshot = matchingSnapshot(plan, fixture('declared-types').config);
@@ -803,8 +824,11 @@ test('verify: supply-channel drift is a warning, because no inventory was import
   const r = reconcile(plan, snapshot, fixture('declared-types').config);
   const d = r.diagnostics.find((x) => x.code === 'store-supply-channels-differ');
   assert.ok(d);
+  // Still a warning now that stock *is* imported, but for a different reason:
+  // the entries are reconciled by key, so a store's wiring is not the evidence
+  // that stock arrived. Promoting this to an error would double-report.
   assert.equal(d.severity, 'warning');
-  assert.match(d.message, /imports no inventory/);
+  assert.match(d.message, /reconciled separately and by key/);
 });
 
 test('fetch: stores and selections are asked for only when the plan has them', async () => {
@@ -891,4 +915,80 @@ test('in-flight: a failed read says "cannot say", not "nothing pending"', async 
   const { clients } = fakeImportApi(Object.assign(new Error('gone'), { statusCode: 404 }));
   const r = await countInFlight(clients, ['mig-category']);
   assert.equal(r.readable, false);
+});
+
+// ---------------------------------------------------------------------------
+// Inventory
+// ---------------------------------------------------------------------------
+
+function inventoryFixture() {
+  const { plan, config: cfg } = fixture('stores');
+  assert.ok((plan.inventory ?? []).length > 0, 'the stores fixture must carry stock');
+  return { plan, config: cfg };
+}
+
+test('verify: a project whose stock matches the plan is silent', () => {
+  const { plan, config: cfg } = inventoryFixture();
+  const r = reconcile(plan, matchingSnapshot(plan, cfg), cfg);
+  assert.ok(!codes(r.diagnostics).some((c) => c.startsWith('inventory-')));
+  assert.equal(r.found.inventory, plan.inventory.length);
+});
+
+test('verify: an inventory entry that never arrived is an error', () => {
+  // The load reports the request accepted either way — operations are
+  // validated asynchronously — so this is the only place it surfaces.
+  const { plan, config: cfg } = inventoryFixture();
+  const snapshot = matchingSnapshot(plan, cfg);
+  snapshot.inventory.delete(plan.inventory[0].key);
+
+  const d = reconcile(plan, snapshot, cfg).diagnostics.find(
+    (x) => x.code === 'inventory-entry-missing',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+});
+
+test('verify: a stock quantity that differs is an error, with the consistency caveat', () => {
+  const { plan, config: cfg } = inventoryFixture();
+  const snapshot = matchingSnapshot(plan, cfg);
+  const key = plan.inventory[0].key;
+  const actual = snapshot.inventory.get(key)!;
+  snapshot.inventory.set(key, { ...actual, quantityOnStock: 999 } as typeof actual);
+
+  const d = reconcile(plan, snapshot, cfg).diagnostics.find(
+    (x) => x.code === 'inventory-quantity-differs',
+  );
+  assert.ok(d);
+  // InventoryEntry lags its own writes by up to 10 seconds, so a reader who
+  // does not know that will chase a difference that resolves itself.
+  assert.match(d.message, /eventually consistent for up to 10 seconds/);
+});
+
+test('verify: availableQuantity below quantityOnStock is not a difference', () => {
+  // Reserved stock makes the two differ legitimately. Comparing the computed
+  // field would report every cart in flight as a migration defect.
+  const { plan, config: cfg } = inventoryFixture();
+  const snapshot = matchingSnapshot(plan, cfg);
+  for (const [key, entry] of snapshot.inventory) {
+    snapshot.inventory.set(key, { ...entry, availableQuantity: 0 } as typeof entry);
+  }
+  const found = codes(reconcile(plan, snapshot, cfg).diagnostics);
+  assert.ok(!found.includes('inventory-quantity-differs'));
+});
+
+test('verify: stock that lost its supply channel is an error', () => {
+  // The dangerous direction: an entry with no channel counts everywhere,
+  // so stock meant for one warehouse becomes sellable in every store.
+  const { plan, config: cfg } = inventoryFixture();
+  const scoped = plan.inventory.find((e) => e.supplyChannel)!;
+  const snapshot = matchingSnapshot(plan, cfg);
+  const actual = snapshot.inventory.get(scoped.key)!;
+  snapshot.inventory.set(scoped.key, { ...actual, supplyChannel: undefined } as typeof actual);
+
+  const d = reconcile(plan, snapshot, cfg).diagnostics.find(
+    (x) => x.code === 'inventory-supply-channel-differs',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /counts everywhere/);
 });

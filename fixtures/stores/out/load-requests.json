@@ -8,7 +8,8 @@
       "unusable": [],
       "unknown": [
         "retail-uk",
-        "warehouse-gb"
+        "warehouse-gb",
+        "warehouse-eu"
       ]
     },
     {
@@ -33,6 +34,12 @@
       "resourceType": "product-draft",
       "stage": "product-draft",
       "operations": 1
+    },
+    {
+      "key": "mig-inventory",
+      "resourceType": "inventory",
+      "stage": "inventory",
+      "operations": 3
     },
     {
       "key": "mig-product-selection",
@@ -184,6 +191,46 @@
             ],
             "priceMode": "Embedded",
             "publish": false
+          }
+        ]
+      }
+    },
+    {
+      "stage": "inventory",
+      "containerKey": "mig-inventory",
+      "index": 1,
+      "resourceKeys": [
+        "mig-TEE-S-warehouse-gb",
+        "mig-TEE-M-warehouse-gb",
+        "mig-TEE-M"
+      ],
+      "body": {
+        "type": "inventory",
+        "resources": [
+          {
+            "key": "mig-TEE-S-warehouse-gb",
+            "sku": "TEE-S",
+            "quantityOnStock": 42,
+            "supplyChannel": {
+              "typeId": "channel",
+              "key": "warehouse-gb"
+            },
+            "restockableInDays": 3
+          },
+          {
+            "key": "mig-TEE-M-warehouse-gb",
+            "sku": "TEE-M",
+            "quantityOnStock": 0,
+            "supplyChannel": {
+              "typeId": "channel",
+              "key": "warehouse-gb"
+            },
+            "expectedDelivery": "2026-11-01T09:00:00.000Z"
+          },
+          {
+            "key": "mig-TEE-M",
+            "sku": "TEE-M",
+            "quantityOnStock": 7
           }
         ]
       }

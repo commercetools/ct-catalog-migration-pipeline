@@ -29,6 +29,7 @@ import {
   type CategoryKeyReference,
   type DerivedModel,
   type Image,
+  type InventoryImport,
   type MappingDecision,
   type MigrationPlan,
   type PriceDraftImport,
@@ -198,6 +199,7 @@ export function buildPlan(
   };
 
   const productSelections = buildProductSelections(feed, config, decisions);
+  const inventory = buildInventory(feed, config, decisions);
 
   for (const group of feed.customerGroups.values()) {
     if (group.name === undefined) {
@@ -221,6 +223,7 @@ export function buildPlan(
       variants,
       standalonePrices,
       productSelections,
+      inventory,
       prerequisites,
       decisions: [...model.decisions, ...decisions],
       keyMap,
@@ -228,6 +231,85 @@ export function buildPlan(
     },
     diagnostics,
   };
+}
+
+/**
+ * Feed stock into `InventoryImport` resources.
+ *
+ * The only real decision here is the key, which the Import API requires and
+ * the feed does not supply. It is derived from the identity pair — SKU, plus
+ * supply channel where there is one — for the same reason a price key is
+ * derived from its scope: a second run over refreshed stock has to resolve to
+ * the same key, or it creates a parallel entry for a `(sku, supplyChannel)`
+ * that already has one and the API rejects it.
+ *
+ * Sanitising the SKU is what makes two SKUs able to collide on one key
+ * (`A/1` and `A-1` both become `A-1`), so the collision is checked rather
+ * than assumed away: the alternative is one silently overwriting the other's
+ * stock.
+ */
+function buildInventory(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  decisions: MappingDecision[],
+): InventoryImport[] {
+  if (feed.inventoryEntries.size === 0) return [];
+
+  const entries: InventoryImport[] = [];
+  const byKey = new Map<string, string>();
+  let channelScoped = 0;
+
+  for (const [id, entry] of feed.inventoryEntries) {
+    const parts = [slugSafeSku(entry.sku)];
+    if (entry.supplyChannel !== undefined) {
+      parts.push(slugSafeSku(entry.supplyChannel));
+      channelScoped++;
+    }
+    const key = resourceKey(config.keys.prefix, parts.join('-')).slice(0, 256);
+
+    const clash = byKey.get(key);
+    if (clash !== undefined && clash !== id) {
+      decisions.push({
+        subject: `inventoryEntry:${id}`,
+        outcome: `key collision with ${clash}; entry skipped`,
+        rationale:
+          `Both identities sanitise to the key '${key}'. Importing both would leave ` +
+          'whichever arrived last holding the stock for both, so neither is guessed at. ' +
+          'Give the SKUs keys that differ in [A-Za-z0-9_-], or supply stock for them ' +
+          'separately.',
+        lossy: true,
+      });
+      continue;
+    }
+    byKey.set(key, id);
+
+    entries.push({
+      key,
+      sku: entry.sku,
+      quantityOnStock: entry.quantityOnStock,
+      ...(entry.supplyChannel !== undefined
+        ? { supplyChannel: { typeId: 'channel' as const, key: entry.supplyChannel } }
+        : {}),
+      ...(entry.restockableInDays !== undefined
+        ? { restockableInDays: entry.restockableInDays }
+        : {}),
+      ...(entry.expectedDelivery !== undefined
+        ? { expectedDelivery: entry.expectedDelivery }
+        : {}),
+    });
+  }
+
+  decisions.push({
+    subject: 'inventory',
+    outcome: `${entries.length} InventoryEntry resource(s), ${channelScoped} channel-scoped`,
+    rationale:
+      'Stock is loaded as InventoryEntry resources keyed on (sku, supplyChannel), so a ' +
+      'later run over refreshed stock updates rather than duplicating. quantityOnStock is ' +
+      'taken as overall stock including anything reserved; availableQuantity is computed ' +
+      'by the platform and is not importable.',
+  });
+
+  return entries;
 }
 
 /**

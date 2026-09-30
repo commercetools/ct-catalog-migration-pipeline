@@ -99,6 +99,7 @@ export function loadPlan(outDir: string): MigrationPlan {
     variants: plan.variants ?? [],
     standalonePrices: plan.standalonePrices ?? [],
     productSelections: plan.productSelections ?? [],
+    inventory: plan.inventory ?? [],
     prerequisites: plan.prerequisites ?? { channels: [], customerGroups: [], stores: [] },
     decisions: plan.decisions ?? [],
     keyMap,
