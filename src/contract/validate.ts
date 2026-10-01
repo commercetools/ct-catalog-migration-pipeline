@@ -44,6 +44,7 @@ import {
   emptyFeed,
   FEED_TYPES,
   inventoryIdentity,
+  taxRateScope,
   type CatalogFeed,
   type FeedAttributeDefinition,
   type FeedCategory,
@@ -54,6 +55,7 @@ import {
   type FeedProductSelection,
   type FeedRecord,
   type FeedStore,
+  type FeedTaxCategory,
   type FeedVariant,
 } from '../model/feed.js';
 import type { PipelineConfig } from '../model/config.js';
@@ -284,6 +286,13 @@ function index(
       if (feed.customerGroups.has(r.code)) return duplicate('customerGroup', r.code);
       feed.customerGroups.set(r.code, r);
       feed.origin.set(`customerGroup:${r.code}`, { file, line });
+      return;
+    }
+    case 'taxCategory': {
+      const r = record as FeedTaxCategory;
+      if (feed.taxCategories.has(r.code)) return duplicate('taxCategory', r.code);
+      feed.taxCategories.set(r.code, r);
+      feed.origin.set(`taxCategory:${r.code}`, { file, line });
       return;
     }
     case 'productSelection': {
@@ -705,6 +714,7 @@ function checkAgainstConfig(
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
+  checkTaxCategories(feed, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
 
   for (const [currency, sku] of firstUse) {
@@ -1187,6 +1197,154 @@ function checkInventory(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
           `Inventory entry for SKU '${entry.sku}' is supplied by channel '${code}', whose ` +
           `roles are [${channel.roles.join(', ')}]. Stock needs InventorySupply, and a ` +
           'store cannot list the channel as a supply channel without it.',
+        ...at,
+      });
+    }
+  }
+}
+
+/**
+ * Tax categories: the references to them, their rates, and the products that
+ * have none.
+ *
+ * The reference is an error for a sharper reason than a price's channel. A
+ * product draft whose `taxCategory` does not resolve is held up **whole** —
+ * variants, prices and all — and expires after 48 hours. One typo in a code
+ * shared by a thousand products is a thousand products that never arrive.
+ *
+ * Everything else is a warning, because the feed cannot know the cart tax
+ * mode. Under `External` or `ExternalAmount` an outside service supplies the
+ * rate and a category needs none; under `Platform`, the default, a product
+ * with no category or a category with no rate for the shipping country cannot
+ * be taxed at checkout. None of that shows at load time, so it is said here.
+ */
+function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
+  /** category code → first product using it. */
+  const uses = new Map<string, string>();
+  const untaxed: string[] = [];
+
+  for (const product of feed.products.values()) {
+    const code = product.taxCategory;
+    if (code === undefined) {
+      untaxed.push(product.code);
+      continue;
+    }
+    if (!uses.has(code)) uses.set(code, product.code);
+    if (feed.taxCategories.has(code)) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'undeclared-tax-category',
+      message:
+        `Product '${product.code}' references tax category '${code}', which no ` +
+        'taxCategory record declares. The Import API cannot create a tax category, and ' +
+        'a product whose reference does not resolve is held up whole — variants and ' +
+        'prices with it — then expires after 48 hours.\n' +
+        `      Declare it: {"_type":"taxCategory","code":"${code}","rates":[...]}. The ` +
+        "code is the category's key in the project, verbatim. `load` creates it if it " +
+        'is missing and leaves it alone if it exists.',
+      ...(feed.origin.get(`product:${product.code}`) ?? {}),
+    });
+  }
+
+  if (untaxed.length > 0 && feed.products.size > 0) {
+    const none = feed.taxCategories.size === 0;
+    diagnostics.push({
+      severity: 'warning',
+      code: 'products-without-tax-category',
+      message:
+        (none
+          ? `No tax category is declared, so none of the ${feed.products.size} product(s) ` +
+            'will have one.'
+          : `${untaxed.length} of ${feed.products.size} product(s) have no tax category — ` +
+            `first '${untaxed[0]}'.`) +
+        ' Under the default Platform tax mode a cart takes its rate from the product\'s ' +
+        'tax category, so these cannot be taxed at checkout; the load and verify both ' +
+        'pass regardless.\n' +
+        '      Correct if carts use External or ExternalAmount tax mode, where an outside ' +
+        'service supplies the rate. Otherwise declare a taxCategory and set it on the ' +
+        'products — which tax mode the project uses is a question for whoever owns tax.',
+      ...(feed.origin.get(`product:${untaxed[0]}`) ?? {}),
+    });
+  }
+
+  // Countries something is sold into: where a price is scoped, and where a
+  // store trades. A rate is only selected by exact country match, so a gap
+  // here is a cart that cannot be taxed for that destination.
+  const storeCountries = new Set<string>();
+  for (const store of feed.stores.values()) {
+    for (const c of store.countries ?? []) storeCountries.add(c);
+  }
+
+  for (const [code, category] of feed.taxCategories) {
+    const at = feed.origin.get(`taxCategory:${code}`) ?? {};
+    const rates = category.rates ?? [];
+
+    const scopes = new Map<string, number>();
+    rates.forEach((rate, i) => {
+      const scope = taxRateScope(rate);
+      const prior = scopes.get(scope);
+      if (prior !== undefined) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'duplicate-tax-rate-scope',
+          message:
+            `Tax category '${code}' has two rates for ${scope} (rates[${prior}] and ` +
+            `rates[${i}]). The API allows one rate per country and state and refuses the ` +
+            'category, which then holds up every product that references it.',
+          ...at,
+        });
+        return;
+      }
+      scopes.set(scope, i);
+    });
+
+    if (!uses.has(code)) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'tax-category-never-referenced',
+        message:
+          `Tax category '${code}' is declared but no product references it. It will still ` +
+          'be created if the project lacks it — a write outside the catalog that nothing ' +
+          'in this load needs.',
+        ...at,
+      });
+      continue;
+    }
+
+    if (rates.length === 0) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'tax-category-without-rates',
+        message:
+          `Tax category '${code}' declares no rates. Correct if carts use External or ` +
+          'ExternalAmount tax mode. Under Platform, every cart containing one of its ' +
+          'products fails to calculate tax — and if the category already exists in the ' +
+          "project, the project's own rates are the ones that apply.",
+        ...at,
+      });
+      continue;
+    }
+
+    const sold = new Set(storeCountries);
+    for (const product of feed.products.values()) {
+      if (product.taxCategory !== code) continue;
+      for (const sku of feed.variantsByProduct.get(product.code) ?? []) {
+        for (const price of feed.variants.get(sku)?.prices ?? []) {
+          if (price.country) sold.add(price.country);
+        }
+      }
+    }
+    const rated = new Set(rates.map((r) => r.country));
+    const uncovered = [...sold].filter((c) => !rated.has(c)).sort();
+    if (uncovered.length > 0) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'tax-rate-country-missing',
+        message:
+          `Tax category '${code}' has no rate for [${uncovered.join(', ')}], where its ` +
+          'products are priced or a store trades. A rate is selected by exact country ' +
+          'match on the shipping address, so under Platform tax mode a cart shipping ' +
+          'there cannot be taxed.',
         ...at,
       });
     }

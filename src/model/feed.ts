@@ -159,6 +159,16 @@ export interface FeedProduct {
    * selection's assignments cannot be sent across more than one resource.
    */
   selections?: FeedSelectionMembership[];
+  /**
+   * Code of a declared `taxCategory`. Set on the product, not the variant,
+   * because that is where commercetools holds it.
+   *
+   * Optional in the contract and consequential in the project: under the
+   * default `Platform` tax mode a cart takes its rate from this reference, so
+   * a product without one cannot be taxed at checkout. Nothing at load time
+   * says so, which is why `validate` counts them.
+   */
+  taxCategory?: string;
 }
 
 /**
@@ -249,6 +259,62 @@ export interface FeedCustomerGroup {
   code: string;
   /** `CustomerGroup.name` is required by the API; derived from the code when absent. */
   name?: string;
+}
+
+/**
+ * One rate within a tax category: a country, optionally a state, and a
+ * fraction.
+ *
+ * `amount` is a **fraction, not a percentage** — 0.2 for 20%. The API caps it
+ * at 1, and an adapter copying a source's `20` would otherwise produce a rate
+ * of 2000% that no stage downstream would question.
+ *
+ * `includedInPrice` has no default, deliberately. It decides whether every
+ * price in the catalog is read as gross or net, and getting it backwards shifts
+ * every price by the rate with nothing in the data to contradict it.
+ */
+export interface FeedTaxRate {
+  /** ISO 3166-1 alpha-2. */
+  country: string;
+  /** Case-sensitive, and must match the casing carts use in `shippingAddress.state`. */
+  state?: string;
+  /** Fraction in [0, 1]. */
+  amount: number;
+  includedInPrice: boolean;
+  /**
+   * Required by the API and shown on orders as the tax portion's name — so a
+   * derived one lands on invoices. Derived from country and amount when
+   * absent, and recorded for review.
+   */
+  name?: string;
+}
+
+/**
+ * How a set of products is taxed, per country.
+ *
+ * A prerequisite shaped like `channel`: the Import API has **no tax-category
+ * resource**, so `load` creates a missing one through the platform API and
+ * never modifies one that exists. `code` is therefore the project's actual
+ * key, verbatim — tax categories are usually shared with shipping methods and
+ * set up by whoever owns tax, not by a catalog migration.
+ *
+ * Rates are carried in full rather than referenced, so a fresh project can be
+ * loaded in one pass. They are only *used* when the category is created: an
+ * existing category keeps the project's rates, and `preflight` reports any
+ * difference rather than overwriting what the tax owner set.
+ *
+ * `rates` may be empty. That is correct for a project whose carts use
+ * `External` or `ExternalAmount` tax mode, where an outside service supplies
+ * the rate — and wrong under `Platform`, so `validate` warns.
+ */
+export interface FeedTaxCategory {
+  _type: 'taxCategory';
+  /** The tax category's key in the project, verbatim. */
+  code: string;
+  /** Required by the API and unique per project; derived from the code when absent. */
+  name?: string;
+  description?: string;
+  rates?: FeedTaxRate[];
 }
 
 /**
@@ -375,6 +441,7 @@ export type FeedRecord =
   | FeedVariant
   | FeedChannel
   | FeedCustomerGroup
+  | FeedTaxCategory
   | FeedProductSelection
   | FeedStore
   | FeedInventoryEntry;
@@ -382,6 +449,7 @@ export type FeedRecord =
 export const FEED_TYPES = [
   'channel',
   'customerGroup',
+  'taxCategory',
   'productSelection',
   'store',
   'category',
@@ -399,6 +467,14 @@ export const FEED_TYPES = [
  */
 export function inventoryIdentity(sku: string, supplyChannel?: string): string {
   return supplyChannel ? `${sku}@${supplyChannel}` : sku;
+}
+
+/**
+ * Identity of a tax rate within its category: country, plus state when there
+ * is one. The API rejects a second rate for the same pair.
+ */
+export function taxRateScope(rate: { country: string; state?: string }): string {
+  return rate.state ? `${rate.country}/${rate.state}` : rate.country;
 }
 
 /**
@@ -433,6 +509,8 @@ export interface CatalogFeed {
   /** Prerequisites the project must already hold — see FeedChannel. */
   channels: Map<string, FeedChannel>;
   customerGroups: Map<string, FeedCustomerGroup>;
+  /** Created if absent, never modified — see FeedTaxCategory. */
+  taxCategories: Map<string, FeedTaxCategory>;
   /** Importable, unlike the prerequisites above — see FeedProductSelection. */
   productSelections: Map<string, FeedProductSelection>;
   /** A prerequisite, and the thing that makes channels and selections visible. */
@@ -454,6 +532,7 @@ export function emptyFeed(): CatalogFeed {
   return {
     channels: new Map(),
     customerGroups: new Map(),
+    taxCategories: new Map(),
     productSelections: new Map(),
     stores: new Map(),
     categories: new Map(),

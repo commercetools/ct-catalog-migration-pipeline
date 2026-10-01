@@ -124,6 +124,7 @@ export function auditPlan(plan: MigrationPlan, config: PipelineConfig): AuditRes
   checkPriceModeConsistency(plan, config, diagnostics);
   checkStandalonePrices(plan, config, diagnostics);
   checkInventory(plan, diagnostics);
+  checkTaxCategories(plan, diagnostics);
 
   return { diagnostics, checked };
 }
@@ -439,7 +440,23 @@ function checkReferences(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
     }
   }
 
+  // Tax categories are prerequisites rather than imports, so "the plan creates
+  // it" means "the plan declares it": `load` creates it if absent. A reference
+  // outside that list is one only the project can satisfy, and nothing has
+  // checked that it does.
+  const taxCategoryKeys = new Set((plan.prerequisites?.taxCategories ?? []).map((t) => t.key));
+
   for (const p of plan.products) {
+    if (p.taxCategory && !taxCategoryKeys.has(p.taxCategory.key)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'dangling-tax-category',
+        message:
+          `Product '${p.key}' references tax category '${p.taxCategory.key}', which the ` +
+          "plan's prerequisites do not declare. If the project lacks it, the whole product " +
+          'draft sits unresolved for 48 hours and then expires, variants and prices with it.',
+      });
+    }
     if (!productTypeKeys.has(p.productType.key)) {
       diagnostics.push({
         severity: 'error',
@@ -1236,6 +1253,76 @@ function checkInventory(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
       });
     } else {
       scopes.set(scope, entry.key);
+    }
+  }
+}
+
+/**
+ * Tax category drafts, re-checked from the written plan.
+ *
+ * `validate` saw the feed, where the schema already bounds every field. The
+ * gate sees plan.json, which may have been edited by hand or written by an
+ * older build, and a tax category the API refuses does not fail alone — every
+ * product referencing it is held up behind it.
+ */
+function checkTaxCategories(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
+  const keys = new Set<string>();
+
+  for (const category of plan.prerequisites?.taxCategories ?? []) {
+    if (keys.has(category.key)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'duplicate-resource-key',
+        message:
+          `Tax category '${category.key}' is declared twice in the prerequisites. The ` +
+          'second create would be refused, and which rates the project keeps depends on ' +
+          'which draft ran first.',
+      });
+    }
+    keys.add(category.key);
+
+    const scopes = new Set<string>();
+    for (const rate of category.rates ?? []) {
+      const problems: string[] = [];
+      if (typeof rate.amount !== 'number' || rate.amount < 0 || rate.amount > 1) {
+        problems.push(
+          `amount ${JSON.stringify(rate.amount)} is not a fraction in [0, 1]` +
+            (typeof rate.amount === 'number' && rate.amount > 1
+              ? ` — ${rate.amount} reads as ${rate.amount * 100}%; 20% is 0.2`
+              : ''),
+        );
+      }
+      if (typeof rate.includedInPrice !== 'boolean') {
+        problems.push('includedInPrice is not a boolean');
+      }
+      if (typeof rate.country !== 'string' || !/^[A-Z]{2}$/.test(rate.country)) {
+        problems.push(`country ${JSON.stringify(rate.country)} is not ISO 3166-1 alpha-2`);
+      }
+      if (typeof rate.name !== 'string' || rate.name === '') {
+        problems.push('name is missing, and the API requires one');
+      }
+      if (problems.length > 0) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'tax-rate-invalid',
+          message:
+            `Tax category '${category.key}' has an invalid rate: ${problems.join('; ')}. ` +
+            'The API refuses the category, and every product referencing it waits ' +
+            'unresolved behind it.',
+        });
+      }
+
+      const scope = rate.state ? `${rate.country}/${rate.state}` : rate.country;
+      if (scopes.has(scope)) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'duplicate-tax-rate-scope',
+          message:
+            `Tax category '${category.key}' has two rates for ${scope}. The API allows one ` +
+            'per country and state (DuplicateField) and refuses the whole category.',
+        });
+      }
+      scopes.add(scope);
     }
   }
 }

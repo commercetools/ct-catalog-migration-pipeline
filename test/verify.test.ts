@@ -29,6 +29,7 @@ import type {
   ProductType,
   StandalonePrice,
   Store,
+  TaxCategory,
   Variant,
 } from '@commercetools/platform-sdk';
 
@@ -162,6 +163,10 @@ function matchingSnapshot(plan: MigrationPlan, config: ReturnType<typeof fixture
       key: p.key,
       productType: { typeId: 'product-type', id: productTypeIdOf(p.productType.key) },
       priceMode: config.target.priceMode === 'standalone' ? 'Standalone' : 'Embedded',
+      // Comes back as an id, like every other reference.
+      ...(p.taxCategory
+        ? { taxCategory: { typeId: 'tax-category' as const, id: `tcid-${p.taxCategory.key}` } }
+        : {}),
       masterData: {
         published: false,
         hasStagedChanges: false,
@@ -297,6 +302,24 @@ function matchingSnapshot(plan: MigrationPlan, config: ReturnType<typeof fixture
     productTypeKeyById: new Map([...productTypes].map(([k, p]) => [p.id, k])),
     productSelectionKeyById: new Map(
       (plan.productSelections ?? []).map((sel) => [`psid-${sel.key}`, sel.key]),
+    ),
+    taxCategories: new Map(
+      (plan.prerequisites?.taxCategories ?? []).map((t) => [
+        t.key,
+        {
+          id: `tcid-${t.key}`,
+          version: 1,
+          createdAt: '',
+          lastModifiedAt: '',
+          key: t.key,
+          name: t.name,
+          // The API adds an id to every rate; the comparison must not care.
+          rates: t.rates.map((r, i) => ({ ...r, id: `rate-${i}` })),
+        } as TaxCategory,
+      ]),
+    ),
+    taxCategoryKeyById: new Map(
+      (plan.prerequisites?.taxCategories ?? []).map((t) => [`tcid-${t.key}`, t.key]),
     ),
   };
 }
@@ -991,4 +1014,103 @@ test('verify: stock that lost its supply channel is an error', () => {
   assert.ok(d);
   assert.equal(d.severity, 'error');
   assert.match(d.message, /counts everywhere/);
+});
+
+// ---------------------------------------------------------------------------
+// Tax categories
+// ---------------------------------------------------------------------------
+
+/** declared-types with `standard` declared and on every product. */
+function taxVerifyPlan(): { plan: MigrationPlan; config: ReturnType<typeof fixture>['config'] } {
+  const { plan, config } = fixture('declared-types');
+  return {
+    config,
+    plan: {
+      ...plan,
+      products: plan.products.map((p) => ({
+        ...p,
+        taxCategory: { typeId: 'tax-category' as const, key: 'standard' },
+      })),
+      prerequisites: {
+        ...plan.prerequisites,
+        taxCategories: [
+          {
+            key: 'standard',
+            name: 'Standard',
+            rates: [{ name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB' }],
+          },
+        ],
+      },
+    },
+  };
+}
+
+test('tax: a project matching the plan, rates and references, is silent', () => {
+  const { plan, config } = taxVerifyPlan();
+  const r = reconcile(plan, matchingSnapshot(plan, config), config);
+  assert.deepEqual(codes(r.diagnostics), []);
+  assert.equal(r.found.taxCategories, 1);
+  assert.equal(r.checked.taxCategories, 1);
+});
+
+test('tax: a missing category is reported first, as the cause of missing products', () => {
+  const { plan, config } = taxVerifyPlan();
+  const snapshot = matchingSnapshot(plan, config);
+  snapshot.taxCategories!.clear();
+  const r = reconcile(plan, snapshot, config);
+  assert.equal(r.diagnostics[0].code, 'tax-category-missing');
+  assert.match(r.diagnostics[0].message, /any of those reported missing below/);
+});
+
+test('tax: a product taxed by the wrong category, or by none, is an error', () => {
+  const { plan, config } = taxVerifyPlan();
+  const snapshot = matchingSnapshot(plan, config);
+  const [first, second] = plan.products.map((p) => p.key);
+  snapshot.products.set(first, { ...snapshot.products.get(first)!, taxCategory: undefined });
+  snapshot.products.set(second, {
+    ...snapshot.products.get(second)!,
+    taxCategory: { typeId: 'tax-category', id: 'somebody-elses' },
+  });
+  const found = reconcile(plan, snapshot, config).diagnostics.filter(
+    (d) => d.code === 'product-tax-category-differs',
+  );
+  assert.equal(found.length, 2);
+  assert.match(found[0].message, /is unset in the project, the plan says 'standard'/);
+  // An id outside the plan stays an id rather than silently matching.
+  assert.match(found[1].message, /is 'id somebody-elses' in the project/);
+});
+
+test('tax: other rates on the category are a warning, since load never changes them', () => {
+  const { plan, config } = taxVerifyPlan();
+  const snapshot = matchingSnapshot(plan, config);
+  const actual = snapshot.taxCategories!.get('standard')!;
+  snapshot.taxCategories!.set('standard', {
+    ...actual,
+    rates: [{ ...actual.rates[0], includedInPrice: false }, { name: 'IE', amount: 0.23, includedInPrice: true, country: 'IE' }],
+  });
+  const d = reconcile(plan, snapshot, config).diagnostics.find(
+    (x) => x.code === 'tax-category-rates-differ',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /GB is 0\.2 added, planned 0\.2 included/);
+  assert.match(d.message, /IE unplanned/);
+});
+
+test('tax: the snapshot reads categories by their verbatim keys', async () => {
+  const { plan } = taxVerifyPlan();
+  const { queries, clients } = fakePlatform();
+  (clients.platform as unknown as Record<string, unknown>).taxCategories = () => ({
+    get: ({ queryArgs }: { queryArgs: { where: string } }) => ({
+      execute: async () => {
+        queries.push({ kind: 'taxCategories', query: queryArgs as never });
+        return { body: { results: [] } };
+      },
+    }),
+  });
+  const r = await fetchSnapshot(clients, plan);
+  const q = queries.find((x) => x.kind === 'taxCategories');
+  assert.ok(q);
+  assert.match(q.query.where, /key in \("standard"\)/);
+  assert.equal(r.snapshot.taxCategories?.size, 0);
 });

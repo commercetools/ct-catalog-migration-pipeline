@@ -283,9 +283,10 @@ interface FakeOptions {
     stores?: { key: string; productSelections?: unknown[] }[] | Error;
     channels?: { key: string; roles: string[] }[] | Error;
     customerGroups?: { key: string }[] | Error;
+    taxCategories?: { key: string }[] | Error;
   };
   /** Per kind, so a test can fail one create without failing the other. */
-  createError?: Partial<Record<'channels' | 'customerGroups' | 'stores', unknown>>;
+  createError?: Partial<Record<'channels' | 'customerGroups' | 'taxCategories' | 'stores', unknown>>;
   containerError?: unknown;
   /** True when the container is already there, i.e. any run after the first. */
   containerExists?: boolean;
@@ -402,7 +403,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     variants: stagePoster('variant'),
   };
 
-  const platformStage = (kind: 'channels' | 'customerGroups' | 'stores') => () => ({
+  const platformStage = (kind: 'channels' | 'customerGroups' | 'taxCategories' | 'stores') => () => ({
     get: ({ queryArgs }: { queryArgs: { where: string } }) => ({
       execute: async () => {
         recorded.prerequisiteReads.push({ kind, where: queryArgs.where });
@@ -427,6 +428,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     {
       channels: platformStage('channels'),
       customerGroups: platformStage('customerGroups'),
+      taxCategories: platformStage('taxCategories'),
       stores: platformStage('stores'),
     },
     {
@@ -1415,4 +1417,110 @@ test('batches: stock is loaded after the variants it names', () => {
   const lastDraft = batches.map((b) => b.stage).lastIndexOf('product-draft');
   const firstStock = batches.map((b) => b.stage).indexOf('inventory');
   assert.ok(lastDraft >= 0 && firstStock > lastDraft);
+});
+
+// ---------------------------------------------------------------------------
+// Tax categories: a third platform prerequisite
+// ---------------------------------------------------------------------------
+
+function planNeedingTax(): MigrationPlan {
+  const plan = basePlan();
+  return {
+    ...plan,
+    products: plan.products.map((p) => ({
+      ...p,
+      taxCategory: { typeId: 'tax-category' as const, key: 'standard' },
+    })),
+    prerequisites: {
+      channels: [],
+      customerGroups: [],
+      stores: [],
+      taxCategories: [
+        {
+          key: 'standard',
+          name: 'Standard',
+          rates: [{ name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB' }],
+        },
+      ],
+    },
+  };
+}
+
+test('tax: a missing category is created with its rates, before any import', async () => {
+  const { clients, recorded } = fakeClients({ existing: { taxCategories: [] } });
+  const r = await runLoad(clients, planNeedingTax(), config(), {
+    execute: true,
+    concurrency: 1,
+    sleep: noSleep,
+  });
+  const tax = r.prerequisites.find((p) => p.stage === 'tax-category')!;
+  assert.deepEqual(tax.created, ['standard']);
+  assert.deepEqual(recorded.created, [
+    {
+      kind: 'taxCategories',
+      body: {
+        key: 'standard',
+        name: 'Standard',
+        rates: [{ name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB' }],
+      },
+    },
+  ]);
+  // A product whose taxCategory does not resolve is held up whole, so the
+  // category has to exist before the first product draft is posted.
+  const created = recorded.sequence.indexOf('create:taxCategories');
+  const firstImport = recorded.sequence.findIndex((e) => e.startsWith('post:'));
+  assert.ok(created >= 0 && created < firstImport);
+});
+
+test('tax: an existing category is left exactly as found, rates and all', async () => {
+  // Its rates also tax shipping and belong to whoever owns tax. `preflight`
+  // names a difference; `load` never acts on one.
+  const { clients, recorded } = fakeClients({
+    existing: { taxCategories: [{ key: 'standard' }] },
+  });
+  const r = await runLoad(clients, planNeedingTax(), config(), { execute: true, sleep: noSleep });
+  const tax = r.prerequisites.find((p) => p.stage === 'tax-category')!;
+  assert.deepEqual(tax.existing, ['standard']);
+  assert.deepEqual(recorded.created, [], 'no post, no update');
+});
+
+test('tax: a dry run reads, reports would-create, and posts nothing', async () => {
+  const { clients, recorded } = fakeClients({ existing: { taxCategories: [] } });
+  const r = await runLoad(clients, planNeedingTax(), config(), { sleep: noSleep });
+  assert.deepEqual(r.prerequisites.find((p) => p.stage === 'tax-category')!.created, ['standard']);
+  assert.deepEqual(recorded.created, []);
+  assert.match(
+    recorded.prerequisiteReads.find((x) => x.kind === 'taxCategories')!.where,
+    /key in \("standard"\)/,
+  );
+});
+
+test('tax: a refused create stops the import and names the name-uniqueness trap', async () => {
+  const { clients, recorded } = fakeClients({
+    existing: { taxCategories: [] },
+    createError: { taxCategories: Object.assign(new Error('InvalidOperation'), { statusCode: 400 }) },
+  });
+  const r = await runLoad(clients, planNeedingTax(), config(), { execute: true, sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'prerequisite-create-failed')!;
+  assert.match(d.message, /unique per project, not only the key/);
+  assert.ok(r.diagnostics.some((x) => x.code === 'prerequisites-unmet'));
+  assert.equal(recorded.posts.length, 0, 'products that would wait unresolved are not sent');
+});
+
+test('tax: an unreadable list names the tax scopes, not the import ones', async () => {
+  const { clients } = fakeClients({
+    existing: { taxCategories: Object.assign(new Error('Insufficient scope'), { statusCode: 403 }) },
+  });
+  const r = await runLoad(clients, planNeedingTax(), config(), { execute: true, sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'prerequisite-read-failed')!;
+  assert.match(d.message, /view_tax_categories/);
+  assert.match(d.message, /manage_products also grants both/);
+});
+
+test('tax: a plan written before tax categories existed loads as before', async () => {
+  // No `taxCategories` in the prerequisites at all — an old plan.json.
+  const plan = basePlan();
+  const { clients, recorded } = fakeClients();
+  await runLoad(clients, plan, config(), { execute: true, sleep: noSleep });
+  assert.ok(!recorded.prerequisiteReads.some((x) => x.kind === 'taxCategories'));
 });

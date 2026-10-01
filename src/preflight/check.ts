@@ -11,10 +11,10 @@
  * something a migration tool should do on the way past.
  */
 
-import type { Project } from '@commercetools/platform-sdk';
+import type { Project, TaxCategory } from '@commercetools/platform-sdk';
 
 import type { PipelineConfig } from '../model/config.js';
-import type { MigrationPlan } from '../model/plan.js';
+import type { MigrationPlan, PlannedTaxCategory, PlannedTaxRate } from '../model/plan.js';
 import type { ProjectUpdateAction } from '@commercetools/platform-sdk';
 
 import type { Diagnostic } from '../contract/validate.js';
@@ -394,20 +394,22 @@ async function checkPrerequisites(
 ): Promise<void> {
   const channels = plan?.prerequisites?.channels ?? [];
   const groups = plan?.prerequisites?.customerGroups ?? [];
+  const taxCategories = plan?.prerequisites?.taxCategories ?? [];
 
   if (plan === undefined) {
     diagnostics.push({
       severity: 'warning',
       code: 'prerequisites-unchecked',
       message:
-        'No plan was found, so the channels and customer groups the prices reference could ' +
-        'not be checked. Neither can be created by this pipeline, and a missing one makes ' +
-        'its prices expire unresolved after 48 hours — run `plan` and preflight again.',
+        'No plan was found, so the channels, customer groups and tax categories the ' +
+        'prices and products reference could not be checked. The Import API can create ' +
+        'none of them, and a reference to a missing one expires unresolved after 48 ' +
+        'hours — run `plan` and preflight again.',
     });
     return;
   }
 
-  if (channels.length === 0 && groups.length === 0) return;
+  if (channels.length === 0 && groups.length === 0 && taxCategories.length === 0) return;
 
   const byKey = async (
     kind: string,
@@ -498,6 +500,134 @@ async function checkPrerequisites(
       }
     }
   }
+
+  await checkTaxCategories(clients, taxCategories, diagnostics);
+}
+
+/**
+ * Tax categories the products reference: which will be created, which exist
+ * with other rates, and which cannot be created at all.
+ *
+ * **The name is unique per project as well as the key.** So a category the
+ * key query does not find can still be uncreatable, because another category
+ * already holds its name — the create is refused and every product
+ * referencing the key waits unresolved behind it. That is the only case here
+ * that blocks, and one read answers both questions.
+ *
+ * **Different rates on an existing category are a warning.** `load` will not
+ * touch them: a category also taxes shipping, and its rates belong to whoever
+ * owns tax. But the products will be taxed at the project's rates, not the
+ * feed's, and that should be seen before the load rather than on an invoice.
+ */
+async function checkTaxCategories(
+  clients: Clients,
+  wanted: PlannedTaxCategory[],
+  diagnostics: Diagnostic[],
+): Promise<void> {
+  if (wanted.length === 0) return;
+
+  const quote = (v: string) => `"${v.replace(/"/g, '\\"')}"`;
+  const where =
+    `key in (${wanted.map((t) => quote(t.key)).join(',')}) or ` +
+    `name in (${wanted.map((t) => quote(t.name)).join(',')})`;
+
+  let found: TaxCategory[];
+  try {
+    found = (await clients.platform.taxCategories().get({ queryArgs: { where, limit: 500 } }).execute())
+      .body.results;
+  } catch (err) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'prerequisites-unreadable',
+      message:
+        `Could not read tax categories from the project: ${messageOf(err)}\n` +
+        `      ${wanted.length} tax category(ies) the plan's products reference could not ` +
+        'be verified. Reading needs view_tax_categories, which view_products also grants.',
+    });
+    return;
+  }
+
+  const byKey = new Map(found.filter((t) => t.key !== undefined).map((t) => [t.key!, t]));
+  const byName = new Map(found.map((t) => [t.name, t]));
+
+  for (const category of wanted) {
+    const existing = byKey.get(category.key);
+    if (!existing) {
+      const namesake = byName.get(category.name);
+      if (namesake) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'tax-category-name-taken',
+          message:
+            `The project has no tax category with key '${category.key}', but one named ` +
+            `'${category.name}' already exists under ` +
+            `${namesake.key ? `key '${namesake.key}'` : `id ${namesake.id} (no key)`}. ` +
+            'Tax category names are unique per project, so `load` cannot create this one ' +
+            'and every product referencing it would sit unresolved.\n' +
+            '      If it is the same category, use its key as the code in the feed. If ' +
+            'not, give the feed record a different name.',
+        });
+        continue;
+      }
+      diagnostics.push({
+        severity: 'warning',
+        code: 'tax-category-will-be-created',
+        message:
+          `The project has no tax category with key '${category.key}'. \`load --execute\` ` +
+          `will create it as '${category.name}' with ${category.rates.length} rate(s) ` +
+          'through the platform API, because the Import API has no tax-category resource.\n' +
+          '      A write outside the catalog, and one that decides what shoppers are ' +
+          'charged — confirm the rates with whoever owns tax. If the category should ' +
+          'already exist, the code in the feed is probably wrong.',
+      });
+      continue;
+    }
+
+    const differences = compareTaxRates(category.rates, existing.rates ?? []);
+    if (differences.length > 0) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'tax-category-rates-differ',
+        message:
+          `Tax category '${category.key}' exists with rates that differ from the feed: ` +
+          `${differences.join('; ')}.\n` +
+          "      Not modified: the project's rates stay, and they are what these products " +
+          "will be taxed at. A category's rates also tax shipping and belong to whoever " +
+          'owns tax — reconcile them there if the feed is right.',
+      });
+    }
+  }
+}
+
+/** Planned rates against the project's, by (country, state). Empty when equal. */
+function compareTaxRates(
+  planned: PlannedTaxRate[],
+  actual: { country: string; state?: string; amount: number; includedInPrice: boolean }[],
+): string[] {
+  const scope = (r: { country: string; state?: string }) =>
+    r.state ? `${r.country}/${r.state}` : r.country;
+  const have = new Map(actual.map((r) => [scope(r), r]));
+  const want = new Map(planned.map((r) => [scope(r), r]));
+  const out: string[] = [];
+
+  for (const [key, rate] of want) {
+    const other = have.get(key);
+    if (!other) {
+      out.push(`${key} planned, absent`);
+      continue;
+    }
+    if (other.amount !== rate.amount) out.push(`${key} amount ${other.amount} vs ${rate.amount}`);
+    if (other.includedInPrice !== rate.includedInPrice) {
+      out.push(
+        `${key} is ${other.includedInPrice ? 'included' : 'added'} in the project, ` +
+          `${rate.includedInPrice ? 'included' : 'added'} in the feed`,
+      );
+    }
+  }
+  for (const key of have.keys()) {
+    if (!want.has(key)) out.push(`${key} present, not planned`);
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

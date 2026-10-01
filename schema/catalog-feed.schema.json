@@ -27,6 +27,9 @@
       "$ref": "#/$defs/customerGroup"
     },
     {
+      "$ref": "#/$defs/taxCategory"
+    },
+    {
       "$ref": "#/$defs/productSelection"
     },
     {
@@ -361,6 +364,10 @@
             "$ref": "#/$defs/selectionMembership"
           },
           "description": "Which product selections carry this product. Authored on the product because one record per line is this contract's defining property; `plan` inverts it into ProductSelectionImport.assignments."
+        },
+        "taxCategory": {
+          "$ref": "#/$defs/code",
+          "description": "Code of a declared taxCategory. Held on the product, not the variant. Under the default Platform tax mode a cart takes its rate from this reference, so a product without one cannot be taxed at checkout; validate counts them."
         }
       }
     },
@@ -564,6 +571,77 @@
         }
       }
     },
+    "taxRate": {
+      "type": "object",
+      "required": [
+        "country",
+        "amount",
+        "includedInPrice"
+      ],
+      "additionalProperties": false,
+      "description": "One rate within a tax category. Identity within the category is (country, state); the API rejects a second rate for the same pair.",
+      "properties": {
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$",
+          "description": "ISO 3166-1 alpha-2."
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Case-sensitive; must match the casing carts use in shippingAddress.state. A rate with a state applies only to carts whose address carries the same state."
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "A FRACTION, not a percentage: 0.2 for 20%. The API caps it at 1, and a source's `20` copied across would otherwise be a rate of 2000%."
+        },
+        "includedInPrice": {
+          "type": "boolean",
+          "description": "Whether prices are gross (true) or net (false) for this rate. No default on purpose: it decides how every price in the catalog is read, and getting it backwards shifts every price by the rate with nothing in the data to contradict it."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required by the API and shown on orders as the tax portion's name. Derived from country and amount when absent, and recorded for review."
+        }
+      }
+    },
+    "taxCategory": {
+      "type": "object",
+      "required": [
+        "_type",
+        "code"
+      ],
+      "additionalProperties": false,
+      "description": "How a set of products is taxed, per country. A prerequisite like `channel`: the Import API has no tax-category resource, so load creates a missing one through the platform API and never modifies one that exists. `code` is the project's actual key, verbatim. Rates are used only when the category is created; an existing category keeps the project's rates and preflight reports any difference.",
+      "properties": {
+        "_type": {
+          "const": "taxCategory"
+        },
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "description": "The tax category's key in the project, verbatim."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required by the API and unique per project; derived from the code when absent."
+        },
+        "description": {
+          "type": "string"
+        },
+        "rates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/taxRate"
+          },
+          "description": "May be empty: correct when carts use External or ExternalAmount tax mode, wrong under Platform, so validate warns."
+        }
+      }
+    },
     "selectionMembership": {
       "type": "object",
       "required": [
@@ -707,7 +785,7 @@
         "quantityOnStock"
       ],
       "additionalProperties": false,
-      "description": "Stock for one SKU, optionally in one supply channel. A separate record rather than a field on `variant`, because stock is refreshed on a different cadence from the catalog and usually comes from a different source file: a feed can be regenerated for stock alone. Identity is (sku, supplyChannel) — the pair the API treats as unique — and the key is derived from it, so a re-run updates rather than duplicating.",
+      "description": "Stock for one SKU, optionally in one supply channel. A separate record rather than a field on `variant`, because stock is refreshed on a different cadence from the catalog and usually comes from a different source file: a feed can be regenerated for stock alone. Identity is (sku, supplyChannel) \u2014 the pair the API treats as unique \u2014 and the key is derived from it, so a re-run updates rather than duplicating.",
       "properties": {
         "_type": {
           "const": "inventoryEntry"

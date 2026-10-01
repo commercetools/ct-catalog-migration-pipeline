@@ -57,13 +57,14 @@ export type ImportRequestBody =
 /**
  * The `resourceType` a container is restricted to, per Import API stage.
  *
- * `channel` and `customer-group` are absent on purpose: they are load stages
+ * `channel`, `customer-group`, `tax-category` and `store` are absent on
+ * purpose: they are load stages
  * but not *import* stages — the platform API creates them, so they have no
  * container, no batching and no resource type. `ImportStage` excludes them at
  * the type level rather than a runtime skip, so adding another platform stage
  * cannot silently fall through into batching.
  */
-type ImportStage = Exclude<LoadStage, 'channel' | 'customer-group' | 'store'>;
+type ImportStage = Exclude<LoadStage, 'channel' | 'customer-group' | 'tax-category' | 'store'>;
 
 const RESOURCE_TYPE: Record<ImportStage, ImportResourceType> = {
   'product-type': 'product-type',

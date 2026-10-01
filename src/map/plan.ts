@@ -17,6 +17,7 @@ import type {
   FeedPrice,
   FeedVariant,
 } from '../model/feed.js';
+import { taxRateScope } from '../model/feed.js';
 import {
   attributeDefinitionsOf,
   LOAD_ORDER,
@@ -32,6 +33,8 @@ import {
   type InventoryImport,
   type MappingDecision,
   type MigrationPlan,
+  type PlannedTaxCategory,
+  type PlannedTaxRate,
   type PriceDraftImport,
   type ProductDraftImport,
   type ProductVariantDraftImport,
@@ -181,6 +184,9 @@ export function buildPlan(
       key: g.code,
       name: g.name ?? g.code,
     })),
+    // Verbatim like channels: a tax category is usually shared with shipping
+    // methods and belongs to whoever owns tax, not to this migration.
+    taxCategories: buildTaxCategories(feed, decisions),
     // Verbatim for the same reason as channels: a store's key belongs to the
     // project, not to this migration. Its *selections*, by contrast, are
     // resources the migration creates, so those references are prefixed.
@@ -231,6 +237,86 @@ export function buildPlan(
     },
     diagnostics,
   };
+}
+
+/**
+ * Feed tax categories into the drafts `load` creates when one is missing.
+ *
+ * Recorded per category for review, because this is the one prerequisite
+ * whose content changes what a shopper pays: `includedInPrice` decides whether
+ * every price is read as gross or net. The decision states the rates plainly
+ * and says what happens when the category already exists — nothing — so the
+ * sign-off is on the right thing.
+ *
+ * Two names can be missing and both are derived: the category's, from its
+ * code, and each rate's, from country and amount. A rate's name is printed on
+ * orders as the tax portion, so a derived one is flagged rather than slipped
+ * onto invoices unannounced.
+ */
+function buildTaxCategories(
+  feed: CatalogFeed,
+  decisions: MappingDecision[],
+): PlannedTaxCategory[] {
+  const out: PlannedTaxCategory[] = [];
+
+  for (const category of feed.taxCategories.values()) {
+    const derivedNames: string[] = [];
+    const rates: PlannedTaxRate[] = (category.rates ?? []).map((rate) => {
+      const name = rate.name ?? `${taxRateScope(rate)} ${formatPercent(rate.amount)}`;
+      if (rate.name === undefined) derivedNames.push(name);
+      return {
+        name,
+        amount: rate.amount,
+        includedInPrice: rate.includedInPrice,
+        country: rate.country,
+        ...(rate.state !== undefined ? { state: rate.state } : {}),
+      };
+    });
+
+    out.push({
+      key: category.code,
+      name: category.name ?? category.code,
+      ...(category.description !== undefined ? { description: category.description } : {}),
+      rates,
+    });
+
+    decisions.push({
+      subject: `taxCategory:${category.code}`,
+      outcome:
+        rates.length === 0
+          ? 'no rates'
+          : rates
+              .map(
+                (r) =>
+                  `${taxRateScope(r)} ${formatPercent(r.amount)} ` +
+                  (r.includedInPrice ? 'included' : 'added'),
+              )
+              .join('; '),
+      rationale:
+        (rates.length === 0
+          ? 'No rates: right for External or ExternalAmount tax mode, where an outside ' +
+            'service supplies them; under Platform no cart can tax these products. '
+          : '"Included" means prices are gross for that country and tax is derived out ' +
+            'of them; "added" means they are net and tax goes on top. Backwards, every ' +
+            'price is off by the rate. ') +
+        'These rates are used only if the project lacks the category: an existing one ' +
+        "is never modified, so the project's rates apply and preflight names any " +
+        'difference.' +
+        (category.name === undefined ? ' Name taken from the code.' : '') +
+        (derivedNames.length > 0
+          ? ` Rate name(s) derived — ${derivedNames.map((n) => `'${n}'`).join(', ')} — ` +
+            'and a rate name is printed on orders as the tax portion.'
+          : ''),
+      review: true,
+    });
+  }
+
+  return out;
+}
+
+/** 0.2 → "20%", 0.075 → "7.5%" — without the float noise 0.07 * 100 carries. */
+function formatPercent(fraction: number): string {
+  return `${Number((fraction * 100).toFixed(4))}%`;
 }
 
 /**
@@ -707,6 +793,11 @@ function mapProducts(
       // Import staged and publish deliberately, so the model can be reviewed in
       // the Merchant Center before anything reaches a storefront.
       publish: false,
+      // Product-level in both catalog models, so the Modular container carries
+      // it too. Verbatim, like the prerequisite it points at.
+      ...(product.taxCategory
+        ? { taxCategory: { typeId: 'tax-category' as const, key: product.taxCategory } }
+        : {}),
     });
 
     if (modular) {

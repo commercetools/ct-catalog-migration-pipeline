@@ -245,10 +245,11 @@ test('plan: the declared fixture maps cleanly', () => {
   assert.equal(r.plan.categories.length, 4);
   assert.equal(r.plan.products.length, 3);
   assert.deepEqual(r.plan.loadOrder, [
-    // The first two are created through the platform API, not imported —
-    // they lead because prices reference them.
+    // The first three are created through the platform API, not imported —
+    // they lead because prices and products reference them.
     'channel',
     'customer-group',
+    'tax-category',
     'product-type',
     'category',
     'product-draft',
@@ -1107,4 +1108,111 @@ test('inventory: two SKUs whose keys collide drop one, loudly', () => {
   assert.ok(d);
   assert.equal(d.lossy, true);
   assert.match(d.rationale, /sanitise to the key/);
+});
+
+// ---------------------------------------------------------------------------
+// Tax categories
+// ---------------------------------------------------------------------------
+
+/** One product carrying `standard`, plus whatever tax records are passed. */
+function taxPlan(records: Record<string, unknown>[], catalogModel = 'Classic') {
+  const dir = mkdtempSync(join(tmpdir(), 'ct-tax-'));
+  const feedDir = join(dir, 'feed');
+  mkdirSync(feedDir);
+  writeFileSync(
+    join(feedDir, 'catalog.ndjson'),
+    [
+      { _type: 'attributeDefinition', name: 'material', type: 'text', level: 'product' },
+      {
+        _type: 'product',
+        code: 'P1',
+        name: { 'en-GB': 'One' },
+        attributes: { material: 'Cotton' },
+        taxCategory: 'standard',
+      },
+      {
+        _type: 'variant',
+        sku: 'P1-A',
+        product: 'P1',
+        prices: [{ currency: 'EUR', amount: '10.00', country: 'DE' }],
+      },
+      ...records,
+    ]
+      .map((r) => JSON.stringify(r))
+      .join('\n'),
+  );
+  const config = JSON.parse(
+    readFileSync(resolve(ROOT, 'fixtures', 'declared-types', 'migration.config.json'), 'utf8'),
+  );
+  config.feed.dir = feedDir;
+  config.target.catalogModel = catalogModel;
+  if (catalogModel === 'Modular') config.target.priceMode = 'standalone';
+  const configPath = join(dir, 'migration.config.json');
+  writeFileSync(configPath, JSON.stringify(config));
+  const loaded = loadConfig(configPath);
+  const { feed } = validateFeed(loaded.feedDir, resolve(ROOT, 'schema', 'catalog-feed.schema.json'), loaded.config);
+  return buildPlan(feed, deriveProductTypes(feed, loaded.config), loaded.config);
+}
+
+const STANDARD = {
+  _type: 'taxCategory',
+  code: 'standard',
+  name: 'Standard rate',
+  rates: [
+    { country: 'DE', amount: 0.19, includedInPrice: true, name: 'MwSt' },
+    { country: 'US', state: 'CA', amount: 0.0725, includedInPrice: false },
+  ],
+};
+
+test('tax: the product references its category by the verbatim key, not a prefixed one', () => {
+  // The category belongs to the project, usually shared with shipping
+  // methods. Prefixing would point every product at a category nobody made.
+  const r = taxPlan([STANDARD]);
+  assert.deepEqual(r.plan.products[0].taxCategory, { typeId: 'tax-category', key: 'standard' });
+});
+
+test('tax: Modular containers carry the category too, since it is product-level', () => {
+  const r = taxPlan([STANDARD], 'Modular');
+  assert.deepEqual(r.plan.products[0].taxCategory, { typeId: 'tax-category', key: 'standard' });
+});
+
+test('tax: the prerequisite carries the rates a missing category is created with', () => {
+  const r = taxPlan([STANDARD]);
+  assert.deepEqual(r.plan.prerequisites.taxCategories, [
+    {
+      key: 'standard',
+      name: 'Standard rate',
+      rates: [
+        { name: 'MwSt', amount: 0.19, includedInPrice: true, country: 'DE' },
+        // Derived, and without the float noise 0.0725 * 100 carries.
+        { name: 'US/CA 7.25%', amount: 0.0725, includedInPrice: false, country: 'US', state: 'CA' },
+      ],
+    },
+  ]);
+});
+
+test('tax: the rates are a decision for review, and say an existing category is untouched', () => {
+  const r = taxPlan([STANDARD]);
+  const d = r.plan.decisions.find((x) => x.subject === 'taxCategory:standard');
+  assert.ok(d);
+  assert.equal(d.review, true, 'what a shopper pays has to reach MODEL-REVIEW.md');
+  assert.equal(d.outcome, 'DE 19% included; US/CA 7.25% added');
+  assert.match(d.rationale, /never modified/);
+  assert.match(d.rationale, /Rate name\(s\) derived — 'US\/CA 7\.25%'/);
+  assert.match(d.rationale, /printed on orders/);
+});
+
+test('tax: a missing category name falls back to the code, and says so', () => {
+  const r = taxPlan([{ ...STANDARD, name: undefined }]);
+  assert.equal(r.plan.prerequisites.taxCategories?.[0].name, 'standard');
+  const d = r.plan.decisions.find((x) => x.subject === 'taxCategory:standard')!;
+  assert.match(d.rationale, /Name taken from the code/);
+});
+
+test('tax: a product with no category carries no taxCategory field at all', () => {
+  // Absent rather than null: the Import API replaces omitted fields, and a
+  // null would be one more shape for the gate and verify to handle.
+  const r = plan('declared-types');
+  assert.ok(r.plan.products.every((p) => !('taxCategory' in p)));
+  assert.deepEqual(r.plan.prerequisites.taxCategories, []);
 });
