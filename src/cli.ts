@@ -21,7 +21,7 @@ import { auditPlan } from './audit/gate.js';
 import { loadPlan } from './audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from './contract/digest.js';
 import { attributeDefinitionsOf, indexVariants, pricesOf, variantsOf } from './model/plan.js';
-import { requiredCatalogModel } from './model/limits.js';
+import { MAX_VARIANTS_CLASSIC, requiredCatalogModel } from './model/limits.js';
 import { describeCredentials, loadCredentials, MissingCredentialsError } from './client/credentials.js';
 import { createClients } from './client/factory.js';
 import { effectiveCatalogModel, preflight } from './preflight/check.js';
@@ -922,7 +922,9 @@ function report(
 
   // The catalog model is a project-level decision, and variant counts are the
   // one input to it the feed can answer on its own. Stated even when it fits,
-  // because "Classic is enough" is the answer someone is looking for.
+  // because "Classic is enough" is the answer someone is looking for — but as
+  // "fits", not "required": beside a Modular config, "Classic required" read
+  // as an error (dogfood run 5) when either model would do.
   let largest = { code: '', variants: 0 };
   for (const [code, skus] of result.feed.variantsByProduct) {
     if (skus.length > largest.variants) largest = { code, variants: skus.length };
@@ -930,7 +932,9 @@ function report(
   if (largest.variants > 0) {
     console.log(
       `  Largest product: '${largest.code}' with ${largest.variants} variant(s) — ` +
-        `${requiredCatalogModel(largest.variants)} catalog model required`,
+        (requiredCatalogModel(largest.variants) === 'Modular'
+          ? `Modular catalog model required (Classic allows ${MAX_VARIANTS_CLASSIC})`
+          : `fits the Classic catalog model (up to ${MAX_VARIANTS_CLASSIC}); Modular also works`),
     );
   }
   if (c.attributeDefinitions === 0) {
