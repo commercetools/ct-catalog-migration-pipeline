@@ -9,7 +9,13 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { indexVariants, pricesOf, type MigrationPlan, type PlannedVariant } from '../model/plan.js';
+import {
+  indexVariants,
+  pricesOf,
+  type MigrationPlan,
+  type PriceDraftImport,
+  type StandalonePriceImport,
+} from '../model/plan.js';
 import { fromTypedMoney } from './money.js';
 import { stringifyArtefact } from '../model/artefact.js';
 
@@ -83,12 +89,32 @@ export function writePlan(
   return { planPath, keyMapPath, decisionsPath, payloadsPath };
 }
 
-function renderPayloads(plan: MigrationPlan): string {
+/**
+ * One product per variant-count shape, written as the load will send it.
+ *
+ * "As it will be sent" means every resource that carries the product's data,
+ * not just the product draft: under Modular the variants are their own
+ * `VariantImport` resources, and under `priceMode: 'standalone'` the prices are
+ * `StandalonePriceImport` resources keyed by SKU. Rendering only the product
+ * left both out — so in standalone mode, the mode Modular forces, the file had
+ * no prices in it and the money check it exists for could not be done.
+ *
+ * Exported for the tests.
+ */
+export function renderPayloads(plan: MigrationPlan): string {
   const lines: string[] = ['# Sample payloads', ''];
   lines.push(
     'One product per variant-count shape, as it will be sent. Check the money values ' +
       'against the source before loading: minor-unit conversion is the defect that looks ' +
       'most like success.',
+  );
+  lines.push('');
+  const standalone = plan.standalonePrices ?? [];
+  lines.push(
+    standalone.length > 0
+      ? `Prices are Standalone Prices (${standalone.length} in the plan), each a ` +
+          'separate `StandalonePriceImport` keyed by SKU and loaded after the products.'
+      : 'Prices are embedded in the variant drafts.',
   );
   lines.push('');
 
@@ -101,44 +127,76 @@ function renderPayloads(plan: MigrationPlan): string {
     if (!byShape.has(count)) byShape.set(count, product);
   }
 
+  // Indexed once: per-product filtering would be quadratic on exactly the
+  // catalogs that are large enough to need standalone pricing.
+  const standaloneBySku = new Map<string, StandalonePriceImport[]>();
+  for (const price of standalone) {
+    const group = standaloneBySku.get(price.sku) ?? [];
+    group.push(price);
+    standaloneBySku.set(price.sku, group);
+  }
+
+  const detached = new Set((plan.variants ?? []).map((v) => v.key));
+
   for (const count of [...byShape.keys()].sort((a, b) => a - b)) {
     const product = byShape.get(count)!;
+    const variants = variantsByProduct.get(product.key) ?? [];
     lines.push(`## \`${product.key}\` — ${count} variant(s)`);
     lines.push('');
-    lines.push('```json');
-    lines.push(JSON.stringify(product, null, 2));
-    lines.push('```');
-    lines.push('');
+    pushJson(lines, product);
 
-    const priced = (variantsByProduct.get(product.key) ?? []).filter(
-      (v: PlannedVariant) => pricesOf(v).length > 0,
-    );
-    if (priced.length > 0) {
+    const ownVariants = variants.filter((v) => detached.has(v.key));
+    if (ownVariants.length > 0) {
+      lines.push(`Its ${ownVariants.length} \`VariantImport\` resource(s):`);
+      lines.push('');
+      for (const v of ownVariants) pushJson(lines, v);
+    }
+
+    const rows: { sku: string; kind: string; price: PriceDraftImport | StandalonePriceImport }[] =
+      [];
+    for (const v of variants) {
+      for (const p of pricesOf(v)) rows.push({ sku: v.sku ?? v.key, kind: 'embedded', price: p });
+      for (const p of v.sku ? (standaloneBySku.get(v.sku) ?? []) : []) {
+        rows.push({ sku: v.sku!, kind: 'standalone', price: p });
+      }
+    }
+
+    const sampleStandalone = rows.find((r) => r.kind === 'standalone');
+    if (sampleStandalone) {
+      lines.push('One of its `StandalonePriceImport` resources:');
+      lines.push('');
+      pushJson(lines, sampleStandalone.price);
+    }
+
+    if (rows.length > 0) {
       lines.push('Prices decoded back from minor units:');
       lines.push('');
-      lines.push('| SKU | Currency | Minor units | Decimal | Scope |');
-      lines.push('| :--- | :--- | ---: | ---: | :--- |');
-      for (const v of priced) {
-        for (const p of pricesOf(v)) {
-          const scope = [
-            p.country ? `country=${p.country}` : null,
-            p.customerGroup ? `group=${p.customerGroup.key}` : null,
-            p.channel ? `channel=${p.channel.key}` : null,
-            p.validFrom || p.validUntil
-              ? `valid ${p.validFrom ?? '-'}..${p.validUntil ?? '-'}`
-              : null,
-          ]
-            .filter(Boolean)
-            .join(', ');
-          lines.push(
-            `| \`${v.sku}\` | ${p.value.currencyCode} | ${p.value.centAmount} | ` +
-              `${fromTypedMoney(p.value)} | ${scope || 'base'} |`,
-          );
-        }
+      lines.push('| SKU | Kind | Currency | Minor units | Decimal | Scope |');
+      lines.push('| :--- | :--- | :--- | ---: | ---: | :--- |');
+      for (const { sku, kind, price: p } of rows) {
+        const scope = [
+          p.country ? `country=${p.country}` : null,
+          p.customerGroup ? `group=${p.customerGroup.key}` : null,
+          p.channel ? `channel=${p.channel.key}` : null,
+          p.validFrom || p.validUntil ? `valid ${p.validFrom ?? '-'}..${p.validUntil ?? '-'}` : null,
+        ]
+          .filter(Boolean)
+          .join(', ');
+        lines.push(
+          `| \`${sku}\` | ${kind} | ${p.value.currencyCode} | ${p.value.centAmount} | ` +
+            `${fromTypedMoney(p.value)} | ${scope || 'base'} |`,
+        );
       }
       lines.push('');
     }
   }
 
   return lines.join('\n');
+}
+
+function pushJson(lines: string[], value: unknown): void {
+  lines.push('```json');
+  lines.push(JSON.stringify(value, null, 2));
+  lines.push('```');
+  lines.push('');
 }

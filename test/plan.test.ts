@@ -18,6 +18,7 @@ import { validateFeed } from '../src/contract/validate.js';
 import { loadConfig } from '../src/model/config.js';
 import { deriveProductTypes } from '../src/derive/product-types.js';
 import { buildPlan } from '../src/map/plan.js';
+import { renderPayloads } from '../src/map/report.js';
 import { fromTypedMoney, toTypedMoney } from '../src/map/money.js';
 import {
   allocateSlug,
@@ -1215,4 +1216,81 @@ test('tax: a product with no category carries no taxCategory field at all', () =
   const r = plan('declared-types');
   assert.ok(r.plan.products.every((p) => !('taxCategory' in p)));
   assert.deepEqual(r.plan.prerequisites.taxCategories, []);
+});
+
+// ---------------------------------------------------------------------------
+// sample-payloads.md
+//
+// The file exists for one check: money values against the source, before
+// anything is loaded. So every price mode has to put prices in it — under
+// standalone pricing they live outside the product draft, and a renderer that
+// only walked the draft produced a file with no prices and nothing to check.
+// ---------------------------------------------------------------------------
+
+/** The decoded-price rows of the rendered file, as [sku, kind, currency, minor, decimal]. */
+function priceRows(md: string): string[][] {
+  return md
+    .split('\n')
+    .filter((l) => /^\| `/.test(l))
+    .map((l) => l.split('|').slice(1, 6).map((c) => c.trim().replace(/`/g, '')));
+}
+
+function sampledSkus(md: string, p: ReturnType<typeof plan>['plan']): string[] {
+  const keys = [...md.matchAll(/^## `([^`]+)`/gm)].map((m) => m[1]);
+  const skus = (key: string) => [
+    ...p.products.filter((x) => x.key === key).flatMap((x) => variants(x)),
+    ...p.variants.filter((v) => v.product.key === key),
+  ].map((v) => v.sku!);
+  return keys.flatMap(skus);
+}
+
+test('payloads: embedded prices are rendered and labelled embedded', () => {
+  const r = plan('declared-types').plan;
+  const md = renderPayloads(r);
+  const rows = priceRows(md);
+  assert.ok(rows.length > 0);
+  assert.ok(rows.every((row) => row[1] === 'embedded'));
+  assert.match(md, /Prices are embedded in the variant drafts/);
+});
+
+test('payloads: Classic standalone renders every sampled SKU\'s Standalone Prices, decoded', () => {
+  const r = plan('classic-standalone').plan;
+  assert.ok(r.standalonePrices.length > 0);
+  const md = renderPayloads(r);
+  const rows = priceRows(md);
+
+  const sampled = new Set(sampledSkus(md, r));
+  const expected = r.standalonePrices.filter((p) => sampled.has(p.sku));
+  assert.ok(expected.length > 0, 'the fixture must price the sampled products');
+  assert.equal(rows.length, expected.length, 'one row per Standalone Price of a sampled SKU');
+  assert.ok(rows.every((row) => row[1] === 'standalone'));
+
+  for (const p of expected) {
+    assert.ok(
+      rows.some(
+        (row) =>
+          row[0] === p.sku &&
+          row[2] === p.value.currencyCode &&
+          row[3] === String(p.value.centAmount) &&
+          row[4] === fromTypedMoney(p.value),
+      ),
+      `${p.key} is missing from the decoded table`,
+    );
+  }
+  assert.match(md, /"sku":/, 'a StandalonePriceImport body is shown as it will be sent');
+  assert.match(md, /Prices are Standalone Prices/);
+});
+
+test('payloads: Modular shows the detached variants and their Standalone Prices', () => {
+  const r = plan('modular-standalone').plan;
+  const md = renderPayloads(r);
+  assert.match(md, /`VariantImport` resource\(s\):/);
+
+  const rows = priceRows(md);
+  assert.ok(rows.length > 0, 'a Modular sample with no prices cannot be money-checked');
+  assert.ok(rows.every((row) => row[1] === 'standalone'));
+
+  // Grouping by shape still works through the index, not the empty drafts.
+  const shapes = [...md.matchAll(/— (\d+) variant\(s\)/g)].map((m) => Number(m[1]));
+  assert.ok(shapes.every((n) => n > 0), 'no Modular product may render as 0 variants');
 });
