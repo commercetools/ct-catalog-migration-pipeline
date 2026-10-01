@@ -1013,6 +1013,38 @@ test('inventory: the same SKU in two channels, and project-wide, is legitimate',
   assert.ok(!found.includes('inventory-sku-unknown'));
 });
 
+test('inventory: stock in a channel no filtering store lists is reported', () => {
+  // The reverse of store-supply-channel-unstocked. A store with supply
+  // channels projects stock only from those, so a warehouse none of them
+  // lists imports and is invisible to every read through those stores.
+  const r = inventoryFeed([
+    { _type: 'channel', code: 'dc-north', roles: ['InventorySupply'] },
+    { _type: 'channel', code: 'dc-south', roles: ['InventorySupply'] },
+    { _type: 'store', code: 'uk', supplyChannels: ['dc-north'] },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'dc-north' },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 7, supplyChannel: 'dc-south' },
+  ]);
+  const found = r.diagnostics.filter((x) => x.code === 'inventory-supply-channel-not-in-store');
+  assert.equal(found.length, 1, 'once per channel, and not for the listed one');
+  assert.equal(found[0].severity, 'warning');
+  assert.match(found[0].message, /'dc-south' holds 1 inventory entry \(TEE-S\)/);
+  assert.match(found[0].message, /store\(s\) \[uk\]/);
+});
+
+test('inventory: stock with no filtering store is not reported as unreachable', () => {
+  // With no store, or only stores without supply channels, nothing filters
+  // stock — every read sees every channel. Run 7's per-warehouse feed had no
+  // store and needed none.
+  const stock = [
+    { _type: 'channel', code: 'dc-south', roles: ['InventorySupply'] },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'dc-south' },
+  ];
+  for (const extra of [[], [{ _type: 'store', code: 'uk' }]]) {
+    const r = inventoryFeed([...stock, ...extra]);
+    assert.ok(!r.diagnostics.some((x) => x.code === 'inventory-supply-channel-not-in-store'));
+  }
+});
+
 test('inventory: zero stock is a legitimate figure, not a missing one', () => {
   // A deliberate out-of-stock has to survive the pipeline: rejecting or
   // dropping it would silently turn "we know there are none" into "we do not

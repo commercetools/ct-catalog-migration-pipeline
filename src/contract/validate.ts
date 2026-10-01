@@ -1212,6 +1212,47 @@ function checkInventory(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
       });
     }
   }
+
+  // The reverse of store-supply-channel-unstocked: stock in a channel no store
+  // lists. Per the Product Projections docs, a store with `supplyChannels` set
+  // projects only entries on those channels (plus channel-less ones); a store
+  // without them filters nothing. So the stock is hidden only when some store
+  // filters and none lists the channel — with no filtering store, every read
+  // sees it and there is nothing to say. A warning, not an error: stores may
+  // be created after cutover, and stock read by channel is legitimate.
+  const listed = new Set<string>();
+  const filtering: string[] = [];
+  for (const store of feed.stores.values()) {
+    const codes = store.supplyChannels ?? [];
+    if (codes.length > 0) filtering.push(store.code);
+    for (const code of codes) listed.add(code);
+  }
+  if (filtering.length === 0) return;
+  const unreachable = new Map<string, string[]>();
+  for (const entry of feed.inventoryEntries.values()) {
+    const code = entry.supplyChannel;
+    if (code === undefined || listed.has(code)) continue;
+    // An undeclared channel or a wrong role is already an error above.
+    if (!feed.channels.get(code)?.roles.includes('InventorySupply')) continue;
+    const skus = unreachable.get(code) ?? [];
+    skus.push(entry.sku);
+    unreachable.set(code, skus);
+  }
+  for (const [code, skus] of unreachable) {
+    const sample = skus.slice(0, 3).join(', ') + (skus.length > 3 ? ', …' : '');
+    diagnostics.push({
+      severity: 'warning',
+      code: 'inventory-supply-channel-not-in-store',
+      message:
+        `Supply channel '${code}' holds ${skus.length} inventory entr${skus.length === 1 ? 'y' : 'ies'} ` +
+        `(${sample}) and no store lists it. The stock will import, and reads through ` +
+        `store(s) [${filtering.join(', ')}] will not see it: a store with supply channels ` +
+        'projects stock only from those channels.\n' +
+        '      Add the channel to the supplyChannels of the store(s) that sell from it — or, ' +
+        'if stores come later or stock is read by channel, record that decision.',
+      ...(feed.origin.get(`channel:${code}`) ?? {}),
+    });
+  }
 }
 
 /**
