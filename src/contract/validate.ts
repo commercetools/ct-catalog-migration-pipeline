@@ -912,9 +912,19 @@ function checkPriceReferences(
     for (const c of store.distributionChannels ?? []) distributionReferenced.add(c);
     for (const c of store.supplyChannels ?? []) supplyReferenced.add(c);
   }
+  // Stock is a use in its own right: `load` has to create the channel before
+  // the entries can resolve, whether or not any store lists it. Counting only
+  // prices and stores told a stock-only feed that its warehouses were
+  // prerequisites "the project does not actually need".
+  const stockedChannels = new Set<string>();
+  for (const entry of feed.inventoryEntries.values()) {
+    if (entry.supplyChannel) stockedChannels.add(entry.supplyChannel);
+  }
 
   for (const [code] of feed.channels) {
-    if (!channelUses.has(code) && supplyReferenced.has(code)) continue;
+    if (!channelUses.has(code) && (supplyReferenced.has(code) || stockedChannels.has(code))) {
+      continue;
+    }
     if (!channelUses.has(code) && distributionReferenced.has(code)) {
       // A store trades through it, so the project needs it — but nothing is
       // priced into it, so shoppers in that store see only channel-less
@@ -935,8 +945,9 @@ function checkPriceReferences(
         severity: 'warning',
         code: 'channel-never-referenced',
         message:
-          `Channel '${code}' is declared but no price is scoped to it. Nothing will break, ` +
-          'but it is a prerequisite the project does not actually need for this load.',
+          `Channel '${code}' is declared but no price, stock entry or store references it. ` +
+          'Nothing will break, but it is a prerequisite the project does not actually need ' +
+          'for this load.',
         ...(feed.origin.get(`channel:${code}`) ?? {}),
       });
     }

@@ -951,6 +951,20 @@ test('inventory: stock for a SKU no variant carries is an error', () => {
   assert.match(d.message, /would import cleanly/);
 });
 
+test('inventory: a supply channel only stock uses is not "never referenced"', () => {
+  // Dogfood run 7: a per-warehouse feed with no store was told its warehouses
+  // were prerequisites "the project does not actually need". `load` has to
+  // create them for the entries to resolve, so stock counts as a use.
+  const r = inventoryFeed([
+    { _type: 'channel', code: 'dc-south', roles: ['InventorySupply'] },
+    { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'dc-south' },
+  ]);
+  assert.ok(
+    !r.diagnostics.some((x) => x.code === 'channel-never-referenced'),
+    'a stocked supply channel is used',
+  );
+});
+
 test('inventory: an undeclared supply channel is refused, with the record to paste', () => {
   const d = inventoryFeed([
     { _type: 'inventoryEntry', sku: 'TEE-S', quantityOnStock: 5, supplyChannel: 'warehouse' },
