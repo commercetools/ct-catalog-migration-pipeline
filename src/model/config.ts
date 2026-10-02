@@ -26,6 +26,11 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
  */
 export type CatalogModel = 'Classic' | 'Modular';
 
+/** The cart tax modes a feed is checked against. `Platform` is the default. */
+export type TaxMode = 'Platform' | 'External' | 'ExternalAmount';
+
+const TAX_MODES: readonly string[] = ['Platform', 'External', 'ExternalAmount'];
+
 export interface PipelineConfig {
   feed: {
     /** Directory of *.ndjson feed files, relative to this config file. */
@@ -61,6 +66,18 @@ export interface PipelineConfig {
      * which `manage_products` does NOT grant.
      */
     priceMode: 'embedded' | 'standalone';
+    /**
+     * The cart tax mode the project runs, when it is known. Optional: absent is
+     * treated as 'Platform', the default, and the feed is checked as if every
+     * product needs a tax category.
+     *
+     * 'External' and 'ExternalAmount' take the rate or amount from an outside
+     * service, so a product with no tax category is correct there and
+     * `validate` stops warning about it. This records the answer to the tax
+     * question in the interview; it is not read from the project, because the
+     * tax mode lives on each cart rather than in a project setting.
+     */
+    taxMode?: TaxMode;
   };
 
   market: {
@@ -268,6 +285,14 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
           'so it needs to know what they are.',
       );
     }
+  }
+
+  if (config.target.taxMode !== undefined && !TAX_MODES.includes(config.target.taxMode)) {
+    fail(
+      `target.taxMode is ${JSON.stringify(config.target.taxMode)}.`,
+      `It must be one of ${TAX_MODES.join(', ')}, or left out to mean Platform. Anything\n` +
+        'else would be read as Platform by the checks and quietly keep the warning on.',
+    );
   }
 
   if (config.feed.subset !== undefined && typeof config.feed.subset !== 'boolean') {

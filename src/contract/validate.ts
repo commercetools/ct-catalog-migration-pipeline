@@ -714,7 +714,7 @@ function checkAgainstConfig(
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
-  checkTaxCategories(feed, diagnostics);
+  checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
   if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
 
@@ -1307,7 +1307,11 @@ function checkInventory(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
  * with no category or a category with no rate for the shipping country cannot
  * be taxed at checkout. None of that shows at load time, so it is said here.
  */
-function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
+function checkTaxCategories(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
   /** category code → first product using it. */
   const uses = new Map<string, string>();
   const untaxed: string[] = [];
@@ -1335,7 +1339,13 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
     });
   }
 
-  if (untaxed.length > 0 && feed.products.size > 0) {
+  // An outside service supplies the rate under these modes, so a product with
+  // no category is correct, not a gap. The config records the interview's answer;
+  // without it the warning stays, because Platform is the default.
+  const taxFromProduct =
+    config.target.taxMode !== 'External' && config.target.taxMode !== 'ExternalAmount';
+
+  if (taxFromProduct && untaxed.length > 0 && feed.products.size > 0) {
     const none = feed.taxCategories.size === 0;
     diagnostics.push({
       severity: 'warning',
@@ -1350,8 +1360,9 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
         'tax category, so these cannot be taxed at checkout; the load and verify both ' +
         'pass regardless.\n' +
         '      Correct if carts use External or ExternalAmount tax mode, where an outside ' +
-        'service supplies the rate. Otherwise declare a taxCategory and set it on the ' +
-        'products — which tax mode the project uses is a question for whoever owns tax.',
+        'service supplies the rate: record that as target.taxMode in the config and this ' +
+        'stops. Otherwise declare a taxCategory and set it on the products — which tax ' +
+        'mode the project uses is a question for whoever owns tax.',
       ...(feed.origin.get(`product:${untaxed[0]}`) ?? {}),
     });
   }

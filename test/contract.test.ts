@@ -1183,6 +1183,70 @@ test('tax: no tax category anywhere says so once, not once per product', () => {
   assert.match(found[0].message, /External or ExternalAmount/);
 });
 
+/** The feed with no tax categories, validated under the given tax mode. */
+function untaxedUnder(taxMode: string | undefined) {
+  const loaded = channelFeed(() => {});
+  const target = { ...loaded.config.target } as Record<string, unknown>;
+  if (taxMode === undefined) delete target.taxMode;
+  else target.taxMode = taxMode;
+  return validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    target: target as unknown as PipelineConfig['target'],
+  });
+}
+
+test('tax mode: External and ExternalAmount make a product with no tax category correct', () => {
+  // An outside service supplies the rate there, so the warning was a false
+  // alarm on every engagement that answered the tax question that way.
+  for (const mode of ['External', 'ExternalAmount']) {
+    const r = untaxedUnder(mode);
+    assert.ok(
+      !codes(r.diagnostics).includes('products-without-tax-category'),
+      `${mode} must silence it`,
+    );
+  }
+});
+
+test('tax mode: Platform, or no answer recorded, keeps the warning', () => {
+  // Platform is the default, so an absent field cannot be read as "External".
+  for (const mode of ['Platform', undefined]) {
+    const r = untaxedUnder(mode);
+    assert.ok(
+      codes(r.diagnostics).includes('products-without-tax-category'),
+      `${mode ?? 'absent'} must keep it`,
+    );
+  }
+});
+
+test('tax mode: the warning says how to record the answer', () => {
+  const found = untaxedUnder(undefined).diagnostics.find(
+    (x) => x.code === 'products-without-tax-category',
+  );
+  assert.ok(found);
+  assert.match(found.message, /target\.taxMode/);
+});
+
+test('tax mode: External does not hide the other tax checks', () => {
+  // Only the "no category at all" warning is the External answer's to silence.
+  // A product pointing at an undeclared category is wrong in every mode.
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'missing';
+  });
+  const r = validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    target: { ...loaded.config.target, taxMode: 'External' },
+  });
+  assert.ok(codes(r.diagnostics).includes('undeclared-tax-category'));
+});
+
+test('tax mode: target.taxMode must be a known mode', () => {
+  const load = fromTemplate((c) => {
+    c.keys.prefix = 'acme';
+    (c.target as { taxMode?: unknown }).taxMode = 'external';
+  });
+  assert.throws(load, /target\.taxMode is "external"/);
+});
+
 test('tax: a category with no rates is a warning, because External mode needs none', () => {
   const r = taxFeed((rows) => {
     (rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] }).rates = [];
