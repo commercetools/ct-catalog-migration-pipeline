@@ -33,6 +33,7 @@ import {
   VARIANT_WARN_THRESHOLD,
 } from '../model/limits.js';
 import { isValidKey } from '../map/identity.js';
+import { subRateSumMismatch } from '../model/feed.js';
 import {
   attributeDefinitionsOf,
   attributeName,
@@ -1300,6 +1301,21 @@ function checkTaxCategories(plan: MigrationPlan, diagnostics: Diagnostic[]): voi
       }
       if (typeof rate.name !== 'string' || rate.name === '') {
         problems.push('name is missing, and the API requires one');
+      }
+      for (const sub of rate.subRates ?? []) {
+        if (typeof sub.name !== 'string' || sub.name === '') {
+          problems.push('a sub-rate has no name, and the API requires one');
+        }
+        if (typeof sub.amount !== 'number' || sub.amount < 0 || sub.amount > 1) {
+          problems.push(`sub-rate amount ${JSON.stringify(sub.amount)} is not a fraction in [0, 1]`);
+        }
+      }
+      const subSum = subRateSumMismatch(rate.amount, rate.subRates);
+      if (subSum !== undefined) {
+        problems.push(
+          `its sub-rates sum to ${subSum} but amount is ${rate.amount}; the API refuses a ` +
+            'rate whose total and portions differ',
+        );
       }
       if (problems.length > 0) {
         diagnostics.push({

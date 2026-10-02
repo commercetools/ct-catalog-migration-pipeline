@@ -26,10 +26,24 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
  */
 export type CatalogModel = 'Classic' | 'Modular';
 
+/** The cart tax modes a feed is checked against. `Platform` is the default. */
+export type TaxMode = 'Platform' | 'External' | 'ExternalAmount';
+
+const TAX_MODES: readonly string[] = ['Platform', 'External', 'ExternalAmount'];
+
 export interface PipelineConfig {
   feed: {
     /** Directory of *.ndjson feed files, relative to this config file. */
     dir: string;
+    /**
+     * The feed is a slice of the catalog — the small first run, not the whole
+     * load. Declared prerequisites (tax categories, channels) that no product in
+     * the slice references are then expected, because the products that use them
+     * sit outside it; `validate` reports them as one line instead of one warning
+     * each. Leave it off for the full load, where an unreferenced prerequisite is
+     * a real finding.
+     */
+    subset?: boolean;
   };
 
   target: {
@@ -52,6 +66,18 @@ export interface PipelineConfig {
      * which `manage_products` does NOT grant.
      */
     priceMode: 'embedded' | 'standalone';
+    /**
+     * The cart tax mode the project runs, when it is known. Optional: absent is
+     * treated as 'Platform', the default, and the feed is checked as if every
+     * product needs a tax category.
+     *
+     * 'External' and 'ExternalAmount' take the rate or amount from an outside
+     * service, so a product with no tax category is correct there and
+     * `validate` stops warning about it. This records the answer to the tax
+     * question in the interview; it is not read from the project, because the
+     * tax mode lives on each cart rather than in a project setting.
+     */
+    taxMode?: TaxMode;
   };
 
   market: {
@@ -223,7 +249,9 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
         "attribute definitions; 'infer' guesses each type from observed values and writes\n" +
         'the guesses to a review file. Inference is a fallback for a source that cannot\n' +
         'describe its own type system, not a default — the guesses become attribute\n' +
-        'constraints, and those cannot be changed afterwards.',
+        "types and constraints. There is no update action that changes an attribute's\n" +
+        'type, and a constraint can only be changed to None, so a wrong guess cannot be\n' +
+        'corrected in place.',
     );
   }
 
@@ -259,6 +287,22 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
           'so it needs to know what they are.',
       );
     }
+  }
+
+  if (config.target.taxMode !== undefined && !TAX_MODES.includes(config.target.taxMode)) {
+    fail(
+      `target.taxMode is ${JSON.stringify(config.target.taxMode)}.`,
+      `It must be one of ${TAX_MODES.join(', ')}, or left out to mean Platform. Anything\n` +
+        'else would be read as Platform by the checks and quietly keep the warning on.',
+    );
+  }
+
+  if (config.feed.subset !== undefined && typeof config.feed.subset !== 'boolean') {
+    fail(
+      `feed.subset is ${JSON.stringify(config.feed.subset)}.`,
+      'It must be true or false. A string such as "false" is not a boolean and is\n' +
+        'truthy in most readers, so it is refused rather than guessed at.',
+    );
   }
 
   if (config.keys.prefix === PREFIX_PLACEHOLDER) {

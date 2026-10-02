@@ -268,13 +268,15 @@ export interface PlannedTaxCategory {
   rates: PlannedTaxRate[];
 }
 
-/** TaxRateDraft, minus sub-rates and rounding target, which the feed cannot express. */
+/** TaxRateDraft, minus the rounding target, which the feed cannot express. */
 export interface PlannedTaxRate {
   name: string;
   amount: number;
   includedInPrice: boolean;
   country: string;
   state?: string;
+  /** Present only for a combined rate; their sum equals `amount`. */
+  subRates?: { name: string; amount: number }[];
 }
 
 export interface MigrationPlan {

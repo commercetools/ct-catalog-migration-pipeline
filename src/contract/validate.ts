@@ -44,6 +44,7 @@ import {
   emptyFeed,
   FEED_TYPES,
   inventoryIdentity,
+  subRateSumMismatch,
   taxRateScope,
   type CatalogFeed,
   type FeedAttributeDefinition,
@@ -665,9 +666,9 @@ function checkDeclarations(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
         severity: 'warning',
         code: 'attribute-never-populated',
         message:
-          `Attribute '${def.name}' is declared but no product or variant sets it. It will ` +
-          'be created on the ProductType and stay empty — usually a source field the ' +
-          'adapter dropped.',
+          `Attribute '${def.name}' is declared but no product or variant sets it. derive ` +
+          'leaves it off every ProductType rather than create an attribute no product ' +
+          'fills — usually a source field the adapter dropped.',
         ...(feed.origin.get(`attributeDefinition:${def.name}`) ?? {}),
       });
     }
@@ -714,8 +715,9 @@ function checkAgainstConfig(
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
-  checkTaxCategories(feed, diagnostics);
+  checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
+  if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
 
   for (const [currency, sku] of firstUse) {
     if (declared.has(currency)) continue;
@@ -733,6 +735,42 @@ function checkAgainstConfig(
       ...(feed.origin.get(`variant:${sku}`) ?? {}),
     });
   }
+}
+
+/** Declared prerequisites a subset feed is expected to leave unreferenced. */
+const UNREFERENCED_ON_A_SUBSET = new Set(['tax-category-never-referenced', 'channel-never-referenced']);
+
+/**
+ * On a subset feed, replace the per-prerequisite "never referenced" warnings
+ * with one line.
+ *
+ * The slice is the small first run the skill recommends before the full
+ * catalog, and the products that use a tax category or channel are often
+ * outside it, so each of these warnings is true of the slice and false of the
+ * catalog. Dropping them silently would let the flag outlive the first run and
+ * quietly hide the same finding on the full load, so the replacement names what
+ * was held back and says when to turn the flag off.
+ */
+function rollUpUnreferencedOnSubset(diagnostics: Diagnostic[]): void {
+  const held = diagnostics.filter((d) => UNREFERENCED_ON_A_SUBSET.has(d.code));
+  if (held.length === 0) return;
+
+  for (let i = diagnostics.length - 1; i >= 0; i--) {
+    if (UNREFERENCED_ON_A_SUBSET.has(diagnostics[i].code)) diagnostics.splice(i, 1);
+  }
+
+  diagnostics.push({
+    severity: 'warning',
+    code: 'subset-unreferenced-declarations',
+    message:
+      `feed.subset is true, so ${held.length} declared prerequisite(s) nothing in this ` +
+      'feed references are reported here rather than one by one: ' +
+      held
+        .map((d) => `${d.code === 'channel-never-referenced' ? 'channel' : 'tax category'} ${d.message.match(/'([^']+)'/)?.[1] ?? '?'}`)
+        .join(', ') +
+      '. Expected on a slice, because the products that use them may sit outside it. ' +
+      'Remove feed.subset for the full load, where an unreferenced prerequisite is a real finding.',
+  });
 }
 
 /**
@@ -1270,7 +1308,11 @@ function checkInventory(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
  * with no category or a category with no rate for the shipping country cannot
  * be taxed at checkout. None of that shows at load time, so it is said here.
  */
-function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
+function checkTaxCategories(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
   /** category code → first product using it. */
   const uses = new Map<string, string>();
   const untaxed: string[] = [];
@@ -1298,7 +1340,13 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
     });
   }
 
-  if (untaxed.length > 0 && feed.products.size > 0) {
+  // An outside service supplies the rate under these modes, so a product with
+  // no category is correct, not a gap. The config records the interview's answer;
+  // without it the warning stays, because Platform is the default.
+  const taxFromProduct =
+    config.target.taxMode !== 'External' && config.target.taxMode !== 'ExternalAmount';
+
+  if (taxFromProduct && untaxed.length > 0 && feed.products.size > 0) {
     const none = feed.taxCategories.size === 0;
     diagnostics.push({
       severity: 'warning',
@@ -1313,8 +1361,9 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
         'tax category, so these cannot be taxed at checkout; the load and verify both ' +
         'pass regardless.\n' +
         '      Correct if carts use External or ExternalAmount tax mode, where an outside ' +
-        'service supplies the rate. Otherwise declare a taxCategory and set it on the ' +
-        'products — which tax mode the project uses is a question for whoever owns tax.',
+        'service supplies the rate: record that as target.taxMode in the config and this ' +
+        'stops. Otherwise declare a taxCategory and set it on the products — which tax ' +
+        'mode the project uses is a question for whoever owns tax.',
       ...(feed.origin.get(`product:${untaxed[0]}`) ?? {}),
     });
   }
@@ -1334,6 +1383,19 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
     const scopes = new Map<string, number>();
     rates.forEach((rate, i) => {
       const scope = taxRateScope(rate);
+      const subSum = subRateSumMismatch(rate.amount, rate.subRates);
+      if (subSum !== undefined) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'tax-subrates-sum-mismatch',
+          message:
+            `Tax category '${code}', rate for ${scope}: the sub-rates sum to ${subSum} but ` +
+            `amount is ${rate.amount}. The API refuses a rate whose total and portions ` +
+            'differ, and refuses the whole category with it, which then holds up every ' +
+            'product that references it. Make amount the sum of the sub-rates.',
+          ...at,
+        });
+      }
       const prior = scopes.get(scope);
       if (prior !== undefined) {
         diagnostics.push({
@@ -1363,15 +1425,21 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
       continue;
     }
 
+    // Both checks below are about the rate a cart will find. Under External or
+    // ExternalAmount an outside service supplies it, so a category with no
+    // rates, or none for a country, is the intended shape rather than a gap.
+    if (!taxFromProduct) continue;
+
     if (rates.length === 0) {
       diagnostics.push({
         severity: 'warning',
         code: 'tax-category-without-rates',
         message:
           `Tax category '${code}' declares no rates. Correct if carts use External or ` +
-          'ExternalAmount tax mode. Under Platform, every cart containing one of its ' +
-          'products fails to calculate tax — and if the category already exists in the ' +
-          "project, the project's own rates are the ones that apply.",
+          'ExternalAmount tax mode: set target.taxMode and this stops. Under Platform, ' +
+          'every cart containing one of its products fails to calculate tax — and if the ' +
+          "category already exists in the project, the project's own rates are the ones " +
+          'that apply.',
         ...at,
       });
       continue;
@@ -1396,7 +1464,8 @@ function checkTaxCategories(feed: CatalogFeed, diagnostics: Diagnostic[]): void 
           `Tax category '${code}' has no rate for [${uncovered.join(', ')}], where its ` +
           'products are priced or a store trades. A rate is selected by exact country ' +
           'match on the shipping address, so under Platform tax mode a cart shipping ' +
-          'there cannot be taxed.',
+          'there cannot be taxed. Under External or ExternalAmount an outside service ' +
+          'supplies the rate: set target.taxMode and this stops.',
         ...at,
       });
     }

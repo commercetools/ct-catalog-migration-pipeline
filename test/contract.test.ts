@@ -143,6 +143,28 @@ test('broken-integrity: an axis declared at product level is a contradiction', (
   assert.match(d.message, /brandLine/);
 });
 
+test('broken-integrity: validate and derive agree on a declared-but-unpopulated attribute', () => {
+  // validate once said such an attribute "will be created on the ProductType"
+  // while derive skipped it, so the two stages described different models.
+  // derive's behaviour is the right one: an attribute no product fills would sit
+  // empty on every ProductType.
+  const r = run('broken-integrity');
+  const d = r.diagnostics.find((x) => x.code === 'attribute-never-populated');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /neverUsed/);
+  assert.match(d.message, /leaves it off every ProductType/);
+  assert.doesNotMatch(d.message, /will be created/);
+
+  const model = deriveProductTypes(r.feed, r.config);
+  for (const pt of model.productTypes.values()) {
+    assert.ok(
+      !(pt.attributes ?? []).some((a) => a.name === 'neverUsed'),
+      `ProductType ${pt.key} must not carry the unpopulated attribute`,
+    );
+  }
+});
+
 test('broken-integrity: the localized-axis check names the offending axis', () => {
   const r = run('broken-integrity');
   const d = r.diagnostics.find((x) => x.code === 'axis-localized');
@@ -304,7 +326,7 @@ test('decisions: an absent onMissingDefinitions is refused', () => {
       delete (c.productTypes as Partial<PipelineConfig['productTypes']>)
         .onMissingDefinitions;
     }),
-    /cannot be changed afterwards/,
+    /a constraint can only be changed to None/,
   );
 });
 
@@ -1161,6 +1183,127 @@ test('tax: no tax category anywhere says so once, not once per product', () => {
   assert.match(found[0].message, /External or ExternalAmount/);
 });
 
+/** The feed with no tax categories, validated under the given tax mode. */
+function untaxedUnder(taxMode: string | undefined) {
+  const loaded = channelFeed(() => {});
+  const target = { ...loaded.config.target } as Record<string, unknown>;
+  if (taxMode === undefined) delete target.taxMode;
+  else target.taxMode = taxMode;
+  return validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    target: target as unknown as PipelineConfig['target'],
+  });
+}
+
+test('tax mode: External and ExternalAmount make a product with no tax category correct', () => {
+  // An outside service supplies the rate there, so the warning was a false
+  // alarm on every engagement that answered the tax question that way.
+  for (const mode of ['External', 'ExternalAmount']) {
+    const r = untaxedUnder(mode);
+    assert.ok(
+      !codes(r.diagnostics).includes('products-without-tax-category'),
+      `${mode} must silence it`,
+    );
+  }
+});
+
+test('tax mode: Platform, or no answer recorded, keeps the warning', () => {
+  // Platform is the default, so an absent field cannot be read as "External".
+  for (const mode of ['Platform', undefined]) {
+    const r = untaxedUnder(mode);
+    assert.ok(
+      codes(r.diagnostics).includes('products-without-tax-category'),
+      `${mode ?? 'absent'} must keep it`,
+    );
+  }
+});
+
+test('tax mode: the warning says how to record the answer', () => {
+  const found = untaxedUnder(undefined).diagnostics.find(
+    (x) => x.code === 'products-without-tax-category',
+  );
+  assert.ok(found);
+  assert.match(found.message, /target\.taxMode/);
+});
+
+test('tax mode: External does not hide the other tax checks', () => {
+  // Only the "no category at all" warning is the External answer's to silence.
+  // A product pointing at an undeclared category is wrong in every mode.
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'missing';
+  });
+  const r = validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    target: { ...loaded.config.target, taxMode: 'External' },
+  });
+  assert.ok(codes(r.diagnostics).includes('undeclared-tax-category'));
+});
+
+/** `taxFeed` validated under the given tax mode. */
+function taxFeedUnder(taxMode: string, mutate: (rows: Record<string, unknown>[]) => void) {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'standard';
+    rows.push(structuredClone(GB_VAT));
+    mutate(rows);
+  });
+  return validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    target: { ...loaded.config.target, taxMode: taxMode as PipelineConfig['target']['taxMode'] },
+  });
+}
+
+test('tax mode: under External a category with no rates is the intended shape', () => {
+  const noRates = (rows: Record<string, unknown>[]) => {
+    (rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] }).rates = [];
+  };
+  for (const mode of ['External', 'ExternalAmount']) {
+    assert.ok(
+      !codes(taxFeedUnder(mode, noRates).diagnostics).includes('tax-category-without-rates'),
+      `${mode} must silence it`,
+    );
+  }
+  assert.ok(
+    codes(taxFeedUnder('Platform', noRates).diagnostics).includes('tax-category-without-rates'),
+    'Platform keeps it',
+  );
+});
+
+test('tax mode: under External a country with no rate is not a gap', () => {
+  const unrated = (rows: Record<string, unknown>[]) => {
+    rows.push({ _type: 'store', code: 'eu', countries: ['DE'] });
+  };
+  for (const mode of ['External', 'ExternalAmount']) {
+    assert.ok(
+      !codes(taxFeedUnder(mode, unrated).diagnostics).includes('tax-rate-country-missing'),
+      `${mode} must silence it`,
+    );
+  }
+  assert.ok(
+    codes(taxFeedUnder('Platform', unrated).diagnostics).includes('tax-rate-country-missing'),
+    'Platform keeps it',
+  );
+});
+
+test('tax mode: External still reports a duplicated rate scope and an unused category', () => {
+  // Wrong in every mode: the API refuses a category with two rates for one
+  // country and state, and an unreferenced category is a write nothing needs.
+  const r = taxFeedUnder('External', (rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] };
+    cat.rates.push(structuredClone(cat.rates[0]));
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+  });
+  assert.ok(codes(r.diagnostics).includes('duplicate-tax-rate-scope'));
+  assert.ok(codes(r.diagnostics).includes('tax-category-never-referenced'));
+});
+
+test('tax mode: target.taxMode must be a known mode', () => {
+  const load = fromTemplate((c) => {
+    c.keys.prefix = 'acme';
+    (c.target as { taxMode?: unknown }).taxMode = 'external';
+  });
+  assert.throws(load, /target\.taxMode is "external"/);
+});
+
 test('tax: a category with no rates is a warning, because External mode needs none', () => {
   const r = taxFeed((rows) => {
     (rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] }).rates = [];
@@ -1190,6 +1333,122 @@ test('tax: a category no product uses is a warning', () => {
   assert.match(d.message, /'zero'/);
   // Unused is the finding; its lack of rates would be noise on top.
   assert.ok(!codes(r.diagnostics).includes('tax-category-without-rates'));
+});
+
+/** `taxFeed` with the config declared a subset. */
+function subsetTaxFeed(mutate: (rows: Record<string, unknown>[]) => void) {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'standard';
+    rows.push(structuredClone(GB_VAT));
+    mutate(rows);
+  });
+  return validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    feed: { ...loaded.config.feed, subset: true },
+  });
+}
+
+test('subset: unreferenced tax categories and channels become one line, naming each', () => {
+  // On a slice these warnings are true of the slice and false of the catalog.
+  // They are held back, not dropped, so the flag cannot hide them on the full load.
+  const r = subsetTaxFeed((rows) => {
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+    rows.push({ _type: 'channel', code: 'unused-dc', roles: ['InventorySupply'] });
+  });
+  assert.deepEqual(codes(r.diagnostics), ['subset-unreferenced-declarations']);
+  const d = r.diagnostics[0];
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /2 declared prerequisite/);
+  assert.match(d.message, /tax category zero/);
+  assert.match(d.message, /channel unused-dc/);
+  assert.match(d.message, /Remove feed\.subset for the full load/);
+});
+
+test('subset: a slice with nothing unreferenced gains no line', () => {
+  const r = subsetTaxFeed(() => {});
+  assert.deepEqual(codes(r.diagnostics), []);
+});
+
+test('subset: other findings on a slice are untouched', () => {
+  // Only the "never referenced" pair is expected on a slice. A category with
+  // no rates on a *used* category is still a defect of the slice itself.
+  const r = subsetTaxFeed((rows) => {
+    rows.find((x) => x._type === 'taxCategory' && x.code === 'standard')!.rates = [];
+  });
+  assert.ok(codes(r.diagnostics).includes('tax-category-without-rates'));
+});
+
+test('subset: without the flag the per-prerequisite warnings stand', () => {
+  const r = taxFeed((rows) => {
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+  });
+  assert.ok(codes(r.diagnostics).includes('tax-category-never-referenced'));
+  assert.ok(!codes(r.diagnostics).includes('subset-unreferenced-declarations'));
+});
+
+test('subset: feed.subset must be a boolean', () => {
+  const load = fromTemplate((c) => {
+    c.keys.prefix = 'acme';
+    (c.feed as { subset?: unknown }).subset = 'false';
+  });
+  assert.throws(load, /feed\.subset is "false"/);
+});
+
+/** `taxFeed` with the rate made a combined one of the given portions. */
+function subRateFeed(amount: number, subRates: unknown) {
+  return taxFeed((rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] };
+    cat.rates[0].amount = amount;
+    cat.rates[0].subRates = subRates;
+  });
+}
+
+test('sub-rates: portions that sum to the amount are accepted and kept', () => {
+  const r = subRateFeed(0.1, [
+    { name: 'State', amount: 0.06 },
+    { name: 'County', amount: 0.04 },
+  ]);
+  assert.deepEqual(codes(r.diagnostics), []);
+  assert.deepEqual(r.feed.taxCategories.get('standard')?.rates?.[0].subRates, [
+    { name: 'State', amount: 0.06 },
+    { name: 'County', amount: 0.04 },
+  ]);
+});
+
+test('sub-rates: float noise in the sum is not a mismatch', () => {
+  // 0.07 + 0.03 is 0.10000000000000002 in floating point, and nobody typed that.
+  const r = subRateFeed(0.1, [
+    { name: 'State', amount: 0.07 },
+    { name: 'County', amount: 0.03 },
+  ]);
+  assert.ok(!codes(r.diagnostics).includes('tax-subrates-sum-mismatch'));
+});
+
+test('sub-rates: portions that do not sum to the amount are an error naming both', () => {
+  // The API refuses the category and, with it, every product that references it.
+  const r = subRateFeed(0.1, [
+    { name: 'State', amount: 0.06 },
+    { name: 'County', amount: 0.05 },
+  ]);
+  const d = r.diagnostics.find((x) => x.code === 'tax-subrates-sum-mismatch');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /sum to 0\.11 but amount is 0\.1/);
+  assert.match(d.message, /GB/);
+});
+
+test('sub-rates: an empty list, a nameless portion and a percentage are schema violations', () => {
+  for (const bad of [
+    [],
+    [{ amount: 0.1 }],
+    [{ name: 'State', amount: 6 }],
+    [{ name: 'State', amount: 0.1, extra: true }],
+  ]) {
+    assert.ok(
+      codes(subRateFeed(0.1, bad).diagnostics).includes('schema-violation'),
+      `${JSON.stringify(bad)} must be refused`,
+    );
+  }
 });
 
 test('tax: a category declared twice is a duplicate record', () => {
