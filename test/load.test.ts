@@ -1472,6 +1472,32 @@ test('tax: a missing category is created with its rates, before any import', asy
   assert.ok(created >= 0 && created < firstImport);
 });
 
+test('tax: sub-rates are sent with the rate a missing category is created with', async () => {
+  const plan = planNeedingTax();
+  const rate = plan.prerequisites.taxCategories![0].rates[0];
+  rate.amount = 0.2;
+  rate.subRates = [
+    { name: 'Federal', amount: 0.15 },
+    { name: 'Local', amount: 0.05 },
+  ];
+  const { clients, recorded } = fakeClients({ existing: { taxCategories: [] } });
+  await runLoad(clients, plan, config(), { execute: true, concurrency: 1, sleep: noSleep });
+  const created = recorded.created.find((c) => c.kind === 'taxCategories');
+  assert.ok(created);
+  assert.deepEqual((created.body as { rates: unknown[] }).rates, [
+    {
+      name: 'VAT',
+      amount: 0.2,
+      includedInPrice: true,
+      country: 'GB',
+      subRates: [
+        { name: 'Federal', amount: 0.15 },
+        { name: 'Local', amount: 0.05 },
+      ],
+    },
+  ]);
+});
+
 test('tax: an existing category is left exactly as found, rates and all', async () => {
   // Its rates also tax shipping and belong to whoever owns tax. `preflight`
   // names a difference; `load` never acts on one.

@@ -605,6 +605,32 @@
           "type": "string",
           "minLength": 1,
           "description": "Required by the API and shown on orders as the tax portion's name. Derived from country and amount when absent, and recorded for review."
+        },
+        "subRates": {
+          "type": "array",
+          "minItems": 1,
+          "description": "For a rate that is the sum of several taxes (for example state and county). The API uses them to split the tax into portions on carts and orders. `amount` stays required and must equal their sum; `validate` refuses a mismatch, because the API refuses the whole category with it.",
+          "items": {
+            "type": "object",
+            "required": [
+              "name",
+              "amount"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1,
+                "description": "The portion's name, for example `State` or `County`. Required by the API."
+              },
+              "amount": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1,
+                "description": "A FRACTION, like the rate's own `amount`: 0.06 for 6%."
+              }
+            }
+          }
         }
       }
     },

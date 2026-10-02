@@ -1374,6 +1374,45 @@ test('tax: a rate missing its name or with a lowercase country is refused', () =
   assert.match(d.message, /name is missing/);
 });
 
+test('tax: sub-rates that sum to the amount audit clean', () => {
+  const found = codes(
+    auditTax((plan) => {
+      const rate = plan.prerequisites.taxCategories![0].rates[0];
+      rate.amount = 0.1;
+      rate.subRates = [
+        { name: 'State', amount: 0.06 },
+        { name: 'County', amount: 0.04 },
+      ];
+    }),
+  );
+  assert.deepEqual(found.filter((c) => TAX_CODES.includes(c)), []);
+});
+
+test('tax: sub-rates that disagree with the amount are refused by the gate too', () => {
+  // A hand-edited plan has been through nothing, and the API refuses the whole
+  // category — with every product that references it.
+  const d = auditTax((plan) => {
+    const rate = plan.prerequisites.taxCategories![0].rates[0];
+    rate.amount = 0.1;
+    rate.subRates = [
+      { name: 'State', amount: 0.06 },
+      { name: 'County', amount: 0.05 },
+    ];
+  }).find((x) => x.code === 'tax-rate-invalid');
+  assert.ok(d);
+  assert.match(d.message, /sub-rates sum to 0\.11 but amount is 0\.1/);
+});
+
+test('tax: a nameless sub-rate is refused by the gate', () => {
+  const d = auditTax((plan) => {
+    const rate = plan.prerequisites.taxCategories![0].rates[0];
+    rate.amount = 0.2;
+    rate.subRates = [{ name: '', amount: 0.2 }];
+  }).find((x) => x.code === 'tax-rate-invalid');
+  assert.ok(d);
+  assert.match(d.message, /a sub-rate has no name/);
+});
+
 test('tax: two rates for one scope are refused by the gate', () => {
   const found = codes(
     auditTax((plan) => {

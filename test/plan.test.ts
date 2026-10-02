@@ -1225,6 +1225,52 @@ test('tax: the prerequisite carries the rates a missing category is created with
   ]);
 });
 
+test('tax: sub-rates reach the plan, and the review decision names the portions', () => {
+  const r = taxPlan([
+    {
+      _type: 'taxCategory',
+      code: 'standard',
+      name: 'Standard rate',
+      rates: [
+        {
+          country: 'US',
+          state: 'CA',
+          amount: 0.1,
+          includedInPrice: false,
+          name: 'Sales tax',
+          subRates: [
+            { name: 'State', amount: 0.06 },
+            { name: 'County', amount: 0.04 },
+          ],
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(r.plan.prerequisites.taxCategories![0].rates, [
+    {
+      name: 'Sales tax',
+      amount: 0.1,
+      includedInPrice: false,
+      country: 'US',
+      state: 'CA',
+      subRates: [
+        { name: 'State', amount: 0.06 },
+        { name: 'County', amount: 0.04 },
+      ],
+    },
+  ]);
+  const d = r.plan.decisions.find((x) => x.subject === 'taxCategory:standard');
+  assert.ok(d);
+  assert.equal(d.outcome, 'US/CA 10% added (State 6% + County 4%)');
+});
+
+test('tax: a rate without sub-rates carries no subRates field at all', () => {
+  const r = taxPlan([STANDARD]);
+  for (const rate of r.plan.prerequisites.taxCategories![0].rates) {
+    assert.ok(!('subRates' in rate));
+  }
+});
+
 test('tax: the rates are a decision for review, and say an existing category is untouched', () => {
   const r = taxPlan([STANDARD]);
   const d = r.plan.decisions.find((x) => x.subject === 'taxCategory:standard');

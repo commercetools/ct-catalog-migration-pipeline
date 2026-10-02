@@ -44,6 +44,7 @@ import {
   emptyFeed,
   FEED_TYPES,
   inventoryIdentity,
+  subRateSumMismatch,
   taxRateScope,
   type CatalogFeed,
   type FeedAttributeDefinition,
@@ -1382,6 +1383,19 @@ function checkTaxCategories(
     const scopes = new Map<string, number>();
     rates.forEach((rate, i) => {
       const scope = taxRateScope(rate);
+      const subSum = subRateSumMismatch(rate.amount, rate.subRates);
+      if (subSum !== undefined) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'tax-subrates-sum-mismatch',
+          message:
+            `Tax category '${code}', rate for ${scope}: the sub-rates sum to ${subSum} but ` +
+            `amount is ${rate.amount}. The API refuses a rate whose total and portions ` +
+            'differ, and refuses the whole category with it, which then holds up every ' +
+            'product that references it. Make amount the sum of the sub-rates.',
+          ...at,
+        });
+      }
       const prior = scopes.get(scope);
       if (prior !== undefined) {
         diagnostics.push({

@@ -1394,6 +1394,63 @@ test('subset: feed.subset must be a boolean', () => {
   assert.throws(load, /feed\.subset is "false"/);
 });
 
+/** `taxFeed` with the rate made a combined one of the given portions. */
+function subRateFeed(amount: number, subRates: unknown) {
+  return taxFeed((rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] };
+    cat.rates[0].amount = amount;
+    cat.rates[0].subRates = subRates;
+  });
+}
+
+test('sub-rates: portions that sum to the amount are accepted and kept', () => {
+  const r = subRateFeed(0.1, [
+    { name: 'State', amount: 0.06 },
+    { name: 'County', amount: 0.04 },
+  ]);
+  assert.deepEqual(codes(r.diagnostics), []);
+  assert.deepEqual(r.feed.taxCategories.get('standard')?.rates?.[0].subRates, [
+    { name: 'State', amount: 0.06 },
+    { name: 'County', amount: 0.04 },
+  ]);
+});
+
+test('sub-rates: float noise in the sum is not a mismatch', () => {
+  // 0.07 + 0.03 is 0.10000000000000002 in floating point, and nobody typed that.
+  const r = subRateFeed(0.1, [
+    { name: 'State', amount: 0.07 },
+    { name: 'County', amount: 0.03 },
+  ]);
+  assert.ok(!codes(r.diagnostics).includes('tax-subrates-sum-mismatch'));
+});
+
+test('sub-rates: portions that do not sum to the amount are an error naming both', () => {
+  // The API refuses the category and, with it, every product that references it.
+  const r = subRateFeed(0.1, [
+    { name: 'State', amount: 0.06 },
+    { name: 'County', amount: 0.05 },
+  ]);
+  const d = r.diagnostics.find((x) => x.code === 'tax-subrates-sum-mismatch');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /sum to 0\.11 but amount is 0\.1/);
+  assert.match(d.message, /GB/);
+});
+
+test('sub-rates: an empty list, a nameless portion and a percentage are schema violations', () => {
+  for (const bad of [
+    [],
+    [{ amount: 0.1 }],
+    [{ name: 'State', amount: 6 }],
+    [{ name: 'State', amount: 0.1, extra: true }],
+  ]) {
+    assert.ok(
+      codes(subRateFeed(0.1, bad).diagnostics).includes('schema-violation'),
+      `${JSON.stringify(bad)} must be refused`,
+    );
+  }
+});
+
 test('tax: a category declared twice is a duplicate record', () => {
   const r = taxFeed((rows) => {
     rows.push(structuredClone(GB_VAT));

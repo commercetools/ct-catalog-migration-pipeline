@@ -283,6 +283,9 @@ function buildTaxCategories(
         includedInPrice: rate.includedInPrice,
         country: rate.country,
         ...(rate.state !== undefined ? { state: rate.state } : {}),
+        ...(rate.subRates !== undefined
+          ? { subRates: rate.subRates.map((s) => ({ name: s.name, amount: s.amount })) }
+          : {}),
       };
     });
 
@@ -302,7 +305,10 @@ function buildTaxCategories(
               .map(
                 (r) =>
                   `${taxRateScope(r)} ${formatPercent(r.amount)} ` +
-                  (r.includedInPrice ? 'included' : 'added'),
+                  (r.includedInPrice ? 'included' : 'added') +
+                  (r.subRates
+                    ? ` (${r.subRates.map((s) => `${s.name} ${formatPercent(s.amount)}`).join(' + ')})`
+                    : ''),
               )
               .join('; '),
       rationale:

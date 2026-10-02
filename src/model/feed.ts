@@ -287,6 +287,19 @@ export interface FeedTaxRate {
    * absent, and recorded for review.
    */
   name?: string;
+  /**
+   * The portions a combined rate is made of. `amount` is still required and
+   * must equal their sum: the API refuses a category whose total disagrees, and
+   * refuses the whole category with it.
+   */
+  subRates?: FeedSubRate[];
+}
+
+/** One portion of a combined tax rate, such as the state or county share. */
+export interface FeedSubRate {
+  name: string;
+  /** Fraction in [0, 1]. */
+  amount: number;
 }
 
 /**
@@ -475,6 +488,24 @@ export function inventoryIdentity(sku: string, supplyChannel?: string): string {
  */
 export function taxRateScope(rate: { country: string; state?: string }): string {
   return rate.state ? `${rate.country}/${rate.state}` : rate.country;
+}
+
+/** Float noise is not a disagreement: 0.07 + 0.03 is not exactly 0.1. */
+const SUBRATE_SUM_TOLERANCE = 1e-9;
+
+/**
+ * The sum of a rate's sub-rates when it disagrees with the rate's own amount,
+ * otherwise `undefined`. The API refuses a category whose total and portions
+ * differ, and refuses the whole category with it, so both `validate` and the
+ * audit gate ask the same question of the same numbers.
+ */
+export function subRateSumMismatch(
+  amount: number,
+  subRates: readonly { amount: number }[] | undefined,
+): number | undefined {
+  if (subRates === undefined || subRates.length === 0) return undefined;
+  const sum = subRates.reduce((total, s) => total + s.amount, 0);
+  return Math.abs(sum - amount) > SUBRATE_SUM_TOLERANCE ? Number(sum.toFixed(10)) : undefined;
 }
 
 /**
