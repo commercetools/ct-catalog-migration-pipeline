@@ -326,7 +326,7 @@ test('decisions: an absent onMissingDefinitions is refused', () => {
       delete (c.productTypes as Partial<PipelineConfig['productTypes']>)
         .onMissingDefinitions;
     }),
-    /cannot be changed afterwards/,
+    /a constraint can only be changed to None/,
   );
 });
 

@@ -249,7 +249,9 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
         "attribute definitions; 'infer' guesses each type from observed values and writes\n" +
         'the guesses to a review file. Inference is a fallback for a source that cannot\n' +
         'describe its own type system, not a default — the guesses become attribute\n' +
-        'constraints, and those cannot be changed afterwards.',
+        "types and constraints. There is no update action that changes an attribute's\n" +
+        'type, and a constraint can only be changed to None, so a wrong guess cannot be\n' +
+        'corrected in place.',
     );
   }
 
