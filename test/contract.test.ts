@@ -1239,6 +1239,63 @@ test('tax mode: External does not hide the other tax checks', () => {
   assert.ok(codes(r.diagnostics).includes('undeclared-tax-category'));
 });
 
+/** `taxFeed` validated under the given tax mode. */
+function taxFeedUnder(taxMode: string, mutate: (rows: Record<string, unknown>[]) => void) {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'standard';
+    rows.push(structuredClone(GB_VAT));
+    mutate(rows);
+  });
+  return validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    target: { ...loaded.config.target, taxMode: taxMode as PipelineConfig['target']['taxMode'] },
+  });
+}
+
+test('tax mode: under External a category with no rates is the intended shape', () => {
+  const noRates = (rows: Record<string, unknown>[]) => {
+    (rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] }).rates = [];
+  };
+  for (const mode of ['External', 'ExternalAmount']) {
+    assert.ok(
+      !codes(taxFeedUnder(mode, noRates).diagnostics).includes('tax-category-without-rates'),
+      `${mode} must silence it`,
+    );
+  }
+  assert.ok(
+    codes(taxFeedUnder('Platform', noRates).diagnostics).includes('tax-category-without-rates'),
+    'Platform keeps it',
+  );
+});
+
+test('tax mode: under External a country with no rate is not a gap', () => {
+  const unrated = (rows: Record<string, unknown>[]) => {
+    rows.push({ _type: 'store', code: 'eu', countries: ['DE'] });
+  };
+  for (const mode of ['External', 'ExternalAmount']) {
+    assert.ok(
+      !codes(taxFeedUnder(mode, unrated).diagnostics).includes('tax-rate-country-missing'),
+      `${mode} must silence it`,
+    );
+  }
+  assert.ok(
+    codes(taxFeedUnder('Platform', unrated).diagnostics).includes('tax-rate-country-missing'),
+    'Platform keeps it',
+  );
+});
+
+test('tax mode: External still reports a duplicated rate scope and an unused category', () => {
+  // Wrong in every mode: the API refuses a category with two rates for one
+  // country and state, and an unreferenced category is a write nothing needs.
+  const r = taxFeedUnder('External', (rows) => {
+    const cat = rows.find((x) => x._type === 'taxCategory') as { rates: unknown[] };
+    cat.rates.push(structuredClone(cat.rates[0]));
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+  });
+  assert.ok(codes(r.diagnostics).includes('duplicate-tax-rate-scope'));
+  assert.ok(codes(r.diagnostics).includes('tax-category-never-referenced'));
+});
+
 test('tax mode: target.taxMode must be a known mode', () => {
   const load = fromTemplate((c) => {
     c.keys.prefix = 'acme';

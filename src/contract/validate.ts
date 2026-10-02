@@ -1411,15 +1411,21 @@ function checkTaxCategories(
       continue;
     }
 
+    // Both checks below are about the rate a cart will find. Under External or
+    // ExternalAmount an outside service supplies it, so a category with no
+    // rates, or none for a country, is the intended shape rather than a gap.
+    if (!taxFromProduct) continue;
+
     if (rates.length === 0) {
       diagnostics.push({
         severity: 'warning',
         code: 'tax-category-without-rates',
         message:
           `Tax category '${code}' declares no rates. Correct if carts use External or ` +
-          'ExternalAmount tax mode. Under Platform, every cart containing one of its ' +
-          'products fails to calculate tax — and if the category already exists in the ' +
-          "project, the project's own rates are the ones that apply.",
+          'ExternalAmount tax mode: set target.taxMode and this stops. Under Platform, ' +
+          'every cart containing one of its products fails to calculate tax — and if the ' +
+          "category already exists in the project, the project's own rates are the ones " +
+          'that apply.',
         ...at,
       });
       continue;
@@ -1444,7 +1450,8 @@ function checkTaxCategories(
           `Tax category '${code}' has no rate for [${uncovered.join(', ')}], where its ` +
           'products are priced or a store trades. A rate is selected by exact country ' +
           'match on the shipping address, so under Platform tax mode a cart shipping ' +
-          'there cannot be taxed.',
+          'there cannot be taxed. Under External or ExternalAmount an outside service ' +
+          'supplies the rate: set target.taxMode and this stops.',
         ...at,
       });
     }
