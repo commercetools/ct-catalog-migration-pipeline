@@ -912,9 +912,19 @@ function checkPriceReferences(
     for (const c of store.distributionChannels ?? []) distributionReferenced.add(c);
     for (const c of store.supplyChannels ?? []) supplyReferenced.add(c);
   }
+  // Stock is a use in its own right: `load` has to create the channel before
+  // the entries can resolve, whether or not any store lists it. Counting only
+  // prices and stores told a stock-only feed that its warehouses were
+  // prerequisites "the project does not actually need".
+  const stockedChannels = new Set<string>();
+  for (const entry of feed.inventoryEntries.values()) {
+    if (entry.supplyChannel) stockedChannels.add(entry.supplyChannel);
+  }
 
   for (const [code] of feed.channels) {
-    if (!channelUses.has(code) && supplyReferenced.has(code)) continue;
+    if (!channelUses.has(code) && (supplyReferenced.has(code) || stockedChannels.has(code))) {
+      continue;
+    }
     if (!channelUses.has(code) && distributionReferenced.has(code)) {
       // A store trades through it, so the project needs it — but nothing is
       // priced into it, so shoppers in that store see only channel-less
@@ -935,8 +945,9 @@ function checkPriceReferences(
         severity: 'warning',
         code: 'channel-never-referenced',
         message:
-          `Channel '${code}' is declared but no price is scoped to it. Nothing will break, ` +
-          'but it is a prerequisite the project does not actually need for this load.',
+          `Channel '${code}' is declared but no price, stock entry or store references it. ` +
+          'Nothing will break, but it is a prerequisite the project does not actually need ' +
+          'for this load.',
         ...(feed.origin.get(`channel:${code}`) ?? {}),
       });
     }
@@ -1200,6 +1211,47 @@ function checkInventory(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
         ...at,
       });
     }
+  }
+
+  // The reverse of store-supply-channel-unstocked: stock in a channel no store
+  // lists. Per the Product Projections docs, a store with `supplyChannels` set
+  // projects only entries on those channels (plus channel-less ones); a store
+  // without them filters nothing. So the stock is hidden only when some store
+  // filters and none lists the channel — with no filtering store, every read
+  // sees it and there is nothing to say. A warning, not an error: stores may
+  // be created after cutover, and stock read by channel is legitimate.
+  const listed = new Set<string>();
+  const filtering: string[] = [];
+  for (const store of feed.stores.values()) {
+    const codes = store.supplyChannels ?? [];
+    if (codes.length > 0) filtering.push(store.code);
+    for (const code of codes) listed.add(code);
+  }
+  if (filtering.length === 0) return;
+  const unreachable = new Map<string, string[]>();
+  for (const entry of feed.inventoryEntries.values()) {
+    const code = entry.supplyChannel;
+    if (code === undefined || listed.has(code)) continue;
+    // An undeclared channel or a wrong role is already an error above.
+    if (!feed.channels.get(code)?.roles.includes('InventorySupply')) continue;
+    const skus = unreachable.get(code) ?? [];
+    skus.push(entry.sku);
+    unreachable.set(code, skus);
+  }
+  for (const [code, skus] of unreachable) {
+    const sample = skus.slice(0, 3).join(', ') + (skus.length > 3 ? ', …' : '');
+    diagnostics.push({
+      severity: 'warning',
+      code: 'inventory-supply-channel-not-in-store',
+      message:
+        `Supply channel '${code}' holds ${skus.length} inventory entr${skus.length === 1 ? 'y' : 'ies'} ` +
+        `(${sample}) and no store lists it. The stock will import, and reads through ` +
+        `store(s) [${filtering.join(', ')}] will not see it: a store with supply channels ` +
+        'projects stock only from those channels.\n' +
+        '      Add the channel to the supplyChannels of the store(s) that sell from it — or, ' +
+        'if stores come later or stock is read by channel, record that decision.',
+      ...(feed.origin.get(`channel:${code}`) ?? {}),
+    });
   }
 }
 

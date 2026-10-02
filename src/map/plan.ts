@@ -90,20 +90,33 @@ export function buildPlan(
 
   // Recorded once with a count rather than per image: the decision is the host,
   // and it is the kind of thing that is only visibly wrong on a storefront.
+  // Asset sources resolve against the same base, so they count too: a feed
+  // whose only relative URLs were asset sources (dogfood run 5) recorded no
+  // decision at all.
   if (config.media?.baseUrl !== undefined) {
-    const resolved = [...feed.variants.values()].reduce(
-      (n, v) => n + (v.images ?? []).filter((i) => !isAbsoluteUrl(i.url)).length,
-      0,
-    );
-    if (resolved > 0) {
+    const relative = (urls: string[]) => urls.filter((u) => !isAbsoluteUrl(u)).length;
+    const sources = (assets: { sources: { uri: string }[] }[] | undefined) =>
+      (assets ?? []).flatMap((a) => a.sources.map((s) => s.uri));
+    let images = 0;
+    let assets = 0;
+    for (const v of feed.variants.values()) {
+      images += relative((v.images ?? []).map((i) => i.url));
+      assets += relative(sources(v.assets));
+    }
+    for (const c of feed.categories.values()) assets += relative(sources(c.assets));
+    if (images + assets > 0) {
+      const counts = [
+        ...(images > 0 ? [`${images} relative image URL(s)`] : []),
+        ...(assets > 0 ? [`${assets} relative asset source URI(s)`] : []),
+      ].join(' and ');
       decisions.push({
         subject: 'media',
-        outcome: `${resolved} relative image URL(s) resolved against ${config.media.baseUrl}`,
+        outcome: `${counts} resolved against ${config.media.baseUrl}`,
         rationale:
-          'The source stored image paths relative to its own site and kept the host ' +
+          'The source stored media paths relative to its own site and kept the host ' +
           'elsewhere, so the host came from the configuration rather than the export. ' +
           'commercetools serves these URLs verbatim: if this base is wrong, every one of ' +
-          'those images 404s and nothing in the pipeline or the project can detect it. ' +
+          'those files 404s and nothing in the pipeline or the project can detect it. ' +
           'Whoever owns the storefront or CDN should confirm the value, and one loaded ' +
           'image should be opened before the catalog is published.',
         review: true,

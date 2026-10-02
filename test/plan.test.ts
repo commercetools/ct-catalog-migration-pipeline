@@ -745,25 +745,27 @@ test('a set of localized strings survives the contract and maps to ltext-set', (
 // ---------------------------------------------------------------------------
 
 /** A feed with one relative and one absolute image, plus an optional baseUrl. */
-function mediaFixture(baseUrl?: string) {
+function mediaFixture(baseUrl?: string, records?: unknown[]) {
   const dir = mkdtempSync(join(tmpdir(), 'ct-media-'));
   const feedDir = join(dir, 'feed');
   mkdirSync(feedDir);
   writeFileSync(
     join(feedDir, 'catalog.ndjson'),
-    [
-      { _type: 'attributeDefinition', name: 'material', type: 'text', level: 'product' },
-      { _type: 'product', code: 'P1', name: { 'en-GB': 'One' }, attributes: { material: 'Cotton' } },
-      {
-        _type: 'variant',
-        sku: 'P1-A',
-        product: 'P1',
-        images: [
-          { url: '/medias/sys_master/root/h9c/product.jpg', label: 'front' },
-          { url: 'https://other.example.com/already-absolute.jpg' },
-        ],
-      },
-    ]
+    (
+      records ?? [
+        { _type: 'attributeDefinition', name: 'material', type: 'text', level: 'product' },
+        { _type: 'product', code: 'P1', name: { 'en-GB': 'One' }, attributes: { material: 'Cotton' } },
+        {
+          _type: 'variant',
+          sku: 'P1-A',
+          product: 'P1',
+          images: [
+            { url: '/medias/sys_master/root/h9c/product.jpg', label: 'front' },
+            { url: 'https://other.example.com/already-absolute.jpg' },
+          ],
+        },
+      ]
+    )
       .map((r) => JSON.stringify(r))
       .join('\n'),
   );
@@ -829,7 +831,38 @@ test('media: a configured baseUrl resolves relative URLs and leaves absolute one
   assert.ok(d);
   assert.equal(d.review, true);
   assert.match(d.outcome, /1 relative image URL\(s\) resolved against/);
-  assert.match(d.rationale, /every one of those images 404s/);
+  assert.match(d.rationale, /every one of those files 404s/);
+});
+
+test('media: relative asset sources alone still record the base-URL decision', () => {
+  // Dogfood run 5: every relative URL was an asset source, the images were
+  // absolute, and the decision counted images only — so a host taken from
+  // config, which nothing downstream can check, was recorded nowhere.
+  const loaded = mediaFixture('https://cdn.example.com/', [
+    { _type: 'attributeDefinition', name: 'material', type: 'text', level: 'product' },
+    { _type: 'category', code: 'C1', name: { 'en-GB': 'Cat' },
+      assets: [{ code: 'banner', sources: [{ uri: '/medias/banner.jpg' }] }] },
+    { _type: 'product', code: 'P1', name: { 'en-GB': 'One' }, attributes: { material: 'Cotton' } },
+    {
+      _type: 'variant',
+      sku: 'P1-A',
+      product: 'P1',
+      images: [{ url: 'https://other.example.com/already-absolute.jpg' }],
+      assets: [{ code: 'manual', sources: [{ uri: 'docs/manual.pdf' }, { uri: 'https://x.example/a.pdf' }] }],
+    },
+  ]);
+  const { feed, diagnostics: vd } = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  assert.deepEqual(vd.filter((d) => d.severity === 'error'), []);
+  const { plan: p } = buildPlan(feed, deriveProductTypes(feed, loaded.config), loaded.config);
+
+  const d = p.decisions.find((x) => x.subject === 'media');
+  assert.ok(d, 'asset sources resolve against the same base, so they need the same review');
+  assert.equal(d.review, true);
+  assert.equal(
+    d.outcome,
+    '2 relative asset source URI(s) resolved against https://cdn.example.com/',
+    'the absolute image and the absolute source are not counted',
+  );
 });
 
 test('media: a base with a path keeps it, and no double slash appears', () => {
