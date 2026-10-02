@@ -143,6 +143,28 @@ test('broken-integrity: an axis declared at product level is a contradiction', (
   assert.match(d.message, /brandLine/);
 });
 
+test('broken-integrity: validate and derive agree on a declared-but-unpopulated attribute', () => {
+  // validate once said such an attribute "will be created on the ProductType"
+  // while derive skipped it, so the two stages described different models.
+  // derive's behaviour is the right one: an attribute no product fills would sit
+  // empty on every ProductType.
+  const r = run('broken-integrity');
+  const d = r.diagnostics.find((x) => x.code === 'attribute-never-populated');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /neverUsed/);
+  assert.match(d.message, /leaves it off every ProductType/);
+  assert.doesNotMatch(d.message, /will be created/);
+
+  const model = deriveProductTypes(r.feed, r.config);
+  for (const pt of model.productTypes.values()) {
+    assert.ok(
+      !(pt.attributes ?? []).some((a) => a.name === 'neverUsed'),
+      `ProductType ${pt.key} must not carry the unpopulated attribute`,
+    );
+  }
+});
+
 test('broken-integrity: the localized-axis check names the offending axis', () => {
   const r = run('broken-integrity');
   const d = r.diagnostics.find((x) => x.code === 'axis-localized');

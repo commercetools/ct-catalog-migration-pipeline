@@ -665,9 +665,9 @@ function checkDeclarations(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
         severity: 'warning',
         code: 'attribute-never-populated',
         message:
-          `Attribute '${def.name}' is declared but no product or variant sets it. It will ` +
-          'be created on the ProductType and stay empty — usually a source field the ' +
-          'adapter dropped.',
+          `Attribute '${def.name}' is declared but no product or variant sets it. derive ` +
+          'leaves it off every ProductType rather than create an attribute no product ' +
+          'fills — usually a source field the adapter dropped.',
         ...(feed.origin.get(`attributeDefinition:${def.name}`) ?? {}),
       });
     }
