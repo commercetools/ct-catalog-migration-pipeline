@@ -30,6 +30,15 @@ export interface PipelineConfig {
   feed: {
     /** Directory of *.ndjson feed files, relative to this config file. */
     dir: string;
+    /**
+     * The feed is a slice of the catalog — the small first run, not the whole
+     * load. Declared prerequisites (tax categories, channels) that no product in
+     * the slice references are then expected, because the products that use them
+     * sit outside it; `validate` reports them as one line instead of one warning
+     * each. Leave it off for the full load, where an unreferenced prerequisite is
+     * a real finding.
+     */
+    subset?: boolean;
   };
 
   target: {
@@ -259,6 +268,14 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
           'so it needs to know what they are.',
       );
     }
+  }
+
+  if (config.feed.subset !== undefined && typeof config.feed.subset !== 'boolean') {
+    fail(
+      `feed.subset is ${JSON.stringify(config.feed.subset)}.`,
+      'It must be true or false. A string such as "false" is not a boolean and is\n' +
+        'truthy in most readers, so it is refused rather than guessed at.',
+    );
   }
 
   if (config.keys.prefix === PREFIX_PLACEHOLDER) {

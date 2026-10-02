@@ -716,6 +716,7 @@ function checkAgainstConfig(
   checkInventory(feed, diagnostics);
   checkTaxCategories(feed, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
+  if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
 
   for (const [currency, sku] of firstUse) {
     if (declared.has(currency)) continue;
@@ -733,6 +734,42 @@ function checkAgainstConfig(
       ...(feed.origin.get(`variant:${sku}`) ?? {}),
     });
   }
+}
+
+/** Declared prerequisites a subset feed is expected to leave unreferenced. */
+const UNREFERENCED_ON_A_SUBSET = new Set(['tax-category-never-referenced', 'channel-never-referenced']);
+
+/**
+ * On a subset feed, replace the per-prerequisite "never referenced" warnings
+ * with one line.
+ *
+ * The slice is the small first run the skill recommends before the full
+ * catalog, and the products that use a tax category or channel are often
+ * outside it, so each of these warnings is true of the slice and false of the
+ * catalog. Dropping them silently would let the flag outlive the first run and
+ * quietly hide the same finding on the full load, so the replacement names what
+ * was held back and says when to turn the flag off.
+ */
+function rollUpUnreferencedOnSubset(diagnostics: Diagnostic[]): void {
+  const held = diagnostics.filter((d) => UNREFERENCED_ON_A_SUBSET.has(d.code));
+  if (held.length === 0) return;
+
+  for (let i = diagnostics.length - 1; i >= 0; i--) {
+    if (UNREFERENCED_ON_A_SUBSET.has(diagnostics[i].code)) diagnostics.splice(i, 1);
+  }
+
+  diagnostics.push({
+    severity: 'warning',
+    code: 'subset-unreferenced-declarations',
+    message:
+      `feed.subset is true, so ${held.length} declared prerequisite(s) nothing in this ` +
+      'feed references are reported here rather than one by one: ' +
+      held
+        .map((d) => `${d.code === 'channel-never-referenced' ? 'channel' : 'tax category'} ${d.message.match(/'([^']+)'/)?.[1] ?? '?'}`)
+        .join(', ') +
+      '. Expected on a slice, because the products that use them may sit outside it. ' +
+      'Remove feed.subset for the full load, where an unreferenced prerequisite is a real finding.',
+  });
 }
 
 /**

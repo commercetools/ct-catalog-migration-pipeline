@@ -110,6 +110,11 @@ Two more shape the model rather than the load: `productTypes.onMissingDefinition
 read backwards, `sameForAll` is the safe default and `native` is the one that
 makes attributes invisible to Product Projection Search).
 
+One optional setting is for the small first run: `feed.subset: true` declares the
+feed a slice of the catalog. `validate` then reports the tax categories and
+channels nothing in the slice references as one line instead of one warning each,
+because the products that use them sit outside it. Remove it for the full load.
+
 The skill that accompanies this pipeline conducts these as an interview and
 writes the config from the answers, which is the intended path. The template
 exists as a reference and a fallback.

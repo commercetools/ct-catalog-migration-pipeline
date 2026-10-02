@@ -1214,6 +1214,65 @@ test('tax: a category no product uses is a warning', () => {
   assert.ok(!codes(r.diagnostics).includes('tax-category-without-rates'));
 });
 
+/** `taxFeed` with the config declared a subset. */
+function subsetTaxFeed(mutate: (rows: Record<string, unknown>[]) => void) {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'product')!.taxCategory = 'standard';
+    rows.push(structuredClone(GB_VAT));
+    mutate(rows);
+  });
+  return validateFeed(loaded.feedDir, SCHEMA, {
+    ...loaded.config,
+    feed: { ...loaded.config.feed, subset: true },
+  });
+}
+
+test('subset: unreferenced tax categories and channels become one line, naming each', () => {
+  // On a slice these warnings are true of the slice and false of the catalog.
+  // They are held back, not dropped, so the flag cannot hide them on the full load.
+  const r = subsetTaxFeed((rows) => {
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+    rows.push({ _type: 'channel', code: 'unused-dc', roles: ['InventorySupply'] });
+  });
+  assert.deepEqual(codes(r.diagnostics), ['subset-unreferenced-declarations']);
+  const d = r.diagnostics[0];
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /2 declared prerequisite/);
+  assert.match(d.message, /tax category zero/);
+  assert.match(d.message, /channel unused-dc/);
+  assert.match(d.message, /Remove feed\.subset for the full load/);
+});
+
+test('subset: a slice with nothing unreferenced gains no line', () => {
+  const r = subsetTaxFeed(() => {});
+  assert.deepEqual(codes(r.diagnostics), []);
+});
+
+test('subset: other findings on a slice are untouched', () => {
+  // Only the "never referenced" pair is expected on a slice. A category with
+  // no rates on a *used* category is still a defect of the slice itself.
+  const r = subsetTaxFeed((rows) => {
+    rows.find((x) => x._type === 'taxCategory' && x.code === 'standard')!.rates = [];
+  });
+  assert.ok(codes(r.diagnostics).includes('tax-category-without-rates'));
+});
+
+test('subset: without the flag the per-prerequisite warnings stand', () => {
+  const r = taxFeed((rows) => {
+    rows.push({ _type: 'taxCategory', code: 'zero', rates: [] });
+  });
+  assert.ok(codes(r.diagnostics).includes('tax-category-never-referenced'));
+  assert.ok(!codes(r.diagnostics).includes('subset-unreferenced-declarations'));
+});
+
+test('subset: feed.subset must be a boolean', () => {
+  const load = fromTemplate((c) => {
+    c.keys.prefix = 'acme';
+    (c.feed as { subset?: unknown }).subset = 'false';
+  });
+  assert.throws(load, /feed\.subset is "false"/);
+});
+
 test('tax: a category declared twice is a duplicate record', () => {
   const r = taxFeed((rows) => {
     rows.push(structuredClone(GB_VAT));
