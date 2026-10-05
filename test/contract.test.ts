@@ -1512,3 +1512,42 @@ test('tiers: quantity breaks on a feed price validate; malformed ones are refuse
     );
   }
 });
+
+test('tax: taxRoundingTarget is accepted as Net or Tax and refused as anything else', () => {
+  const withTarget = (target: unknown) =>
+    taxFeed((rows) => {
+      (rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] }).rates[0]
+        .taxRoundingTarget = target;
+    });
+  for (const ok of ['Net', 'Tax']) {
+    const r = withTarget(ok);
+    assert.ok(!codes(r.diagnostics).includes('schema-violation'), ok);
+    assert.equal(r.feed.taxCategories.get('standard')?.rates?.[0].taxRoundingTarget, ok);
+  }
+  for (const bad of ['Both', 'net', '', 1]) {
+    assert.ok(codes(withTarget(bad).diagnostics).includes('schema-violation'), String(bad));
+  }
+});
+
+test('tax: a rounding target on a rate that is not included in the price has no effect, and says so', () => {
+  const r = taxFeed((rows) => {
+    const rate = (rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] })
+      .rates[0];
+    rate.includedInPrice = false;
+    rate.taxRoundingTarget = 'Tax';
+  });
+  const d = r.diagnostics.find((x) => x.code === 'tax-rounding-target-ignored');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning', 'the API accepts and stores it, so this is not an error');
+  assert.ok((d.line ?? 0) > 0);
+  assert.equal(hasErrors(r.diagnostics), false);
+});
+
+test('tax: no warning when the target is stated on an included rate, or not stated at all', () => {
+  const r = taxFeed((rows) => {
+    (rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] }).rates[0]
+      .taxRoundingTarget = 'Tax';
+  });
+  assert.ok(!codes(r.diagnostics).includes('tax-rounding-target-ignored'));
+  assert.ok(!codes(taxFeed(() => {}).diagnostics).includes('tax-rounding-target-ignored'));
+});

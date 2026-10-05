@@ -1516,3 +1516,19 @@ test('tiers: a tier is held to the same fraction digits as any price', () => {
   ]);
   assert.ok(found.includes('fraction-digits-mismatch'));
 });
+
+test('tax: a hand-edited plan with an unknown rounding target is refused', () => {
+  const { plan, cfg } = fixturePlan('stores');
+  plan.prerequisites.taxCategories = [
+    {
+      key: 'standard',
+      name: 'Standard',
+      rates: [
+        { name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB', taxRoundingTarget: 'Both' as never },
+      ],
+    },
+  ];
+  const d = auditPlan(plan, cfg).diagnostics.find((x) => x.code === 'tax-rate-invalid');
+  assert.ok(d);
+  assert.match(d.message, /taxRoundingTarget "Both" is neither 'Net' nor 'Tax'/);
+});

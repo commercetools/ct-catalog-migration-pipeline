@@ -282,6 +282,9 @@ function buildTaxCategories(
         name,
         amount: rate.amount,
         includedInPrice: rate.includedInPrice,
+        ...(rate.taxRoundingTarget !== undefined
+          ? { taxRoundingTarget: rate.taxRoundingTarget }
+          : {}),
         country: rate.country,
         ...(rate.state !== undefined ? { state: rate.state } : {}),
         ...(rate.subRates !== undefined
@@ -307,6 +310,7 @@ function buildTaxCategories(
                 (r) =>
                   `${taxRateScope(r)} ${formatPercent(r.amount)} ` +
                   (r.includedInPrice ? 'included' : 'added') +
+                  (r.taxRoundingTarget ? `, rounds the ${r.taxRoundingTarget === 'Tax' ? 'tax amount' : 'net price'}` : '') +
                   (r.subRates
                     ? ` (${r.subRates.map((s) => `${s.name} ${formatPercent(s.amount)}`).join(' + ')})`
                     : ''),

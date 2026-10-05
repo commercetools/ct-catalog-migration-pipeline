@@ -1407,6 +1407,19 @@ function checkTaxCategories(
           ...at,
         });
       }
+      if (rate.taxRoundingTarget !== undefined && !rate.includedInPrice) {
+        diagnostics.push({
+          severity: 'warning',
+          code: 'tax-rounding-target-ignored',
+          message:
+            `Tax category '${code}', rate for ${scope}: taxRoundingTarget is ` +
+            `'${rate.taxRoundingTarget}' but includedInPrice is false. The target only ` +
+            'decides which derived amount is rounded when tax is carved out of a gross ' +
+            'price, so here it has no effect. The API accepts and stores it anyway; drop ' +
+            'it unless includedInPrice is meant to be true.',
+          ...at,
+        });
+      }
       const prior = scopes.get(scope);
       if (prior !== undefined) {
         diagnostics.push({

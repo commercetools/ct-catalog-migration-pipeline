@@ -289,6 +289,12 @@ export interface FeedTaxRate {
   amount: number;
   includedInPrice: boolean;
   /**
+   * Which derived amount `taxRoundingMode` rounds when `includedInPrice` is
+   * true: the net price or the tax amount. Absent means the API's default,
+   * `Net`. Meaningless when `includedInPrice` is false.
+   */
+  taxRoundingTarget?: 'Net' | 'Tax';
+  /**
    * Required by the API and shown on orders as the tax portion's name — so a
    * derived one lands on invoices. Derived from country and amount when
    * absent, and recorded for review.

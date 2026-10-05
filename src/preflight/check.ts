@@ -602,7 +602,13 @@ async function checkTaxCategories(
 /** Planned rates against the project's, by (country, state). Empty when equal. */
 function compareTaxRates(
   planned: PlannedTaxRate[],
-  actual: { country: string; state?: string; amount: number; includedInPrice: boolean }[],
+  actual: {
+    country: string;
+    state?: string;
+    amount: number;
+    includedInPrice: boolean;
+    taxRoundingTarget?: string;
+  }[],
 ): string[] {
   const scope = (r: { country: string; state?: string }) =>
     r.state ? `${r.country}/${r.state}` : r.country;
@@ -622,6 +628,13 @@ function compareTaxRates(
         `${key} is ${other.includedInPrice ? 'included' : 'added'} in the project, ` +
           `${rate.includedInPrice ? 'included' : 'added'} in the feed`,
       );
+    }
+    // The API defaults an absent target to Net, so compare effective values. A
+    // target only matters when tax is carved out of a gross price.
+    const wantTarget = rate.taxRoundingTarget ?? 'Net';
+    const haveTarget = other.taxRoundingTarget ?? 'Net';
+    if (rate.includedInPrice && other.includedInPrice && wantTarget !== haveTarget) {
+      out.push(`${key} rounds the ${haveTarget} in the project, ${wantTarget} in the feed`);
     }
   }
   for (const key of have.keys()) {

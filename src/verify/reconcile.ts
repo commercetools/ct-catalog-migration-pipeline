@@ -529,6 +529,14 @@ function compareTaxCategory(
           `planned ${rate.amount} ${rate.includedInPrice ? 'included' : 'added'}`,
       );
     }
+    // The SDK's TaxRate type does not model the target, but the response carries it.
+    const haveTarget = (other as { taxRoundingTarget?: string }).taxRoundingTarget ?? 'Net';
+    const wantTarget = rate.taxRoundingTarget ?? 'Net';
+    if (rate.includedInPrice && other.includedInPrice && haveTarget !== wantTarget) {
+      differences.push(
+        `${scope(rate)} rounds the ${haveTarget} in the project, planned ${wantTarget}`,
+      );
+    }
   }
   const plannedScopes = new Set(planned.rates.map(scope));
   for (const key of have.keys()) {

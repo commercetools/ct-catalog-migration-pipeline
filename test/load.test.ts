@@ -1550,3 +1550,15 @@ test('tax: a plan written before tax categories existed loads as before', async 
   await runLoad(clients, plan, config(), { execute: true, sleep: noSleep });
   assert.ok(!recorded.prerequisiteReads.some((x) => x.kind === 'taxCategories'));
 });
+
+test('tax: a rounding target is sent with the rate a missing category is created with', async () => {
+  const { clients, recorded } = fakeClients({ existing: { taxCategories: [] } });
+  const plan = planNeedingTax();
+  (plan.prerequisites.taxCategories![0].rates[0] as { taxRoundingTarget?: string }).taxRoundingTarget =
+    'Tax';
+  await runLoad(clients, plan, config(), { execute: true, concurrency: 1, sleep: noSleep });
+  const body = recorded.created.find((c) => c.kind === 'taxCategories')!.body as {
+    rates: { taxRoundingTarget?: string }[];
+  };
+  assert.equal(body.rates[0].taxRoundingTarget, 'Tax');
+});

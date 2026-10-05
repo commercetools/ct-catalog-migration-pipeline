@@ -621,6 +621,10 @@
           "type": "boolean",
           "description": "Whether prices are gross (true) or net (false) for this rate. No default on purpose: it decides how every price in the catalog is read, and getting it backwards shifts every price by the rate with nothing in the data to contradict it."
         },
+        "taxRoundingTarget": {
+          "enum": ["Net", "Tax"],
+          "description": "Which derived amount taxRoundingMode is applied to when includedInPrice is true: the net price (Net) or the tax amount (Tax); the other is the exact remainder. The API defaults to Net when it is absent. It has no effect when includedInPrice is false."
+        },
         "name": {
           "type": "string",
           "minLength": 1,

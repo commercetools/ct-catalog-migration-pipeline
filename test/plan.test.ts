@@ -1464,3 +1464,20 @@ test('tiers: the sample payloads decode each tier back from minor units', () => 
   assert.match(md, /embedded tier from 50/);
   assert.match(md, /17\.99/);
 });
+
+test('tax: a rounding target is carried onto the rate and into the review decision', () => {
+  const tax = { ...STANDARD, rates: [{ ...STANDARD.rates[0], taxRoundingTarget: 'Tax' }] };
+  const r = taxPlan([tax]);
+  const rate = r.plan.prerequisites.taxCategories![0].rates[0];
+  assert.equal(rate.taxRoundingTarget, 'Tax');
+  const d = r.plan.decisions.find((x) => x.subject === 'taxCategory:standard');
+  assert.ok(d);
+  assert.match(d.outcome, /rounds the tax amount/);
+});
+
+test('tax: an absent rounding target stays absent, so the API default (Net) applies', () => {
+  const r = taxPlan([STANDARD]);
+  for (const rate of r.plan.prerequisites.taxCategories![0].rates) {
+    assert.ok(!('taxRoundingTarget' in rate));
+  }
+});

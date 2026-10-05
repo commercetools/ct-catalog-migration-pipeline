@@ -1370,6 +1370,15 @@ function checkTaxCategories(plan: MigrationPlan, diagnostics: Diagnostic[]): voi
       if (typeof rate.includedInPrice !== 'boolean') {
         problems.push('includedInPrice is not a boolean');
       }
+      if (
+        rate.taxRoundingTarget !== undefined &&
+        rate.taxRoundingTarget !== 'Net' &&
+        rate.taxRoundingTarget !== 'Tax'
+      ) {
+        problems.push(
+          `taxRoundingTarget ${JSON.stringify(rate.taxRoundingTarget)} is neither 'Net' nor 'Tax'`,
+        );
+      }
       if (typeof rate.country !== 'string' || !/^[A-Z]{2}$/.test(rate.country)) {
         problems.push(`country ${JSON.stringify(rate.country)} is not ISO 3166-1 alpha-2`);
       }

@@ -1176,3 +1176,27 @@ test('verify: a missing or wrong tier is reported, in either price mode', () => 
     assert.ok(differs.includes('price-tier-value-differs'), `${name}: a wrong tier amount`);
   }
 });
+
+test('tax: a different rounding target on the category is a warning', () => {
+  const { plan, config } = taxVerifyPlan();
+  (plan.prerequisites.taxCategories![0].rates[0] as { taxRoundingTarget?: string }).taxRoundingTarget =
+    'Tax';
+  const snapshot = matchingSnapshot(plan, config);
+  const actual = snapshot.taxCategories!.get('standard')!;
+  snapshot.taxCategories!.set('standard', {
+    ...actual,
+    rates: [{ ...actual.rates[0], taxRoundingTarget: 'Net' } as never],
+  });
+  const d = reconcile(plan, snapshot, config).diagnostics.find(
+    (x) => x.code === 'tax-category-rates-differ',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /rounds the Net in the project, planned Tax/);
+});
+
+test('tax: a category that returns no target equals a plan with none (both Net)', () => {
+  const { plan, config } = taxVerifyPlan();
+  const r = reconcile(plan, matchingSnapshot(plan, config), config);
+  assert.deepEqual(codes(r.diagnostics), []);
+});
