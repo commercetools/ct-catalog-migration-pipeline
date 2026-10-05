@@ -1457,3 +1457,26 @@ test('tax: a category declared twice is a duplicate record', () => {
   });
   assert.ok(codes(r.diagnostics).includes('duplicate-record'));
 });
+
+test('variant: a "key" field is refused and the message says why', () => {
+  // variant.key used to be accepted and silently ignored: the key is always
+  // derived from the SKU, so a value here never did anything.
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'variant')!.key = 'my-own-key';
+  });
+  const r = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  const d = r.diagnostics.find((x) => x.code === 'schema-violation');
+  assert.ok(d, 'the field is rejected');
+  assert.match(d.message, /'key'/);
+  assert.match(d.message, /<keys\.prefix>-<sku>/);
+});
+
+test('schema: an unknown property is named in the message', () => {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'variant')!.colour = 'red';
+  });
+  const r = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  const d = r.diagnostics.find((x) => x.code === 'schema-violation');
+  assert.ok(d);
+  assert.match(d.message, /additional properties: 'colour'/);
+});

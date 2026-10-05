@@ -192,7 +192,6 @@ export interface FeedVariant {
   _type: 'variant';
   sku: string;
   product: string;
-  key?: string;
   /** Language-independent codes only. */
   axisValues?: Record<string, string>;
   /** Display text only — never identity. */

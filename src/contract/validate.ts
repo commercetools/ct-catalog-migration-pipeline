@@ -128,9 +128,20 @@ function compileBranches(schemaPath: string): Map<string, ValidateFunction> {
   return branches;
 }
 
-function describeErrors(validate: ValidateFunction): string {
+function describeErrors(validate: ValidateFunction, recordType: string): string {
   return (validate.errors ?? [])
-    .map((e) => `${e.instancePath || '(root)'} ${e.message ?? ''}`.trim())
+    .map((e) => {
+      const message = `${e.instancePath || '(root)'} ${e.message ?? ''}`.trim();
+      if (e.keyword !== 'additionalProperties') return message;
+      // ajv's own message does not say which property it objects to.
+      const name = String((e.params as { additionalProperty?: unknown }).additionalProperty);
+      const hint =
+        name === 'key' && recordType === 'variant'
+          ? ". A variant's key is not a feed field: it is always <keys.prefix>-<sku>, " +
+            'because the SKU is the variant\'s identity. Remove the field.'
+          : '';
+      return `${message}: '${name}'${hint}`;
+    })
     .join('; ');
 }
 
@@ -223,7 +234,7 @@ export function validateFeed(
         diagnostics.push({
           severity: 'error',
           code: 'schema-violation',
-          message: describeErrors(validate),
+          message: describeErrors(validate, String(type)),
           file,
           line,
         });

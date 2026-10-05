@@ -392,9 +392,6 @@
           "$ref": "#/$defs/code",
           "description": "Code of the owning product. Forward references are allowed."
         },
-        "key": {
-          "$ref": "#/$defs/code"
-        },
         "axisValues": {
           "type": "object",
           "additionalProperties": {
