@@ -27,7 +27,7 @@ import { loadPlan } from '../src/audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from '../src/contract/digest.js';
 import { stringifyArtefact } from '../src/model/artefact.js';
 import { writePlan } from '../src/map/report.js';
-import { indexVariants } from '../src/model/plan.js';
+import { indexVariants, variantsOf } from '../src/model/plan.js';
 import type {
   InventoryImport,
   MigrationPlan,
@@ -1421,4 +1421,43 @@ test('tax: two rates for one scope are refused by the gate', () => {
     }),
   );
   assert.ok(found.includes('duplicate-tax-rate-scope'));
+});
+
+// ---------------------------------------------------------------------------
+// Variant keys are their own namespace (probed live, 2026-10-05)
+// ---------------------------------------------------------------------------
+
+function fixturePlan(fixture: string) {
+  const { config: cfg, feedDir } = config(fixture);
+  const { feed } = validateFeed(feedDir, SCHEMA, cfg);
+  const model = deriveProductTypes(feed, cfg);
+  const { plan } = buildPlan(feed, model, cfg);
+  return { plan, cfg };
+}
+
+test('a variant may share a key with its own product', () => {
+  // Probed on the trial project: product `x` with a variant keyed `x` imports
+  // cleanly. A single-variant product whose SKU equals its code produces
+  // exactly this pair, and the gate used to refuse it.
+  const { plan, cfg } = fixturePlan('stores');
+  const product = plan.products[0];
+  (variantsOf(product)[0] as { key: string }).key = product.key;
+
+  const found = codes(auditPlan(plan, cfg).diagnostics);
+  assert.ok(!found.includes('duplicate-resource-key'), `reported: ${found.join(', ')}`);
+});
+
+test('two variants with one key are still refused, even on different products', () => {
+  // The other half of the probe: the second product's variant was rejected with
+  // `DuplicateField ... on one product variant`. Variant keys are unique among
+  // variants across the whole Project, not per product.
+  const { plan, cfg } = fixturePlan('declared-types');
+  assert.ok(plan.products.length >= 2, 'the fixture needs two products');
+  const first = variantsOf(plan.products[0])[0];
+  (variantsOf(plan.products[1])[0] as { key: string }).key = first.key;
+
+  const d = auditPlan(plan, cfg).diagnostics.find((x) => x.code === 'duplicate-resource-key');
+  assert.ok(d, 'the second import would be rejected by the API');
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, new RegExp(first.key));
 });

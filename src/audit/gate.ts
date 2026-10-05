@@ -156,10 +156,23 @@ function anyName(localized: Record<string, string> | undefined): string {
 
 function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
   const variantsByProduct = indexVariants(plan);
+  // Two namespaces. A variant key is unique among variants **across the whole
+  // Project**, but it is a separate namespace from product keys: probed live
+  // on 2026-10-05, a product `x` with a variant keyed `x` imports cleanly, while
+  // a second product's variant keyed like an existing one is rejected with
+  // `DuplicateField ... on one product variant`. Treating them as one
+  // namespace made every single-variant product whose SKU equals its code fail.
   const keys = new Map<string, string>();
+  const variantKeys = new Map<string, string>();
   const seenCount = new Map<string, number>();
+  const variantSeenCount = new Map<string, number>();
 
-  const claimKey = (key: string, owner: string) => {
+  const claimIn = (
+    taken: Map<string, string>,
+    counts: Map<string, number>,
+    key: string,
+    owner: string,
+  ) => {
     if (!isValidKey(key)) {
       diagnostics.push({
         severity: 'error',
@@ -169,10 +182,10 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
           'The API rejects it.',
       });
     }
-    const occurrence = (seenCount.get(key) ?? 0) + 1;
-    seenCount.set(key, occurrence);
+    const occurrence = (counts.get(key) ?? 0) + 1;
+    counts.set(key, occurrence);
 
-    const prior = keys.get(key);
+    const prior = taken.get(key);
     if (prior) {
       diagnostics.push({
         severity: 'error',
@@ -183,9 +196,12 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
           'part of the catalog would silently go missing.',
       });
     } else {
-      keys.set(key, owner);
+      taken.set(key, owner);
     }
   };
+  const claimKey = (key: string, owner: string) => claimIn(keys, seenCount, key, owner);
+  const claimVariantKey = (key: string, owner: string) =>
+    claimIn(variantKeys, variantSeenCount, key, owner);
 
   // Slug uniqueness is per locale and project-wide within a resource type.
   const categorySlugs = new Map<string, Map<string, string>>();
@@ -327,7 +343,7 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
 
     const priceKeys = new Map<string, string>();
     for (const v of variantsByProduct.get(p.key) ?? []) {
-      claimKey(v.key, `variant '${variantSku(v)}'`);
+      claimVariantKey(v.key, `variant '${variantSku(v)}'`);
       claimAssets(`variant '${variantSku(v)}'`, v.assets);
       if (v.sku === undefined) {
         diagnostics.push({
