@@ -95,6 +95,29 @@
         "validTo": {
           "type": "string",
           "format": "date-time"
+        },
+        "tiers": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Quantity breaks on this price. A tier applies to the whole line-item quantity once minimumQuantity is reached, in the currency of the base price, which is why a tier carries no currency of its own.",
+          "items": {
+            "type": "object",
+            "required": [
+              "minimumQuantity",
+              "amount"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "minimumQuantity": {
+                "type": "integer",
+                "minimum": 2,
+                "description": "The base price covers a single unit, so the API refuses a tier from quantity 1."
+              },
+              "amount": {
+                "$ref": "#/$defs/decimalAmount"
+              }
+            }
+          }
         }
       }
     },

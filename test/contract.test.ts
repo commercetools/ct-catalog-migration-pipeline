@@ -1480,3 +1480,35 @@ test('schema: an unknown property is named in the message', () => {
   assert.ok(d);
   assert.match(d.message, /additional properties: 'colour'/);
 });
+
+test('tiers: quantity breaks on a feed price validate; malformed ones are refused', () => {
+  const tiered = (tiers: unknown) =>
+    validateFeed(
+      ...(() => {
+        const loaded = channelFeed((rows) => {
+          const v = rows.find((r) => r._type === 'variant' && Array.isArray(r.prices))!;
+          (v.prices as Record<string, unknown>[])[0].tiers = tiers;
+        });
+        return [loaded.feedDir, SCHEMA, loaded.config] as const;
+      })(),
+    );
+
+  assert.deepEqual(
+    codes(tiered([{ minimumQuantity: 10, amount: '9.99' }]).diagnostics).filter((c) => c === 'schema-violation'),
+    [],
+  );
+  for (const bad of [
+    [{ minimumQuantity: 10 }],
+    [{ amount: '9.99' }],
+    [{ minimumQuantity: 0, amount: '9.99' }],
+    [{ minimumQuantity: 1, amount: '9.99' }],
+    [{ minimumQuantity: 2.5, amount: '9.99' }],
+    [{ minimumQuantity: 10, amount: '9.99', currency: 'GBP' }],
+    [],
+  ]) {
+    assert.ok(
+      codes(tiered(bad).diagnostics).includes('schema-violation'),
+      `refused: ${JSON.stringify(bad)}`,
+    );
+  }
+});

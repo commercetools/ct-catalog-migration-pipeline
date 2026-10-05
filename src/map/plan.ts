@@ -36,6 +36,7 @@ import {
   type PlannedTaxCategory,
   type PlannedTaxRate,
   type PriceDraftImport,
+  type PriceTier,
   type ProductDraftImport,
   type ProductVariantDraftImport,
   type ProductKeyReference,
@@ -960,11 +961,38 @@ function mapVariant(
       continue;
     }
 
+    // Tiers are money too, so they go through the same digit-string conversion
+    // in the base price's currency. One bad tier refuses the whole price: a
+    // price loaded without its quantity breaks would be wrong in a way nothing
+    // reports.
+    let tiers: PriceTier[] | undefined;
+    if (price.tiers !== undefined) {
+      tiers = [];
+      let tierFailed = false;
+      for (const tier of price.tiers) {
+        const tierMoney = toTypedMoney(tier.amount, price.currency, digits);
+        if (!tierMoney.ok) {
+          tierFailed = true;
+          diagnostics.push({
+            severity: 'error',
+            code: 'money-precision',
+            message:
+              `Variant '${variant.sku}', ${price.currency} price, tier from quantity ` +
+              `${tier.minimumQuantity}: ${tierMoney.reason}`,
+          });
+          continue;
+        }
+        tiers.push({ minimumQuantity: tier.minimumQuantity, value: tierMoney.money });
+      }
+      if (tierFailed) continue;
+    }
+
     prices.push({
       // Required by PriceDraftImport, and deterministic so a re-run updates the
       // same price rather than adding a second one in the same scope.
       key: priceKey(config.keys.prefix, variant.sku, price),
       value: converted.money,
+      ...(tiers && tiers.length > 0 ? { tiers } : {}),
       ...(price.country ? { country: price.country } : {}),
       ...(price.customerGroup
         ? {
@@ -1047,6 +1075,7 @@ function toStandalonePrice(sku: string, price: PriceDraftImport): StandalonePric
     ...(price.channel ? { channel: price.channel } : {}),
     ...(price.validFrom ? { validFrom: price.validFrom } : {}),
     ...(price.validUntil ? { validUntil: price.validUntil } : {}),
+    ...(price.tiers ? { tiers: price.tiers } : {}),
   };
 }
 

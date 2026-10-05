@@ -35,6 +35,13 @@ export type AttributeValue =
   | LocalizedString
   | (string | number | boolean)[];
 
+export interface FeedPriceTier {
+  /** The tier applies to the whole line-item quantity once this is reached. */
+  minimumQuantity: number;
+  /** In the currency of the base price: a tier has no currency of its own. */
+  amount: DecimalAmount;
+}
+
 export interface FeedPrice {
   currency: string;
   amount: DecimalAmount;
@@ -43,6 +50,7 @@ export interface FeedPrice {
   channel?: string;
   validFrom?: string;
   validTo?: string;
+  tiers?: FeedPriceTier[];
 }
 
 export interface FeedImage {

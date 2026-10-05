@@ -1045,6 +1045,55 @@ function describeMoney(m: { currencyCode: string; centAmount: number } | undefin
   return m ? `${m.currencyCode} ${m.centAmount}` : '(none)';
 }
 
+/**
+ * Quantity breaks, compared by minimumQuantity rather than by position: the
+ * project may return them in any order, and the quantity is what identifies a
+ * tier. A tier missing from the project is the one that matters most, because
+ * the base price still prices a single unit and nothing else looks wrong.
+ */
+function compareTiers(
+  owner: string,
+  planned: { minimumQuantity: number; value: PriceDraftImport['value'] }[] | undefined,
+  actual: { minimumQuantity: number; value: TypedMoney }[] | undefined,
+  diagnostics: Diagnostic[],
+): void {
+  const wanted = planned ?? [];
+  const got = new Map((actual ?? []).map((t) => [t.minimumQuantity, t]));
+  for (const tier of wanted) {
+    const found = got.get(tier.minimumQuantity);
+    if (!found) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-missing',
+        message:
+          `${owner}: the tier from quantity ${tier.minimumQuantity} ` +
+          `(${describeMoney(tier.value)}) is not in the project. The base price still prices ` +
+          'a single unit, so only larger orders pay the wrong amount.',
+      });
+    } else if (!moneyEqual(found.value, tier.value)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-value-differs',
+        message:
+          `${owner}, tier from quantity ${tier.minimumQuantity}: the project has ` +
+          `${describeMoney(found.value)} and the plan says ${describeMoney(tier.value)}.`,
+      });
+    }
+  }
+  const plannedQuantities = new Set(wanted.map((t) => t.minimumQuantity));
+  for (const extra of got.keys()) {
+    if (!plannedQuantities.has(extra)) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'price-tier-unplanned',
+        message:
+          `${owner}: the project has a tier from quantity ${extra} that the plan does not ` +
+          'carry. It may be left over from an earlier load or added by hand.',
+      });
+    }
+  }
+}
+
 function compareEmbeddedPrices(
   productKey: string,
   sku: string,
@@ -1081,6 +1130,12 @@ function compareEmbeddedPrices(
           'A wrong amount is the defect that looks most like success.',
       });
     }
+    compareTiers(
+      `Variant '${sku}' on product '${productKey}', price '${price.key}'`,
+      price.tiers,
+      got.tiers,
+      diagnostics,
+    );
   }
 }
 
@@ -1109,6 +1164,8 @@ function compareStandalonePrice(
         'that looks most like success.',
     });
   }
+
+  compareTiers(`Standalone price '${planned.key}'`, planned.tiers, actual.tiers, diagnostics);
 
   // Scope is part of a price's identity, and none of it can be updated: the
   // Import API returns InvalidFieldsUpdate for country, customerGroup and

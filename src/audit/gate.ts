@@ -21,6 +21,7 @@ import type {
   AttributeType,
   MigrationPlan,
   PriceDraftImport,
+  PriceTier,
   ProductDraftImport,
   ProductTypeImport,
   ProductVariantDraftImport,
@@ -811,6 +812,61 @@ function checkCombinationUnique(
  * The money invariants, shared by embedded and standalone prices because the
  * project-level rules they check are the same for both.
  */
+/**
+ * Quantity breaks on one price.
+ *
+ * The gate reads the written plan, so a hand-edited plan is checked here too,
+ * not only what the mapper produces. A tier applies to the whole line-item
+ * quantity once its minimum is reached and always in the base price's
+ * currency. Probed against the Import API on 2026-10-05: a minimumQuantity
+ * below 2 is refused ("must have a minimum quantity > 1"), two tiers with the
+ * same quantity are refused, and **order does not matter** — tiers given as 50
+ * then 10 were accepted and stored as given. So the checks are the two the API
+ * makes, the base currency, and the configured fraction digits; there is
+ * deliberately no ordering rule, because it would refuse a load that works.
+ */
+function checkTiers(
+  owner: string,
+  price: { value: PriceDraftImport['value']; tiers?: PriceTier[] },
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  const seen = new Set<number>();
+  for (const tier of price.tiers ?? []) {
+    const label = `${owner}, tier from quantity ${tier.minimumQuantity}`;
+    if (!Number.isInteger(tier.minimumQuantity) || tier.minimumQuantity < 2) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-invalid',
+        message:
+          `${label}: minimumQuantity must be a whole number of at least 2. The base price ` +
+          'covers a single unit, and the Import API refuses a tier from quantity 1.',
+      });
+    }
+    if (tier.value.currencyCode !== price.value.currencyCode) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-currency-mismatch',
+        message:
+          `${label} is in ${tier.value.currencyCode}, but the price it belongs to is in ` +
+          `${price.value.currencyCode}. A tier is always in the base price's currency.`,
+      });
+    }
+    checkMoney(label, tier.value, config, diagnostics);
+    if (seen.has(tier.minimumQuantity)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-duplicate-quantity',
+        message:
+          `${owner}: two tiers start at quantity ${tier.minimumQuantity}. The Import API ` +
+          'refuses it ("2 price tiers have the same minimum quantity"), and the price ' +
+          'would be rejected with nothing else wrong.',
+      });
+    }
+    seen.add(tier.minimumQuantity);
+  }
+}
+
 function checkMoney(
   owner: string,
   value: PriceDraftImport['value'],
@@ -871,6 +927,7 @@ function checkPrices(
 
   for (const price of variantPrices) {
     checkMoney(`Variant '${variantSku(variant)}'`, price.value, config, diagnostics);
+    checkTiers(`Variant '${variantSku(variant)}'`, price, config, diagnostics);
   }
 
   // Grouped by scope, because that is the granularity the uniqueness rule uses.
@@ -1082,6 +1139,7 @@ function checkStandalonePrices(
 
   for (const price of plan.standalonePrices) {
     checkMoney(`Standalone price '${price.key}'`, price.value, config, diagnostics);
+    checkTiers(`Standalone price '${price.key}'`, price, config, diagnostics);
 
     // The Import API explicitly does not validate that the SKU exists, so this
     // is the only place a typo gets caught. The price would be created, priced

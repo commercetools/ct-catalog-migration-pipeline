@@ -27,7 +27,7 @@ import { loadPlan } from '../src/audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from '../src/contract/digest.js';
 import { stringifyArtefact } from '../src/model/artefact.js';
 import { writePlan } from '../src/map/report.js';
-import { indexVariants, variantsOf } from '../src/model/plan.js';
+import { indexVariants, pricesOf, variantsOf } from '../src/model/plan.js';
 import type {
   InventoryImport,
   MigrationPlan,
@@ -1460,4 +1460,59 @@ test('two variants with one key are still refused, even on different products', 
   assert.ok(d, 'the second import would be rejected by the API');
   assert.equal(d.severity, 'error');
   assert.match(d.message, new RegExp(first.key));
+});
+
+// ---------------------------------------------------------------------------
+// Price tiers
+// ---------------------------------------------------------------------------
+
+function tierMoney(centAmount: number, currencyCode = 'GBP') {
+  return { type: 'centPrecision' as const, currencyCode, centAmount, fractionDigits: 2 };
+}
+
+function auditWithTiers(tiers: { minimumQuantity: number; value: ReturnType<typeof tierMoney> }[]) {
+  const { plan, cfg } = fixturePlan('stores');
+  const price = pricesOf(variantsOf(plan.products[0])[0])[0] as { tiers?: unknown };
+  price.tiers = tiers;
+  return codes(auditPlan(plan, cfg).diagnostics);
+}
+
+test('tiers: quantity breaks in the base currency are clean', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 10, value: tierMoney(900) },
+    { minimumQuantity: 50, value: tierMoney(800) },
+  ]);
+  assert.ok(!found.some((c) => c.startsWith('price-tier')), found.join(', '));
+});
+
+test('tiers: any order is accepted (probed: the Import API stores them as given)', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 50, value: tierMoney(800) },
+    { minimumQuantity: 10, value: tierMoney(900) },
+  ]);
+  assert.ok(!found.some((c) => c.startsWith('price-tier')), found.join(', '));
+});
+
+test('tiers: two tiers from one quantity are refused', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 10, value: tierMoney(900) },
+    { minimumQuantity: 10, value: tierMoney(800) },
+  ]);
+  assert.ok(found.includes('price-tier-duplicate-quantity'));
+});
+
+test('tiers: a tier from quantity 1 is refused, as the Import API refuses it', () => {
+  assert.ok(auditWithTiers([{ minimumQuantity: 1, value: tierMoney(900) }]).includes('price-tier-invalid'));
+});
+
+test('tiers: a hand-edited tier in another currency is refused', () => {
+  const found = auditWithTiers([{ minimumQuantity: 10, value: tierMoney(900, 'EUR') }]);
+  assert.ok(found.includes('price-tier-currency-mismatch'));
+});
+
+test('tiers: a tier is held to the same fraction digits as any price', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 10, value: { ...tierMoney(900), fractionDigits: 3 } },
+  ]);
+  assert.ok(found.includes('fraction-digits-mismatch'));
 });
