@@ -8,6 +8,7 @@
  */
 
 import { fileURLToPath } from 'node:url';
+import { writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -30,6 +31,7 @@ import { countInFlight, fetchSnapshot } from './verify/snapshot.js';
 import { planBatches } from './load/batches.js';
 import { reconcile } from './verify/reconcile.js';
 import { renderLoad, writeLoadArtefacts } from './load/report.js';
+import { renderTeardown, runTeardown, teardownComplete } from './teardown/run.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCHEMA = resolve(HERE, '..', 'schema', 'catalog-feed.schema.json');
@@ -48,6 +50,7 @@ Commands (require credentials):
   preflight   Check the project: catalog model, locales, currencies
   load        Import the plan via the Import API (dry run unless --execute)
   verify      Read the project back and reconcile against the plan
+  teardown    Delete what the plan created, scoped to keys.prefix (dry run unless --execute)
 
 Options:
   --config <path>   Pipeline config (default: ./migration.config.json)
@@ -56,6 +59,7 @@ Options:
   --apply           preflight only: additively add missing locales/currencies
   --execute         load only: actually send the Import Requests
   --wait            load only: poll Import Summaries until nothing is processing
+  --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
   --concurrency <n> load only: in-flight Import Requests (default 4)
   --json            Emit diagnostics as JSON
   --quiet           Suppress warnings, report errors only
@@ -85,6 +89,7 @@ async function main(): Promise<number> {
         execute: { type: 'boolean', default: false },
         wait: { type: 'boolean', default: false },
         concurrency: { type: 'string', default: '4' },
+        'confirm-project': { type: 'string', default: '' },
       },
       allowPositionals: false,
     }));
@@ -104,6 +109,7 @@ async function main(): Promise<number> {
     execute: values.execute as boolean,
     wait: values.wait as boolean,
     concurrency: Number(values.concurrency),
+    confirmProject: values['confirm-project'] as string,
   };
 
   switch (command) {
@@ -127,6 +133,9 @@ async function main(): Promise<number> {
 
     case 'verify':
       return await runVerify(opts);
+
+    case 'teardown':
+      return await runTeardownCommand(opts);
 
     default:
       console.error(`Unknown command '${command}'.\n\n${USAGE}`);
@@ -176,6 +185,7 @@ interface Opts {
   execute: boolean;
   wait: boolean;
   concurrency: number;
+  confirmProject: string;
 }
 
 function runDerive(opts: Opts): number {
@@ -718,6 +728,67 @@ async function runLoadCommand(opts: Opts): Promise<number> {
  * The only credentialed stage that cannot change anything, so it is safe to
  * run whenever a load's outcome is in question — including against production.
  */
+async function runTeardownCommand(opts: Opts): Promise<number> {
+  const { config } = loadConfig(resolve(opts.config));
+
+  let credentials;
+  try {
+    credentials = loadCredentials(resolve(opts.env));
+  } catch (err) {
+    if (err instanceof MissingCredentialsError) {
+      console.error((err as Error).message);
+      return 1;
+    }
+    throw err;
+  }
+
+  // Deleting cannot be undone, and the shell often exports another project's
+  // CTP_* variables, so the project is named on the command line and checked
+  // against the credentials before anything is read for deletion.
+  if (opts.execute && opts.confirmProject !== credentials.projectKey) {
+    console.error(
+      opts.confirmProject === ''
+        ? `--execute needs --confirm-project ${credentials.projectKey}: teardown deletes, so the ` +
+            'project is named out loud. Nothing was deleted.'
+        : `--confirm-project '${opts.confirmProject}' does not match the credentials' project ` +
+            `'${credentials.projectKey}'. Nothing was deleted.`,
+    );
+    return 1;
+  }
+
+  let plan;
+  try {
+    plan = loadPlan(outDirFor(opts));
+  } catch (err) {
+    console.error((err as Error).message);
+    return 1;
+  }
+
+  const clients = createClients(credentials);
+  console.log(describeCredentials(credentials));
+  console.log('');
+
+  const result = await runTeardown(clients, plan, config, {
+    execute: opts.execute,
+    concurrency: opts.concurrency,
+  });
+
+  for (const d of result.diagnostics) {
+    console.log(`${d.severity.toUpperCase()} [${d.code}]`);
+    console.log(`      ${d.message}`);
+  }
+  if (result.diagnostics.length > 0) console.log('');
+  console.log(renderTeardown(result));
+
+  if (opts.execute) {
+    const file = join(outDirFor(opts), 'teardown-result.json');
+    writeFileSync(file, JSON.stringify(result, null, 2) + '\n');
+    console.log('');
+    console.log(`Written: ${file}`);
+  }
+  return teardownComplete(result) ? 0 : 1;
+}
+
 async function runVerify(opts: Opts): Promise<number> {
   const { config, configPath } = loadConfig(resolve(opts.config));
 
