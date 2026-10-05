@@ -1200,3 +1200,77 @@ test('tax: a category that returns no target equals a plan with none (both Net)'
   const r = reconcile(plan, matchingSnapshot(plan, config), config);
   assert.deepEqual(codes(r.diagnostics), []);
 });
+
+// ---------------------------------------------------------------------------
+// Price validity, compared as instants
+// ---------------------------------------------------------------------------
+
+function windowedStandalone() {
+  const { plan, config } = fixture('classic-standalone');
+  const first = plan.standalonePrices[0];
+  plan.standalonePrices[0] = {
+    ...first,
+    validFrom: '2026-09-30T23:00:00Z',
+    validUntil: '2026-10-31T22:59:59Z',
+  };
+  return { plan, config, key: first.key };
+}
+
+function scopeCodes(
+  plan: MigrationPlan,
+  config: ReturnType<typeof fixture>['config'],
+  change: (price: StandalonePrice) => StandalonePrice,
+  key: string,
+) {
+  const snapshot = matchingSnapshot(plan, config);
+  snapshot.standalonePrices.set(key, change(snapshot.standalonePrices.get(key)!));
+  return reconcile(plan, snapshot, config).diagnostics.filter(
+    (d) => d.code === 'standalone-price-scope-differs',
+  );
+}
+
+test('verify: the same instant spelled with milliseconds is not a scope difference', () => {
+  // The live failure from dogfood run 10: the plan says `...:00Z`, the project
+  // answers `...:00.000Z`, and the message advised deleting live prices.
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(
+    plan,
+    config,
+    (p) => ({ ...p, validFrom: '2026-09-30T23:00:00.000Z', validUntil: '2026-10-31T22:59:59.000Z' }),
+    key,
+  );
+  assert.deepEqual(found, []);
+});
+
+test('verify: an offset spelling of the same instant is not a scope difference either', () => {
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(plan, config, (p) => ({ ...p, validFrom: '2026-10-01T00:00:00+01:00' }), key);
+  assert.deepEqual(found, []);
+});
+
+test('verify: a genuinely different instant is still a scope difference', () => {
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(plan, config, (p) => ({ ...p, validFrom: '2026-10-01T00:00:00.000Z' }), key);
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /validFrom/);
+  assert.match(found[0].message, /deleted and recreated/);
+});
+
+test('verify: a window the project lacks, or has and the plan lacks, is a scope difference', () => {
+  const { plan, config, key } = windowedStandalone();
+  const missing = scopeCodes(plan, config, (p) => ({ ...p, validUntil: undefined }), key);
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].message, /validUntil is \(unset\) in the project/);
+
+  const { plan: plain, config: cfg } = fixture('classic-standalone');
+  const k = plain.standalonePrices[0].key;
+  const extra = scopeCodes(plain, cfg, (p) => ({ ...p, validFrom: '2026-10-01T00:00:00.000Z' }), k);
+  assert.equal(extra.length, 1);
+});
+
+test('verify: country is still compared exactly', () => {
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(plan, config, (p) => ({ ...p, country: 'DE' }), key);
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /country/);
+});

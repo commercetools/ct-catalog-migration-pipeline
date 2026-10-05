@@ -1147,6 +1147,19 @@ function compareEmbeddedPrices(
   }
 }
 
+/**
+ * Whether two timestamps name the same moment, whatever their spelling: `Z`
+ * against `.000Z`, or an offset against UTC. Both unset is equal; one unset is
+ * not; a value that does not parse is compared as text and so never equal to a
+ * differently spelled one.
+ */
+function sameInstant(a: unknown, b: unknown): boolean {
+  if ((a ?? undefined) === (b ?? undefined)) return true;
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = Date.parse(a);
+  return !Number.isNaN(x) && x === Date.parse(b);
+}
+
 function compareStandalonePrice(
   planned: StandalonePriceImport,
   actual: StandalonePrice,
@@ -1178,13 +1191,19 @@ function compareStandalonePrice(
   // Scope is part of a price's identity, and none of it can be updated: the
   // Import API returns InvalidFieldsUpdate for country, customerGroup and
   // channel. A difference here means the price has to be deleted and remade.
-  const scope: [string, unknown, unknown][] = [
-    ['country', actual.country, planned.country],
-    ['validFrom', actual.validFrom, planned.validFrom],
-    ['validUntil', actual.validUntil, planned.validUntil],
+  //
+  // The validity window is compared as instants, not as strings: the plan holds
+  // `2026-09-30T23:00:00Z` and the project returns `2026-09-30T23:00:00.000Z`
+  // for the very same moment. Compared as text, every windowed price was
+  // reported as needing delete-and-recreate, which a reader who trusts the
+  // message would do to live prices.
+  const scope: [string, unknown, unknown, (a: unknown, b: unknown) => boolean][] = [
+    ['country', actual.country, planned.country, (a, b) => (a ?? undefined) === (b ?? undefined)],
+    ['validFrom', actual.validFrom, planned.validFrom, sameInstant],
+    ['validUntil', actual.validUntil, planned.validUntil, sameInstant],
   ];
-  for (const [field, got, expected] of scope) {
-    if ((got ?? undefined) !== (expected ?? undefined)) {
+  for (const [field, got, expected, same] of scope) {
+    if (!same(got, expected)) {
       diagnostics.push({
         severity: 'error',
         code: 'standalone-price-scope-differs',
