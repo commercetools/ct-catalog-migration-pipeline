@@ -63,6 +63,24 @@
       "description": "A monetary amount as a decimal string, e.g. \"19.99\". Never a JSON number: floats cannot represent decimal money exactly. Minor units are derived from the currency's fractionDigits at map time, and an amount with more decimal places than the currency allows is a hard error rather than a silent rounding.",
       "pattern": "^-?[0-9]+(\\.[0-9]+)?$"
     },
+    "moneyValue": {
+      "type": "object",
+      "description": "The value of an attribute declared as money: a currency and a decimal-string amount, the same two fields a price has. Minor units come from market.currencyFractionDigits at map time, and excess precision is refused rather than rounded, exactly as for a price.",
+      "required": [
+        "currency",
+        "amount"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$"
+        },
+        "amount": {
+          "$ref": "#/$defs/decimalAmount"
+        }
+      }
+    },
     "price": {
       "type": "object",
       "required": [
@@ -148,7 +166,7 @@
       }
     },
     "attributeValue": {
-      "description": "A plain scalar, a localized string, or a set of either. The declared attributeDefinition decides how it is coerced; never infer the type from the value's shape alone. A set of localized strings is legal \u2014 the Import API has ltext-set \u2014 so array items may themselves be localized strings.",
+      "description": "A plain scalar, a localized string, a money value, or a set of any of these. The declared attributeDefinition decides how it is coerced; never infer the type from the value's shape alone. A set of localized strings is legal \u2014 the Import API has ltext-set \u2014 so array items may themselves be localized strings.",
       "oneOf": [
         {
           "type": "string"
@@ -161,6 +179,9 @@
         },
         {
           "$ref": "#/$defs/localizedString"
+        },
+        {
+          "$ref": "#/$defs/moneyValue"
         },
         {
           "type": "array",
@@ -178,6 +199,9 @@
               },
               {
                 "$ref": "#/$defs/localizedString"
+              },
+              {
+                "$ref": "#/$defs/moneyValue"
               }
             ]
           }

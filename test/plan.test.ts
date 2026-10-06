@@ -1465,6 +1465,137 @@ test('tiers: the sample payloads decode each tier back from minor units', () => 
   assert.match(md, /17\.99/);
 });
 
+// ---------------------------------------------------------------------------
+// Money attributes
+// ---------------------------------------------------------------------------
+
+/**
+ * The channels fixture's feed with `mutate` applied, validated and planned.
+ * Unlike `tieredPlan` it also returns the validation diagnostics, because the
+ * point of these tests is that the schema admits the value in the first place.
+ */
+function moneyAttributePlan(
+  mutate: (rows: Record<string, unknown>[]) => void,
+  configure: (config: ReturnType<typeof loadConfig>['config']) => void = () => {},
+) {
+  const { config, feedDir: source } = loadConfig(
+    resolve(ROOT, 'fixtures', 'channels', 'migration.config.json'),
+  );
+  configure(config);
+  const rows = readFileSync(resolve(source, 'catalog.ndjson'), 'utf8')
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+  mutate(rows);
+  const dir = mkdtempSync(join(tmpdir(), 'ct-money-attr-'));
+  const feedDir = join(dir, 'feed');
+  mkdirSync(feedDir);
+  writeFileSync(join(feedDir, 'catalog.ndjson'), rows.map((r) => JSON.stringify(r)).join('\n'));
+  const { feed, diagnostics: validation } = validateFeed(feedDir, SCHEMA, config);
+  const derived = deriveProductTypes(feed, config);
+  return { validation, derived, ...buildPlan(feed, derived, config) };
+}
+
+const declareRrp = (set = false) => (rows: Record<string, unknown>[]) => {
+  rows.push({
+    _type: 'attributeDefinition',
+    name: 'rrp',
+    type: 'money',
+    level: 'variant',
+    ...(set ? { set: true } : {}),
+  });
+};
+
+const setRrp = (value: unknown) => (rows: Record<string, unknown>[]) => {
+  const variant = rows.find((r) => r._type === 'variant')!;
+  variant.attributes = { rrp: value };
+};
+
+const rrpOf = (r: ReturnType<typeof moneyAttributePlan>) =>
+  r.plan.products
+    .flatMap((p) => variantsOf(p))
+    .flatMap((v) => v.attributes ?? [])
+    .find((a) => a.name === 'rrp');
+
+test('money attribute: {currency, amount} passes the schema and becomes cent-precision money', () => {
+  const r = moneyAttributePlan((rows) => {
+    declareRrp()(rows);
+    setRrp({ currency: 'GBP', amount: '99.00' })(rows);
+  });
+  assert.deepEqual(
+    r.validation.filter((d) => d.severity === 'error'),
+    [],
+    'the schema must admit a money value',
+  );
+  assert.deepEqual(rrpOf(r), {
+    type: 'money',
+    name: 'rrp',
+    value: { type: 'centPrecision', currencyCode: 'GBP', centAmount: 9900, fractionDigits: 2 },
+  });
+  assert.deepEqual(r.diagnostics, []);
+});
+
+test('money attribute: a set of money converts every element', () => {
+  const r = moneyAttributePlan((rows) => {
+    declareRrp(true)(rows);
+    setRrp([
+      { currency: 'GBP', amount: '99.00' },
+      { currency: 'GBP', amount: '12.5' },
+    ])(rows);
+  });
+  assert.deepEqual(r.validation.filter((d) => d.severity === 'error'), []);
+  const a = rrpOf(r)!;
+  assert.equal(a.type, 'money-set');
+  assert.deepEqual(
+    (a.value as { centAmount: number }[]).map((m) => m.centAmount),
+    [9900, 1250],
+  );
+});
+
+test('money attribute: too many decimal places is refused, not rounded', () => {
+  const r = moneyAttributePlan((rows) => {
+    declareRrp()(rows);
+    setRrp({ currency: 'GBP', amount: '99.999' })(rows);
+  });
+  const d = r.diagnostics.find((x) => x.code === 'money-precision');
+  assert.ok(d, 'rounding an attribute would silently change a figure');
+  assert.match(d.message, /attribute 'rrp'/);
+  assert.equal(rrpOf(r), undefined, 'the attribute is dropped, not sent wrong');
+});
+
+test('money attribute: a currency with no fraction-digit entry is refused', () => {
+  const r = moneyAttributePlan((rows) => {
+    declareRrp()(rows);
+    setRrp({ currency: 'JPY', amount: '1000' })(rows);
+  });
+  assert.ok(r.diagnostics.some((x) => x.code === 'unknown-currency'));
+});
+
+test('money attribute: a JSON number is refused by the schema, as it is for a price', () => {
+  const r = moneyAttributePlan((rows) => {
+    declareRrp()(rows);
+    setRrp({ currency: 'GBP', amount: 99 })(rows);
+  });
+  assert.ok(r.validation.some((d) => d.severity === 'error'));
+});
+
+test('money attribute: money values with no declaration are not inferred as a type', () => {
+  const r = moneyAttributePlan(
+    (rows) => {
+      setRrp({ currency: 'GBP', amount: '99.00' })(rows);
+      for (let i = rows.length - 1; i >= 0; i--) {
+        if (rows[i]._type === 'attributeDefinition') rows.splice(i, 1);
+      }
+    },
+    (config) => {
+      config.productTypes.onMissingDefinitions = 'infer';
+    },
+  );
+  const d = r.derived.diagnostics.find((x) => x.code === 'money-attribute-undeclared');
+  assert.ok(d, 'a money-shaped value must not be inferred as ltext');
+  assert.match(d.message, /declare it/i);
+});
+
 test('tax: a rounding target is carried onto the rate and into the review decision', () => {
   const tax = { ...STANDARD, rates: [{ ...STANDARD.rates[0], taxRoundingTarget: 'Tax' }] };
   const r = taxPlan([tax]);
