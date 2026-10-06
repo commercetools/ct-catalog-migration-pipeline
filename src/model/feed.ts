@@ -28,12 +28,23 @@ export type AttributeType =
   | 'money'
   | 'reference';
 
+/**
+ * The value of an attribute declared as money. The same two fields a price has,
+ * so the amount is a decimal string and goes through the same digit-string
+ * conversion into minor units.
+ */
+export interface FeedMoneyValue {
+  currency: string;
+  amount: DecimalAmount;
+}
+
 export type AttributeValue =
   | string
   | number
   | boolean
   | LocalizedString
-  | (string | number | boolean)[];
+  | FeedMoneyValue
+  | (string | number | boolean | FeedMoneyValue)[];
 
 export interface FeedPriceTier {
   /** The tier applies to the whole line-item quantity once this is reached. */

@@ -21,6 +21,7 @@ import type {
   AttributeValue,
   CatalogFeed,
   FeedAttributeDefinition,
+  FeedMoneyValue,
   LocalizedString,
 } from '../model/feed.js';
 import type {
@@ -58,7 +59,7 @@ export interface DeriveResult extends DerivedModel {
 // Observation
 // ---------------------------------------------------------------------------
 
-type ValueKind = 'boolean' | 'number' | 'localized' | 'set' | 'string';
+type ValueKind = 'boolean' | 'number' | 'localized' | 'money' | 'set' | 'string';
 
 interface Observation {
   name: string;
@@ -115,8 +116,20 @@ function kindOf(value: AttributeValue): ValueKind {
   if (typeof value === 'boolean') return 'boolean';
   if (typeof value === 'number') return 'number';
   if (Array.isArray(value)) return 'set';
+  if (isMoneyValue(value)) return 'money';
   if (value !== null && typeof value === 'object') return 'localized';
   return 'string';
+}
+
+/**
+ * A money value has exactly `currency` and `amount`. Neither is a locale tag, so
+ * a localized string cannot be mistaken for one, and the feed schema keeps the
+ * two shapes apart for the same reason.
+ */
+function isMoneyValue(value: unknown): value is FeedMoneyValue {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = Object.keys(value);
+  return keys.length === 2 && keys.includes('currency') && keys.includes('amount');
 }
 
 function record(obs: Observation, value: AttributeValue): void {
@@ -144,8 +157,10 @@ function record(obs: Observation, value: AttributeValue): void {
     return;
   }
 
+  if (kind === 'money') return;
+
   if (kind === 'set') {
-    const arr = value as (string | number | boolean)[];
+    const arr = value as (string | number | boolean | FeedMoneyValue)[];
     if (arr.length > 0) obs.populated++;
     for (const el of arr) {
       obs.elementKinds.add(kindOf(el));
@@ -526,6 +541,18 @@ function inferType(
       });
       return { name: 'number' };
 
+    case 'money':
+      // A type is irreversible once loaded, and a shape is not a declaration.
+      diagnostics.push({
+        severity: 'error',
+        code: 'money-attribute-undeclared',
+        message:
+          `${subject} holds money values ({currency, amount}) but no attributeDefinition ` +
+          "declares it. Declare it with type 'money' in the adapter; the type is not inferred " +
+          'from the shape of the values.',
+      });
+      return undefined;
+
     case 'localized':
       decisions.push({
         subject,
@@ -544,6 +571,16 @@ function inferType(
           message:
             `${subject} is a set whose elements are not all the same kind ` +
             `(${elements.join(', ') || 'none'}). Declare the element type explicitly.`,
+        });
+        return undefined;
+      }
+      if (elements[0] === 'money') {
+        diagnostics.push({
+          severity: 'error',
+          code: 'money-attribute-undeclared',
+          message:
+            `${subject} is a set of money values ({currency, amount}) but no attributeDefinition ` +
+            "declares it. Declare it with type 'money' and set: true in the adapter.",
         });
         return undefined;
       }

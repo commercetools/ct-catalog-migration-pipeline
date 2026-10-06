@@ -26,6 +26,7 @@ import {
   type Asset,
   type Attribute,
   type AttributeDefinition,
+  type AttributeType,
   type CategoryImport,
   type CategoryKeyReference,
   type DerivedModel,
@@ -33,6 +34,7 @@ import {
   type InventoryImport,
   type MappingDecision,
   type MigrationPlan,
+  type Money,
   type PlannedTaxCategory,
   type PlannedTaxRate,
   type PriceDraftImport,
@@ -879,6 +881,80 @@ interface MappedVariant {
   prices: PriceDraftImport[];
 }
 
+/**
+ * What the Import API wants as the value, from what the feed carries.
+ *
+ * Only money differs: the feed carries `{currency, amount}` with a decimal
+ * string, as a price does, and the Import API wants cent-precision `TypedMoney`.
+ * The conversion is the price one, on the digit string, in the currency's own
+ * fraction digits, so an amount with more places than the currency allows is
+ * refused rather than rounded. Every other type is passed through.
+ *
+ * Returns undefined after reporting a diagnostic, so the attribute is dropped
+ * rather than sent wrong.
+ */
+function importAttributeValue(
+  sku: string,
+  name: string,
+  declared: AttributeType,
+  value: unknown,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): { value: unknown } | undefined {
+  const isSet = declared.name === 'set';
+  const element = declared.name === 'set' ? declared.elementType : declared;
+  if (element.name !== 'money') return { value };
+
+  const shape = '{currency, amount}, the amount a decimal string';
+  const items = isSet ? (Array.isArray(value) ? value : [value]) : [value];
+  const converted: Money[] = [];
+  for (const item of items) {
+    if (!isFeedMoney(item)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'attribute-type-mismatch',
+        message:
+          `Variant '${sku}', attribute '${name}': declared money, but the value is not ` +
+          `${shape}.`,
+      });
+      return undefined;
+    }
+    const digits = config.market.currencyFractionDigits[item.currency];
+    if (digits === undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'unknown-currency',
+        message:
+          `Variant '${sku}', attribute '${name}' is in ${item.currency}, which has no ` +
+          'market.currencyFractionDigits entry. Defaulting to 2 would multiply a 0-digit ' +
+          'currency like JPY by 100, so this is refused.',
+      });
+      return undefined;
+    }
+    const money = toTypedMoney(item.amount, item.currency, digits);
+    if (!money.ok) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'money-precision',
+        message: `Variant '${sku}', attribute '${name}': ${money.reason}`,
+      });
+      return undefined;
+    }
+    converted.push(money.money);
+  }
+  return { value: isSet ? converted : converted[0] };
+}
+
+function isFeedMoney(value: unknown): value is { currency: string; amount: string } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    Object.keys(v).length === 2 &&
+    typeof v.currency === 'string' &&
+    typeof v.amount === 'string'
+  );
+}
+
 function mapVariant(
   variant: FeedVariant,
   productAttributes: Record<string, AttributeValue> | undefined,
@@ -905,7 +981,16 @@ function mapVariant(
       });
       return;
     }
-    const attribute = typedAttribute(name, definition.type, value);
+    const imported = importAttributeValue(
+      variant.sku,
+      name,
+      definition.type,
+      value,
+      config,
+      diagnostics,
+    );
+    if (imported === undefined) return;
+    const attribute = typedAttribute(name, definition.type, imported.value);
     if (!attribute) {
       diagnostics.push({
         severity: 'error',
