@@ -62,6 +62,11 @@ class FakeProject {
   containers = new Set<string>();
   /** Keys whose delete always fails with 500. */
   broken = new Set<string>();
+  /** After a selection is deleted, this many product deletes are still refused (the API clears the references asynchronously). */
+  clearDelayAttempts = 0;
+  private pendingRefusals = 0;
+  /** Product delete attempts that reached the API's checks. */
+  productDeleteAttempts = 0;
 
   kind(name: string) {
     let m = this.kinds.get(name);
@@ -130,6 +135,8 @@ class FakeProject {
             self.refuse(kind, r);
             self.kind(kind).delete(key);
             self.log.push(`${kind}:${key}`);
+            if (kind === 'categories') self.cascade(r.id);
+            if (kind === 'productSelections') self.pendingRefusals = self.clearDelayAttempts;
             // The observed trap: a price delete changes the product it prices.
             if (kind === 'standalonePrices') for (const p of self.kind('products').values()) p.version++;
             return { body: r };
@@ -139,15 +146,38 @@ class FakeProject {
     });
   }
 
+  /** Deleting a category deletes its descendants too, without a log entry of their own. */
+  private cascade(parentId: unknown) {
+    for (const c of [...this.kind('categories').values()]) {
+      if (c.parentId === parentId) {
+        this.kind('categories').delete(c.key);
+        this.cascade(c.id);
+      }
+    }
+  }
+
   /** The API's own refusals. */
   private refuse(kind: string, r: Res) {
-    if (kind === 'categories') {
-      const child = [...this.kind('categories').values()].find((c) => c.parentId === r.id);
-      if (child) throw this.err(400, `category ${r.key} has child ${child.key}`);
-    }
+    // Not modelled, on purpose: the API does NOT refuse to delete a category with
+    // children. It deletes the whole subtree ("Deleting a root Category deletes
+    // the whole Category tree", and probed live on 2026-10-06), see `cascade`.
     if (kind === 'productTypes') {
       const user = [...this.kind('products').values()].find((p) => p.productTypeId === r.id);
       if (user) throw this.err(400, `product type ${r.key} is used by ${user.key}`);
+    }
+    if (kind === 'products') {
+      this.productDeleteAttempts++;
+      if (this.pendingRefusals > 0) {
+        this.pendingRefusals--;
+        throw this.err(400, `product ${r.key} is referenced by product-selection (reference not cleared yet)`);
+      }
+      // Observed live on 2026-10-06: "Can not delete a product while it is
+      // referenced by at least one product-selection." A selection that is
+      // still there and lists the product blocks its delete.
+      const holder = [...this.kind('productSelections').values()].find((sel) =>
+        (sel.assigns as string[] | undefined)?.includes(r.id),
+      );
+      if (holder) throw this.err(400, `product ${r.key} is referenced by product-selection ${holder.key}`);
     }
     if (kind === 'productSelections') {
       const store = [...this.kind('stores').values()].find((s) =>
@@ -211,7 +241,10 @@ function projectHolding(plan: MigrationPlan, prefix: string) {
   for (const v of plan.variants) world.add('variants', v.key);
   for (const sp of plan.standalonePrices) world.add('standalonePrices', sp.key);
   for (const i of plan.inventory ?? []) world.add('inventory', i.key);
-  for (const s of plan.productSelections ?? []) world.add('productSelections', s.key);
+  // A selection lists the products it assigns; the API refuses to delete a
+  // product while one does. Modelled conservatively: each selection holds every product.
+  const productIds = plan.products.map((p) => `id-products-${p.key}`);
+  for (const s of plan.productSelections ?? []) world.add('productSelections', s.key, { assigns: productIds });
   for (const st of plan.prerequisites.stores) {
     world.add('stores', st.key, {
       productSelections: st.productSelections
@@ -285,7 +318,9 @@ test('teardown: categories are deleted children first', async () => {
   assert.ok(withChildren.length > 0, 'the fixture needs a category tree');
 
   const r = await runTeardown(world.clients(), plan, config, { execute: true });
-  assert.deepEqual(r.failed, [], 'the fake refuses a parent that still has children');
+  assert.deepEqual(r.failed, []);
+  // The API deletes a whole subtree with its root, so the order is what keeps a delete
+  // from sweeping up children that were meant to be deleted (and logged) one by one.
   const order = world.log.filter((e) => e.startsWith('categories:')).map((e) => e.slice('categories:'.length));
   for (const child of withChildren) {
     const parent = (child.parent as { key: string }).key;
@@ -329,6 +364,71 @@ test('teardown: a selection held by a planned store is taken off the store, then
   assert.ok(world.kind('stores').has(store.key), 'the store itself is never deleted');
   assert.equal((world.kind('stores').get(store.key)!.productSelections as unknown[]).length, 0);
   assert.ok(teardownComplete(r));
+});
+
+test('teardown: selections are deleted before the products they list', async () => {
+  // The API refuses to delete a product while a product-selection still
+  // references it, so the reverse of the load order has selections first.
+  // Probed live on 2026-10-06; the first version deleted products first and
+  // every selection-carrying plan failed at its products.
+  const { config, plan } = planFor('stores');
+  assert.ok((plan.productSelections ?? []).length > 0, 'the fixture needs a selection');
+  const world = projectHolding(plan, PREFIX);
+
+  const r = await runTeardown(world.clients(), plan, config, { execute: true });
+  assert.deepEqual(r.failed, [], JSON.stringify(r.failed));
+  assert.equal(world.count('products', `${PREFIX}-`), 0);
+  assert.equal(world.count('productTypes', `${PREFIX}-`), 0);
+  const first = (prefix: string) => world.log.findIndex((e) => e.startsWith(prefix));
+  const last = (prefix: string) => world.log.map((e) => e.startsWith(prefix)).lastIndexOf(true);
+  assert.ok(last('productSelections:') < first('products:'), world.log.join(' | '));
+  assert.ok(teardownComplete(r));
+});
+
+test('teardown: a product refused while the selection reference clears is retried and then deleted', async () => {
+  const { config, plan } = planFor('stores');
+  const world = projectHolding(plan, PREFIX);
+  world.clearDelayAttempts = 3;
+
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    selectionClear: { attempts: 5, delayMs: 0 },
+  });
+  assert.deepEqual(r.failed, [], JSON.stringify(r.failed));
+  assert.equal(world.count('products', `${PREFIX}-`), 0);
+  assert.ok(teardownComplete(r));
+  assert.ok(world.productDeleteAttempts > plan.products.length, 'at least one product was retried');
+});
+
+test('teardown: a reference that never clears is reported after a bounded wait, not forever', async () => {
+  const { config, plan } = planFor('stores');
+  const world = projectHolding(plan, PREFIX);
+  world.clearDelayAttempts = 1000;
+
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    selectionClear: { attempts: 2, delayMs: 0 },
+  });
+  assert.ok(r.failed.some((f) => f.kind === 'products'), 'the product failure is reported');
+  assert.equal(teardownComplete(r), false);
+  assert.ok(world.productDeleteAttempts <= plan.products.length * 4, `bounded: ${world.productDeleteAttempts}`);
+});
+
+test('teardown: a selection stuck behind an outside store does not make products wait', async () => {
+  const { config, plan } = planFor('stores');
+  const world = projectHolding(plan, PREFIX);
+  const sel = [...world.kind('productSelections').values()][0];
+  world.add('stores', 'somebody-elses', {
+    productSelections: [{ productSelection: { typeId: 'product-selection', id: sel.id }, active: true }],
+  });
+
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    selectionClear: { attempts: 1000, delayMs: 60_000 },
+  });
+  assert.equal(r.blocked.length, 1);
+  assert.equal(world.productDeleteAttempts, plan.products.length, 'one attempt each, no waiting');
+  assert.equal(teardownComplete(r), false);
 });
 
 test('teardown: a selection held by a store outside the plan is left, named, and the run is not complete', async () => {
