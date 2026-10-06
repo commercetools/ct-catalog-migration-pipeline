@@ -37,20 +37,56 @@ export function writeDerived(outDir: string, model: DerivedModel): WrittenArtefa
   const decisionsPath = join(outDir, 'decisions.json');
   writeFileSync(decisionsPath, JSON.stringify(model.decisions, null, 2) + '\n');
 
-  const needsReview = model.decisions.filter((d) => d.review || d.lossy || d.irreversible);
-  if (needsReview.length === 0) {
-    return { productTypesPath, decisionsPath };
-  }
-
-  const reviewPath = join(outDir, 'MODEL-REVIEW.md');
-  writeFileSync(reviewPath, renderReview(model, needsReview));
-  return { productTypesPath, decisionsPath, reviewPath };
+  const reviewPath = writeReview(outDir, model, model.decisions, 'derive');
+  return reviewPath
+    ? { productTypesPath, decisionsPath, reviewPath }
+    : { productTypesPath, decisionsPath };
 }
 
-function renderReview(model: DerivedModel, needsReview: MappingDecision[]): string {
+/**
+ * Writes `MODEL-REVIEW.md` from a list of decisions, or nothing when none of
+ * them needs a human.
+ *
+ * `derive` calls it with the product model's decisions. `plan` calls it again
+ * with the full list, because the decisions recorded while mapping the feed (a
+ * tax category's rates, a key that fell back, stock and price handling) are the
+ * ones that decide what shoppers are charged and what loads, and they used to
+ * land only in `decisions.json`, so a reader of this file saw no tax entries
+ * and could take the plan as reviewed.
+ */
+export function writeReview(
+  outDir: string,
+  model: DerivedModel,
+  decisions: MappingDecision[],
+  stage: 'derive' | 'plan',
+): string | undefined {
+  const needsReview = decisions.filter((d) => d.review || d.lossy || d.irreversible);
+  if (needsReview.length === 0) return undefined;
+
+  mkdirSync(outDir, { recursive: true });
+  const reviewPath = join(outDir, 'MODEL-REVIEW.md');
+  writeFileSync(reviewPath, renderReview(model, needsReview, stage));
+  return reviewPath;
+}
+
+function renderReview(
+  model: DerivedModel,
+  needsReview: MappingDecision[],
+  stage: 'derive' | 'plan',
+): string {
   const lines: string[] = [];
 
   lines.push('# Product model review');
+  lines.push('');
+  lines.push(
+    stage === 'plan'
+      ? 'Written by `plan`: these are the decisions from `derive` **and** the ones recorded ' +
+          'while mapping the feed, such as tax rates, key fallbacks, stock and price ' +
+          'handling. Run `derive` again and this file shrinks back to the product model, so ' +
+          'run `plan` last.'
+      : 'Written by `derive`: the product model only. `plan` rewrites this file with the ' +
+          'decisions it records too, and that is the version to sign off.',
+  );
   lines.push('');
   lines.push(
     model.inferred
