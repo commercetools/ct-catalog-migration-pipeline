@@ -1312,6 +1312,66 @@ test('inventory: a project-wide entry may share a key with its own variant', () 
   assert.ok(!found.includes('invalid-key'));
 });
 
+/** The `classic-standalone` fixture's plan (categories and standalone prices), for the key-namespace tests below. */
+function keyPlan(fixture = 'classic-standalone') {
+  const { config: cfg, feedDir } = config(fixture);
+  const { feed } = validateFeed(feedDir, SCHEMA, cfg);
+  const model = deriveProductTypes(feed, cfg);
+  return { cfg, ...buildPlan(feed, model, cfg) };
+}
+
+test('keys: a Category and a Product may share a key, they are separate namespaces', () => {
+  // Probed live on 2026-10-06: a ProductType, a Category, a Product and a
+  // Standalone Price all imported under one key and read back as four
+  // resources. The gate used to claim them in one map and refused a load the
+  // API accepts.
+  const { cfg, plan } = keyPlan();
+  const shared = {
+    ...plan,
+    products: plan.products.map((p, i) => (i === 0 ? { ...p, key: plan.categories[0].key } : p)),
+  };
+  assert.equal(shared.products[0].key, plan.categories[0].key, 'the test must make them equal');
+  const found = codes(auditPlan(shared, cfg).diagnostics);
+  assert.ok(!found.includes('duplicate-resource-key'), `reported: ${found.join(', ')}`);
+});
+
+test('keys: a ProductType and a Product may share a key', () => {
+  const { cfg, plan } = keyPlan();
+  const shared = {
+    ...plan,
+    products: plan.products.map((p, i) =>
+      i === 0 ? { ...p, key: plan.productTypes[0].key } : p,
+    ),
+  };
+  assert.equal(shared.products[0].key, plan.productTypes[0].key);
+  const found = codes(auditPlan(shared, cfg).diagnostics);
+  assert.ok(!found.includes('duplicate-resource-key'), `reported: ${found.join(', ')}`);
+});
+
+test('keys: a Standalone Price may share a key with a Product', () => {
+  const { cfg, plan } = keyPlan();
+  assert.ok(plan.standalonePrices.length > 0, 'the fixture must carry standalone prices');
+  const shared = {
+    ...plan,
+    standalonePrices: plan.standalonePrices.map((x, i) =>
+      i === 0 ? { ...x, key: plan.products[0].key } : x,
+    ),
+  };
+  const found = codes(auditPlan(shared, cfg).diagnostics);
+  assert.ok(!found.includes('duplicate-resource-key'), `reported: ${found.join(', ')}`);
+});
+
+test('keys: two Categories with one key are still a clash, the split is per type', () => {
+  const { cfg, plan } = keyPlan();
+  assert.ok(plan.categories.length >= 2, 'the fixture must have two categories');
+  const clash = {
+    ...plan,
+    categories: plan.categories.map((c, i) => (i === 1 ? { ...c, key: plan.categories[0].key } : c)),
+  };
+  const found = codes(auditPlan(clash, cfg).diagnostics);
+  assert.ok(found.includes('duplicate-resource-key'), `reported: ${found.join(', ')}`);
+});
+
 // ---------------------------------------------------------------------------
 // Tax categories
 // ---------------------------------------------------------------------------
