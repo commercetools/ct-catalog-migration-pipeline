@@ -17,6 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { validateFeed } from '../src/contract/validate.js';
 import { loadConfig } from '../src/model/config.js';
 import { deriveProductTypes } from '../src/derive/product-types.js';
+import { writeReview } from '../src/derive/report.js';
 import { buildPlan } from '../src/map/plan.js';
 import { renderPayloads } from '../src/map/report.js';
 import { fromTypedMoney, toTypedMoney } from '../src/map/money.js';
@@ -1185,7 +1186,8 @@ function taxPlan(records: Record<string, unknown>[], catalogModel = 'Classic') {
   writeFileSync(configPath, JSON.stringify(config));
   const loaded = loadConfig(configPath);
   const { feed } = validateFeed(loaded.feedDir, resolve(ROOT, 'schema', 'catalog-feed.schema.json'), loaded.config);
-  return buildPlan(feed, deriveProductTypes(feed, loaded.config), loaded.config);
+  const model = deriveProductTypes(feed, loaded.config);
+  return { model, ...buildPlan(feed, model, loaded.config) };
 }
 
 const STANDARD = {
@@ -1594,6 +1596,33 @@ test('money attribute: money values with no declaration are not inferred as a ty
   const d = r.derived.diagnostics.find((x) => x.code === 'money-attribute-undeclared');
   assert.ok(d, 'a money-shaped value must not be inferred as ltext');
   assert.match(d.message, /declare it/i);
+});
+
+test('review: plan writes MODEL-REVIEW.md with its own decisions, tax rates included', () => {
+  const r = taxPlan([STANDARD]);
+  const outDir = mkdtempSync(join(tmpdir(), 'ct-review-'));
+
+  // What `derive` alone writes: the product model, no tax entries.
+  const derived = writeReview(outDir, r.model, r.model.decisions, 'derive');
+  const before = derived ? readFileSync(derived, 'utf8') : '';
+  assert.ok(!before.includes('taxCategory:standard'), 'derive does not know the tax rates');
+
+  // What `plan` writes: the full list, so the sign-off document carries them.
+  const path = writeReview(outDir, r.model, r.plan.decisions, 'plan');
+  assert.ok(path, 'a plan with tax rates to review must produce the file');
+  const after = readFileSync(path, 'utf8');
+  assert.match(after, /taxCategory:standard/);
+  assert.match(after, /Written by `plan`/);
+});
+
+test('review: nothing to review means no file, at either stage', () => {
+  const outDir = mkdtempSync(join(tmpdir(), 'ct-review-'));
+  const r = taxPlan([]);
+  const none = r.plan.decisions.filter((d) => d.review || d.lossy || d.irreversible);
+  if (none.length === 0) {
+    assert.equal(writeReview(outDir, r.model, r.plan.decisions, 'plan'), undefined);
+  }
+  assert.equal(writeReview(outDir, r.model, [], 'plan'), undefined);
 });
 
 test('tax: a rounding target is carried onto the rate and into the review decision', () => {

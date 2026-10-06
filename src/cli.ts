@@ -15,7 +15,7 @@ import { parseArgs } from 'node:util';
 import { loadConfig, outDirFor } from './model/config.js';
 import { hasErrors, validateFeed, type Diagnostic } from './contract/validate.js';
 import { deriveProductTypes } from './derive/product-types.js';
-import { describeType, writeDerived } from './derive/report.js';
+import { describeType, writeDerived, writeReview } from './derive/report.js';
 import { buildPlan } from './map/plan.js';
 import { writePlan } from './map/report.js';
 import { auditPlan } from './audit/gate.js';
@@ -337,6 +337,9 @@ function runPlan(opts: Opts): number {
   };
 
   const written = writePlan(outDirFor(opts), plan, opts.payloads);
+  // The sign-off document has to carry the decisions `plan` recorded as well,
+  // or a reader of it sees no tax rates and takes the plan as reviewed.
+  const reviewPath = writeReview(outDirFor(opts), model, plan.decisions, 'plan');
 
   if (opts.json) {
     console.log(
@@ -404,6 +407,9 @@ function runPlan(opts: Opts): number {
   console.log(`  ${relative(process.cwd(), written.planPath)}`);
   console.log(`  ${relative(process.cwd(), written.keyMapPath)}`);
   console.log(`  ${relative(process.cwd(), written.decisionsPath)}`);
+  if (reviewPath) {
+    console.log(`  ${relative(process.cwd(), reviewPath)}  (read this before the load)`);
+  }
   if (written.payloadsPath) {
     console.log(`  ${relative(process.cwd(), written.payloadsPath)}`);
   }

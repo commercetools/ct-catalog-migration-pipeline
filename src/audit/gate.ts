@@ -157,13 +157,19 @@ function anyName(localized: Record<string, string> | undefined): string {
 
 function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
   const variantsByProduct = indexVariants(plan);
-  // Two namespaces. A variant key is unique among variants **across the whole
-  // Project**, but it is a separate namespace from product keys: probed live
-  // on 2026-10-05, a product `x` with a variant keyed `x` imports cleanly, while
-  // a second product's variant keyed like an existing one is rejected with
-  // `DuplicateField ... on one product variant`. Treating them as one
-  // namespace made every single-variant product whose SKU equals its code fail.
-  const keys = new Map<string, string>();
+  // One namespace per resource type. A variant key is unique among variants
+  // **across the whole Project**, but it is a separate namespace from product
+  // keys: probed live on 2026-10-05, a product `x` with a variant keyed `x`
+  // imports cleanly, while a second product's variant keyed like an existing one
+  // is rejected with `DuplicateField ... on one product variant`. The same holds
+  // between ProductType, Category, Product and Standalone Price: probed live on
+  // 2026-10-06, all four imported under the one key `x` and read back as four
+  // resources. Treating them as one namespace made every single-variant product
+  // whose SKU equals its code, and every category named like its product, fail.
+  const productTypeKeys = new Map<string, string>();
+  const categoryKeys = new Map<string, string>();
+  const productKeys = new Map<string, string>();
+  const standalonePriceKeys = new Map<string, string>();
   const variantKeys = new Map<string, string>();
   const seenCount = new Map<string, number>();
   const variantSeenCount = new Map<string, number>();
@@ -200,7 +206,12 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
       taken.set(key, owner);
     }
   };
-  const claimKey = (key: string, owner: string) => claimIn(keys, seenCount, key, owner);
+  const claimOfType = (taken: Map<string, string>) => (key: string, owner: string) =>
+    claimIn(taken, seenCount, key, owner);
+  const claimProductTypeKey = claimOfType(productTypeKeys);
+  const claimCategoryKey = claimOfType(categoryKeys);
+  const claimProductKey = claimOfType(productKeys);
+  const claimStandalonePriceKey = claimOfType(standalonePriceKeys);
   const claimVariantKey = (key: string, owner: string) =>
     claimIn(variantKeys, variantSeenCount, key, owner);
 
@@ -329,17 +340,17 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
     }
   };
 
-  for (const pt of plan.productTypes) claimKey(pt.key, `productType '${pt.key}'`);
+  for (const pt of plan.productTypes) claimProductTypeKey(pt.key, `productType '${pt.key}'`);
 
   for (const c of plan.categories) {
     const label = `category '${c.key}'${anyName(c.name) ? ` (${anyName(c.name)})` : ''}`;
-    claimKey(c.key, label);
+    claimCategoryKey(c.key, label);
     claimSlug(categorySlugs, 'Category', label, c.slug);
   }
 
   for (const p of plan.products) {
     const label = `product '${p.key}'${anyName(p.name) ? ` (${anyName(p.name)})` : ''}`;
-    claimKey(p.key, label);
+    claimProductKey(p.key, label);
     claimSlug(productSlugs, 'Product', label, p.slug);
 
     const priceKeys = new Map<string, string>();
@@ -396,10 +407,10 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
     claimAssets(`category '${category.key}'`, (category as { assets?: Asset[] }).assets);
   }
 
-  // Standalone Price keys are project-wide, not per product, so they go through
-  // the same map as every other resource rather than a per-product one.
+  // Standalone Price keys are project-wide, not per product, so they share one
+  // map across the plan, separate from every other resource type's.
   for (const price of plan.standalonePrices) {
-    claimKey(price.key, `standalone price '${price.key}' (sku '${price.sku}')`);
+    claimStandalonePriceKey(price.key, `standalone price '${price.key}' (sku '${price.sku}')`);
   }
 }
 

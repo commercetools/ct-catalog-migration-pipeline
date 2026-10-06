@@ -19,8 +19,9 @@
  * left.
  *
  * Reverse of the load order, because the references run the other way on the
- * way out: prices and stock before the products they price, products before
- * the categories and ProductTypes they use, categories children first.
+ * way out: prices and stock before the products they price, selections before
+ * the products they list, products before the categories and ProductTypes they
+ * use, categories children first.
  *
  * A delete needs the resource's current version, and deleting a product's
  * standalone prices bumps the product's version (observed in a live cleanup,
@@ -44,9 +45,9 @@ import type { ProjectSnapshot } from '../verify/reconcile.js';
 export const TEARDOWN_KINDS = [
   'standalonePrices',
   'inventory',
+  'productSelections',
   'variants',
   'products',
-  'productSelections',
   'categories',
   'productTypes',
   'containers',
@@ -89,6 +90,12 @@ export interface TeardownOptions {
   execute: boolean;
   /** In-flight deletes within one kind. */
   concurrency?: number;
+  /**
+   * How often, and how long apart, a product delete is retried while the API still
+   * says a product-selection references it, after this run deleted the selections.
+   * Defaults to 12 tries 5 seconds apart. Tests set the delay to 0.
+   */
+  selectionClear?: { attempts: number; delayMs: number };
 }
 
 const zero = (): Record<TeardownKind, number> =>
@@ -223,6 +230,8 @@ async function deleteOne(
   key: string,
   versionHint: number | undefined,
   alwaysFresh: boolean,
+  /** Called on a "referenced by a product-selection" refusal; true means wait was done, try again. */
+  onSelectionRefusal?: (key: string) => Promise<boolean>,
 ): Promise<'deleted' | 'gone'> {
   let version = alwaysFresh ? undefined : versionHint;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -237,6 +246,16 @@ async function deleteOne(
       const status = statusOf(err);
       if (status === 404) return 'gone';
       if (status === 409) {
+        version = undefined;
+        continue;
+      }
+      if (
+        status === 400 &&
+        onSelectionRefusal !== undefined &&
+        /product-selection/.test(describe(err)) &&
+        (await onSelectionRefusal(key))
+      ) {
+        attempt--; // waiting for a reference to clear is not a version conflict
         version = undefined;
         continue;
       }
@@ -418,10 +437,38 @@ export async function runTeardown(
   const concurrency = options.concurrency ?? 4;
   const ops = removers(clients);
 
+  // Deleting a selection clears the references it holds on its products
+  // asynchronously: a product delete a moment later can still be refused with
+  // "referenced by at least one product-selection" (probed live on 2026-10-06;
+  // a second run a minute later found the references gone). So a refused product
+  // is retried for a bounded time, but only when this run deleted selections, and
+  // not at all once one product has waited out the limit, which is what happens
+  // when a selection is stuck behind a store outside the plan.
+  const clear = options.selectionClear ?? { attempts: 12, delayMs: 5_000 };
+  let selectionsDeleted = false;
+  let giveUp = false;
+  const waitForSelectionClear = async (key: string): Promise<boolean> => {
+    if (!selectionsDeleted || giveUp) return false;
+    waits.set(key, (waits.get(key) ?? 0) + 1);
+    if ((waits.get(key) ?? 0) > clear.attempts) {
+      giveUp = true;
+      return false;
+    }
+    await new Promise((r) => setTimeout(r, clear.delayMs));
+    return true;
+  };
+  const waits = new Map<string, number>();
+
   const deleteKeys = async (kind: Exclude<TeardownKind, 'containers'>, keys: string[]) => {
     await mapLimit(keys, concurrency, async (key) => {
       try {
-        const outcome = await deleteOne(ops[kind], key, versionOf(kind, snapshot, key), kind === 'products');
+        const outcome = await deleteOne(
+          ops[kind],
+          key,
+          versionOf(kind, snapshot, key),
+          kind === 'products',
+          kind === 'products' ? waitForSelectionClear : undefined,
+        );
         if (outcome === 'deleted') result.deleted[kind]++;
       } catch (err) {
         result.failed.push({ kind, key, reason: describe(err) });
@@ -431,8 +478,6 @@ export async function runTeardown(
 
   await deleteKeys('standalonePrices', present.standalonePrices);
   await deleteKeys('inventory', present.inventory);
-  await deleteKeys('variants', present.variants);
-  await deleteKeys('products', present.products);
 
   // A selection a planned store points at cannot be deleted. Take it off the
   // store first — the one place this command edits something it did not create.
@@ -464,6 +509,15 @@ export async function runTeardown(
     'productSelections',
     present.productSelections.filter((k) => !blockedBy.has(k) && !failedSelections.has(k)),
   );
+  selectionsDeleted = result.deleted.productSelections > 0 && blockedBy.size === 0;
+
+  // Selections go before the variants and products they point at: the API
+  // refuses to delete a product a selection still references ("Can not delete a
+  // product while it is referenced by at least one product-selection", probed
+  // live on 2026-10-06). The load imports selections after the products, so the
+  // way out is the same order reversed, not the order the references suggest.
+  await deleteKeys('variants', present.variants);
+  await deleteKeys('products', present.products);
 
   const present_categories = new Set(present.categories);
   for (const level of categoriesDeepestFirst(plan)) {
