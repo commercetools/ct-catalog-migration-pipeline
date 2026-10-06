@@ -200,6 +200,7 @@ function matchingSnapshot(plan: MigrationPlan, config: ReturnType<typeof fixture
       ...(sp.country ? { country: sp.country } : {}),
       ...(sp.validFrom ? { validFrom: sp.validFrom } : {}),
       ...(sp.validUntil ? { validUntil: sp.validUntil } : {}),
+      ...(sp.tiers ? { tiers: sp.tiers } : {}),
     } as StandalonePrice);
   }
 
@@ -1113,4 +1114,163 @@ test('tax: the snapshot reads categories by their verbatim keys', async () => {
   assert.ok(q);
   assert.match(q.query.where, /key in \("standard"\)/);
   assert.equal(r.snapshot.taxCategories?.size, 0);
+});
+
+// ---------------------------------------------------------------------------
+// Price tiers
+// ---------------------------------------------------------------------------
+
+function firstPriced(plan: MigrationPlan) {
+  for (const product of plan.products) {
+    const variant = variantsOf(product).find((v) => pricesOf(v).length > 0);
+    if (variant) return { product, variant };
+  }
+  throw new Error('the fixture needs a priced variant');
+}
+
+const TIERS = [
+  { minimumQuantity: 10, value: { type: 'centPrecision', currencyCode: 'GBP', centAmount: 900, fractionDigits: 2 } },
+  { minimumQuantity: 50, value: { type: 'centPrecision', currencyCode: 'GBP', centAmount: 800, fractionDigits: 2 } },
+] as never;
+
+test('verify: tiers that match the plan are clean, in either price mode', () => {
+  for (const name of ['declared-types', 'classic-standalone']) {
+    const { plan, config } = fixture(name);
+    if (name === 'classic-standalone') {
+      plan.standalonePrices[0] = { ...plan.standalonePrices[0], tiers: TIERS };
+    } else {
+      (firstPriced(plan).variant.prices![0] as { tiers?: unknown }).tiers = TIERS;
+    }
+    const snapshot = matchingSnapshot(plan, config);
+    const found = codes(reconcile(plan, snapshot, config).diagnostics);
+    assert.ok(!found.some((c) => c.startsWith('price-tier')), `${name}: ${found.join(', ')}`);
+  }
+});
+
+test('verify: a missing or wrong tier is reported, in either price mode', () => {
+  for (const name of ['declared-types', 'classic-standalone']) {
+    const { plan, config } = fixture(name);
+    const snapshot = matchingSnapshot(plan, config);
+    // The plan has tiers; the project does not.
+    if (name === 'classic-standalone') {
+      plan.standalonePrices[0] = { ...plan.standalonePrices[0], tiers: TIERS };
+    } else {
+      (firstPriced(plan).variant.prices![0] as { tiers?: unknown }).tiers = TIERS;
+    }
+    const missing = codes(reconcile(plan, snapshot, config).diagnostics);
+    assert.ok(missing.includes('price-tier-missing'), `${name}: a tier that never arrived`);
+
+    // Present, but with one wrong amount.
+    const wrong = matchingSnapshot(plan, config);
+    const bad = [{ ...(TIERS as never[])[0] as object, value: { type: 'centPrecision', currencyCode: 'GBP', centAmount: 1, fractionDigits: 2 } }, (TIERS as never[])[1]];
+    if (name === 'classic-standalone') {
+      const key = plan.standalonePrices[0].key;
+      wrong.standalonePrices.set(key, { ...wrong.standalonePrices.get(key)!, tiers: bad } as StandalonePrice);
+    } else {
+      const { product, variant } = firstPriced(plan);
+      const staged = wrong.products.get(product.key)!.masterData.staged;
+      const actual = [staged.masterVariant, ...staged.variants].find((v) => v.sku === variant.sku)!;
+      actual.prices![0] = { ...actual.prices![0], tiers: bad } as never;
+    }
+    const differs = codes(reconcile(plan, wrong, config).diagnostics);
+    assert.ok(differs.includes('price-tier-value-differs'), `${name}: a wrong tier amount`);
+  }
+});
+
+test('tax: a different rounding target on the category is a warning', () => {
+  const { plan, config } = taxVerifyPlan();
+  (plan.prerequisites.taxCategories![0].rates[0] as { taxRoundingTarget?: string }).taxRoundingTarget =
+    'Tax';
+  const snapshot = matchingSnapshot(plan, config);
+  const actual = snapshot.taxCategories!.get('standard')!;
+  snapshot.taxCategories!.set('standard', {
+    ...actual,
+    rates: [{ ...actual.rates[0], taxRoundingTarget: 'Net' } as never],
+  });
+  const d = reconcile(plan, snapshot, config).diagnostics.find(
+    (x) => x.code === 'tax-category-rates-differ',
+  );
+  assert.ok(d);
+  assert.equal(d.severity, 'warning');
+  assert.match(d.message, /rounds the Net in the project, planned Tax/);
+});
+
+test('tax: a category that returns no target equals a plan with none (both Net)', () => {
+  const { plan, config } = taxVerifyPlan();
+  const r = reconcile(plan, matchingSnapshot(plan, config), config);
+  assert.deepEqual(codes(r.diagnostics), []);
+});
+
+// ---------------------------------------------------------------------------
+// Price validity, compared as instants
+// ---------------------------------------------------------------------------
+
+function windowedStandalone() {
+  const { plan, config } = fixture('classic-standalone');
+  const first = plan.standalonePrices[0];
+  plan.standalonePrices[0] = {
+    ...first,
+    validFrom: '2026-09-30T23:00:00Z',
+    validUntil: '2026-10-31T22:59:59Z',
+  };
+  return { plan, config, key: first.key };
+}
+
+function scopeCodes(
+  plan: MigrationPlan,
+  config: ReturnType<typeof fixture>['config'],
+  change: (price: StandalonePrice) => StandalonePrice,
+  key: string,
+) {
+  const snapshot = matchingSnapshot(plan, config);
+  snapshot.standalonePrices.set(key, change(snapshot.standalonePrices.get(key)!));
+  return reconcile(plan, snapshot, config).diagnostics.filter(
+    (d) => d.code === 'standalone-price-scope-differs',
+  );
+}
+
+test('verify: the same instant spelled with milliseconds is not a scope difference', () => {
+  // The live failure from dogfood run 10: the plan says `...:00Z`, the project
+  // answers `...:00.000Z`, and the message advised deleting live prices.
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(
+    plan,
+    config,
+    (p) => ({ ...p, validFrom: '2026-09-30T23:00:00.000Z', validUntil: '2026-10-31T22:59:59.000Z' }),
+    key,
+  );
+  assert.deepEqual(found, []);
+});
+
+test('verify: an offset spelling of the same instant is not a scope difference either', () => {
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(plan, config, (p) => ({ ...p, validFrom: '2026-10-01T00:00:00+01:00' }), key);
+  assert.deepEqual(found, []);
+});
+
+test('verify: a genuinely different instant is still a scope difference', () => {
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(plan, config, (p) => ({ ...p, validFrom: '2026-10-01T00:00:00.000Z' }), key);
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /validFrom/);
+  assert.match(found[0].message, /deleted and recreated/);
+});
+
+test('verify: a window the project lacks, or has and the plan lacks, is a scope difference', () => {
+  const { plan, config, key } = windowedStandalone();
+  const missing = scopeCodes(plan, config, (p) => ({ ...p, validUntil: undefined }), key);
+  assert.equal(missing.length, 1);
+  assert.match(missing[0].message, /validUntil is \(unset\) in the project/);
+
+  const { plan: plain, config: cfg } = fixture('classic-standalone');
+  const k = plain.standalonePrices[0].key;
+  const extra = scopeCodes(plain, cfg, (p) => ({ ...p, validFrom: '2026-10-01T00:00:00.000Z' }), k);
+  assert.equal(extra.length, 1);
+});
+
+test('verify: country is still compared exactly', () => {
+  const { plan, config, key } = windowedStandalone();
+  const found = scopeCodes(plan, config, (p) => ({ ...p, country: 'DE' }), key);
+  assert.equal(found.length, 1);
+  assert.match(found[0].message, /country/);
 });

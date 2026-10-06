@@ -95,6 +95,29 @@
         "validTo": {
           "type": "string",
           "format": "date-time"
+        },
+        "tiers": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Quantity breaks on this price. A tier applies to the whole line-item quantity once minimumQuantity is reached, in the currency of the base price, which is why a tier carries no currency of its own.",
+          "items": {
+            "type": "object",
+            "required": [
+              "minimumQuantity",
+              "amount"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "minimumQuantity": {
+                "type": "integer",
+                "minimum": 2,
+                "description": "The base price covers a single unit, so the API refuses a tier from quantity 1."
+              },
+              "amount": {
+                "$ref": "#/$defs/decimalAmount"
+              }
+            }
+          }
         }
       }
     },
@@ -392,9 +415,6 @@
           "$ref": "#/$defs/code",
           "description": "Code of the owning product. Forward references are allowed."
         },
-        "key": {
-          "$ref": "#/$defs/code"
-        },
         "axisValues": {
           "type": "object",
           "additionalProperties": {
@@ -600,6 +620,10 @@
         "includedInPrice": {
           "type": "boolean",
           "description": "Whether prices are gross (true) or net (false) for this rate. No default on purpose: it decides how every price in the catalog is read, and getting it backwards shifts every price by the rate with nothing in the data to contradict it."
+        },
+        "taxRoundingTarget": {
+          "enum": ["Net", "Tax"],
+          "description": "Which derived amount taxRoundingMode is applied to when includedInPrice is true: the net price (Net) or the tax amount (Tax); the other is the exact remainder. The API defaults to Net when it is absent. It has no effect when includedInPrice is false."
         },
         "name": {
           "type": "string",

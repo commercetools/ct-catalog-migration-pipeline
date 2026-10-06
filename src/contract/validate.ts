@@ -128,9 +128,20 @@ function compileBranches(schemaPath: string): Map<string, ValidateFunction> {
   return branches;
 }
 
-function describeErrors(validate: ValidateFunction): string {
+function describeErrors(validate: ValidateFunction, recordType: string): string {
   return (validate.errors ?? [])
-    .map((e) => `${e.instancePath || '(root)'} ${e.message ?? ''}`.trim())
+    .map((e) => {
+      const message = `${e.instancePath || '(root)'} ${e.message ?? ''}`.trim();
+      if (e.keyword !== 'additionalProperties') return message;
+      // ajv's own message does not say which property it objects to.
+      const name = String((e.params as { additionalProperty?: unknown }).additionalProperty);
+      const hint =
+        name === 'key' && recordType === 'variant'
+          ? ". A variant's key is not a feed field: it is always <keys.prefix>-<sku>, " +
+            'because the SKU is the variant\'s identity. Remove the field.'
+          : '';
+      return `${message}: '${name}'${hint}`;
+    })
     .join('; ');
 }
 
@@ -223,7 +234,7 @@ export function validateFeed(
         diagnostics.push({
           severity: 'error',
           code: 'schema-violation',
-          message: describeErrors(validate),
+          message: describeErrors(validate, String(type)),
           file,
           line,
         });
@@ -1393,6 +1404,19 @@ function checkTaxCategories(
             `amount is ${rate.amount}. The API refuses a rate whose total and portions ` +
             'differ, and refuses the whole category with it, which then holds up every ' +
             'product that references it. Make amount the sum of the sub-rates.',
+          ...at,
+        });
+      }
+      if (rate.taxRoundingTarget !== undefined && !rate.includedInPrice) {
+        diagnostics.push({
+          severity: 'warning',
+          code: 'tax-rounding-target-ignored',
+          message:
+            `Tax category '${code}', rate for ${scope}: taxRoundingTarget is ` +
+            `'${rate.taxRoundingTarget}' but includedInPrice is false. The target only ` +
+            'decides which derived amount is rounded when tax is carved out of a gross ' +
+            'price, so here it has no effect. The API accepts and stores it anyway; drop ' +
+            'it unless includedInPrice is meant to be true.',
           ...at,
         });
       }

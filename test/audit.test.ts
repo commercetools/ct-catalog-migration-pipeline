@@ -27,7 +27,7 @@ import { loadPlan } from '../src/audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from '../src/contract/digest.js';
 import { stringifyArtefact } from '../src/model/artefact.js';
 import { writePlan } from '../src/map/report.js';
-import { indexVariants } from '../src/model/plan.js';
+import { indexVariants, pricesOf, variantsOf } from '../src/model/plan.js';
 import type {
   InventoryImport,
   MigrationPlan,
@@ -1421,4 +1421,114 @@ test('tax: two rates for one scope are refused by the gate', () => {
     }),
   );
   assert.ok(found.includes('duplicate-tax-rate-scope'));
+});
+
+// ---------------------------------------------------------------------------
+// Variant keys are their own namespace (probed live, 2026-10-05)
+// ---------------------------------------------------------------------------
+
+function fixturePlan(fixture: string) {
+  const { config: cfg, feedDir } = config(fixture);
+  const { feed } = validateFeed(feedDir, SCHEMA, cfg);
+  const model = deriveProductTypes(feed, cfg);
+  const { plan } = buildPlan(feed, model, cfg);
+  return { plan, cfg };
+}
+
+test('a variant may share a key with its own product', () => {
+  // Probed on the trial project: product `x` with a variant keyed `x` imports
+  // cleanly. A single-variant product whose SKU equals its code produces
+  // exactly this pair, and the gate used to refuse it.
+  const { plan, cfg } = fixturePlan('stores');
+  const product = plan.products[0];
+  (variantsOf(product)[0] as { key: string }).key = product.key;
+
+  const found = codes(auditPlan(plan, cfg).diagnostics);
+  assert.ok(!found.includes('duplicate-resource-key'), `reported: ${found.join(', ')}`);
+});
+
+test('two variants with one key are still refused, even on different products', () => {
+  // The other half of the probe: the second product's variant was rejected with
+  // `DuplicateField ... on one product variant`. Variant keys are unique among
+  // variants across the whole Project, not per product.
+  const { plan, cfg } = fixturePlan('declared-types');
+  assert.ok(plan.products.length >= 2, 'the fixture needs two products');
+  const first = variantsOf(plan.products[0])[0];
+  (variantsOf(plan.products[1])[0] as { key: string }).key = first.key;
+
+  const d = auditPlan(plan, cfg).diagnostics.find((x) => x.code === 'duplicate-resource-key');
+  assert.ok(d, 'the second import would be rejected by the API');
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, new RegExp(first.key));
+});
+
+// ---------------------------------------------------------------------------
+// Price tiers
+// ---------------------------------------------------------------------------
+
+function tierMoney(centAmount: number, currencyCode = 'GBP') {
+  return { type: 'centPrecision' as const, currencyCode, centAmount, fractionDigits: 2 };
+}
+
+function auditWithTiers(tiers: { minimumQuantity: number; value: ReturnType<typeof tierMoney> }[]) {
+  const { plan, cfg } = fixturePlan('stores');
+  const price = pricesOf(variantsOf(plan.products[0])[0])[0] as { tiers?: unknown };
+  price.tiers = tiers;
+  return codes(auditPlan(plan, cfg).diagnostics);
+}
+
+test('tiers: quantity breaks in the base currency are clean', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 10, value: tierMoney(900) },
+    { minimumQuantity: 50, value: tierMoney(800) },
+  ]);
+  assert.ok(!found.some((c) => c.startsWith('price-tier')), found.join(', '));
+});
+
+test('tiers: any order is accepted (probed: the Import API stores them as given)', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 50, value: tierMoney(800) },
+    { minimumQuantity: 10, value: tierMoney(900) },
+  ]);
+  assert.ok(!found.some((c) => c.startsWith('price-tier')), found.join(', '));
+});
+
+test('tiers: two tiers from one quantity are refused', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 10, value: tierMoney(900) },
+    { minimumQuantity: 10, value: tierMoney(800) },
+  ]);
+  assert.ok(found.includes('price-tier-duplicate-quantity'));
+});
+
+test('tiers: a tier from quantity 1 is refused, as the Import API refuses it', () => {
+  assert.ok(auditWithTiers([{ minimumQuantity: 1, value: tierMoney(900) }]).includes('price-tier-invalid'));
+});
+
+test('tiers: a hand-edited tier in another currency is refused', () => {
+  const found = auditWithTiers([{ minimumQuantity: 10, value: tierMoney(900, 'EUR') }]);
+  assert.ok(found.includes('price-tier-currency-mismatch'));
+});
+
+test('tiers: a tier is held to the same fraction digits as any price', () => {
+  const found = auditWithTiers([
+    { minimumQuantity: 10, value: { ...tierMoney(900), fractionDigits: 3 } },
+  ]);
+  assert.ok(found.includes('fraction-digits-mismatch'));
+});
+
+test('tax: a hand-edited plan with an unknown rounding target is refused', () => {
+  const { plan, cfg } = fixturePlan('stores');
+  plan.prerequisites.taxCategories = [
+    {
+      key: 'standard',
+      name: 'Standard',
+      rates: [
+        { name: 'VAT', amount: 0.2, includedInPrice: true, country: 'GB', taxRoundingTarget: 'Both' as never },
+      ],
+    },
+  ];
+  const d = auditPlan(plan, cfg).diagnostics.find((x) => x.code === 'tax-rate-invalid');
+  assert.ok(d);
+  assert.match(d.message, /taxRoundingTarget "Both" is neither 'Net' nor 'Tax'/);
 });

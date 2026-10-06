@@ -154,10 +154,26 @@ export function renderPayloads(plan: MigrationPlan): string {
 
     const rows: { sku: string; kind: string; price: PriceDraftImport | StandalonePriceImport }[] =
       [];
+    // A tier is money too, so it gets its own row, decoded back like the base
+    // price: the minor-unit conversion is as easy to get wrong there.
+    const pushWithTiers = (
+      sku: string,
+      kind: string,
+      price: PriceDraftImport | StandalonePriceImport,
+    ) => {
+      rows.push({ sku, kind, price });
+      for (const tier of price.tiers ?? []) {
+        rows.push({
+          sku,
+          kind: `${kind} tier from ${tier.minimumQuantity}`,
+          price: { ...price, value: tier.value, tiers: undefined },
+        });
+      }
+    };
     for (const v of variants) {
-      for (const p of pricesOf(v)) rows.push({ sku: v.sku ?? v.key, kind: 'embedded', price: p });
+      for (const p of pricesOf(v)) pushWithTiers(v.sku ?? v.key, 'embedded', p);
       for (const p of v.sku ? (standaloneBySku.get(v.sku) ?? []) : []) {
-        rows.push({ sku: v.sku!, kind: 'standalone', price: p });
+        pushWithTiers(v.sku!, 'standalone', p);
       }
     }
 

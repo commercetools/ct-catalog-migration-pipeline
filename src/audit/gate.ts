@@ -21,6 +21,7 @@ import type {
   AttributeType,
   MigrationPlan,
   PriceDraftImport,
+  PriceTier,
   ProductDraftImport,
   ProductTypeImport,
   ProductVariantDraftImport,
@@ -156,10 +157,23 @@ function anyName(localized: Record<string, string> | undefined): string {
 
 function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
   const variantsByProduct = indexVariants(plan);
+  // Two namespaces. A variant key is unique among variants **across the whole
+  // Project**, but it is a separate namespace from product keys: probed live
+  // on 2026-10-05, a product `x` with a variant keyed `x` imports cleanly, while
+  // a second product's variant keyed like an existing one is rejected with
+  // `DuplicateField ... on one product variant`. Treating them as one
+  // namespace made every single-variant product whose SKU equals its code fail.
   const keys = new Map<string, string>();
+  const variantKeys = new Map<string, string>();
   const seenCount = new Map<string, number>();
+  const variantSeenCount = new Map<string, number>();
 
-  const claimKey = (key: string, owner: string) => {
+  const claimIn = (
+    taken: Map<string, string>,
+    counts: Map<string, number>,
+    key: string,
+    owner: string,
+  ) => {
     if (!isValidKey(key)) {
       diagnostics.push({
         severity: 'error',
@@ -169,10 +183,10 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
           'The API rejects it.',
       });
     }
-    const occurrence = (seenCount.get(key) ?? 0) + 1;
-    seenCount.set(key, occurrence);
+    const occurrence = (counts.get(key) ?? 0) + 1;
+    counts.set(key, occurrence);
 
-    const prior = keys.get(key);
+    const prior = taken.get(key);
     if (prior) {
       diagnostics.push({
         severity: 'error',
@@ -183,9 +197,12 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
           'part of the catalog would silently go missing.',
       });
     } else {
-      keys.set(key, owner);
+      taken.set(key, owner);
     }
   };
+  const claimKey = (key: string, owner: string) => claimIn(keys, seenCount, key, owner);
+  const claimVariantKey = (key: string, owner: string) =>
+    claimIn(variantKeys, variantSeenCount, key, owner);
 
   // Slug uniqueness is per locale and project-wide within a resource type.
   const categorySlugs = new Map<string, Map<string, string>>();
@@ -327,7 +344,7 @@ function checkKeysAndSlugs(plan: MigrationPlan, diagnostics: Diagnostic[]): void
 
     const priceKeys = new Map<string, string>();
     for (const v of variantsByProduct.get(p.key) ?? []) {
-      claimKey(v.key, `variant '${variantSku(v)}'`);
+      claimVariantKey(v.key, `variant '${variantSku(v)}'`);
       claimAssets(`variant '${variantSku(v)}'`, v.assets);
       if (v.sku === undefined) {
         diagnostics.push({
@@ -795,6 +812,61 @@ function checkCombinationUnique(
  * The money invariants, shared by embedded and standalone prices because the
  * project-level rules they check are the same for both.
  */
+/**
+ * Quantity breaks on one price.
+ *
+ * The gate reads the written plan, so a hand-edited plan is checked here too,
+ * not only what the mapper produces. A tier applies to the whole line-item
+ * quantity once its minimum is reached and always in the base price's
+ * currency. Probed against the Import API on 2026-10-05: a minimumQuantity
+ * below 2 is refused ("must have a minimum quantity > 1"), two tiers with the
+ * same quantity are refused, and **order does not matter** — tiers given as 50
+ * then 10 were accepted and stored as given. So the checks are the two the API
+ * makes, the base currency, and the configured fraction digits; there is
+ * deliberately no ordering rule, because it would refuse a load that works.
+ */
+function checkTiers(
+  owner: string,
+  price: { value: PriceDraftImport['value']; tiers?: PriceTier[] },
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  const seen = new Set<number>();
+  for (const tier of price.tiers ?? []) {
+    const label = `${owner}, tier from quantity ${tier.minimumQuantity}`;
+    if (!Number.isInteger(tier.minimumQuantity) || tier.minimumQuantity < 2) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-invalid',
+        message:
+          `${label}: minimumQuantity must be a whole number of at least 2. The base price ` +
+          'covers a single unit, and the Import API refuses a tier from quantity 1.',
+      });
+    }
+    if (tier.value.currencyCode !== price.value.currencyCode) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-currency-mismatch',
+        message:
+          `${label} is in ${tier.value.currencyCode}, but the price it belongs to is in ` +
+          `${price.value.currencyCode}. A tier is always in the base price's currency.`,
+      });
+    }
+    checkMoney(label, tier.value, config, diagnostics);
+    if (seen.has(tier.minimumQuantity)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-duplicate-quantity',
+        message:
+          `${owner}: two tiers start at quantity ${tier.minimumQuantity}. The Import API ` +
+          'refuses it ("2 price tiers have the same minimum quantity"), and the price ' +
+          'would be rejected with nothing else wrong.',
+      });
+    }
+    seen.add(tier.minimumQuantity);
+  }
+}
+
 function checkMoney(
   owner: string,
   value: PriceDraftImport['value'],
@@ -855,6 +927,7 @@ function checkPrices(
 
   for (const price of variantPrices) {
     checkMoney(`Variant '${variantSku(variant)}'`, price.value, config, diagnostics);
+    checkTiers(`Variant '${variantSku(variant)}'`, price, config, diagnostics);
   }
 
   // Grouped by scope, because that is the granularity the uniqueness rule uses.
@@ -1066,6 +1139,7 @@ function checkStandalonePrices(
 
   for (const price of plan.standalonePrices) {
     checkMoney(`Standalone price '${price.key}'`, price.value, config, diagnostics);
+    checkTiers(`Standalone price '${price.key}'`, price, config, diagnostics);
 
     // The Import API explicitly does not validate that the SKU exists, so this
     // is the only place a typo gets caught. The price would be created, priced
@@ -1295,6 +1369,15 @@ function checkTaxCategories(plan: MigrationPlan, diagnostics: Diagnostic[]): voi
       }
       if (typeof rate.includedInPrice !== 'boolean') {
         problems.push('includedInPrice is not a boolean');
+      }
+      if (
+        rate.taxRoundingTarget !== undefined &&
+        rate.taxRoundingTarget !== 'Net' &&
+        rate.taxRoundingTarget !== 'Tax'
+      ) {
+        problems.push(
+          `taxRoundingTarget ${JSON.stringify(rate.taxRoundingTarget)} is neither 'Net' nor 'Tax'`,
+        );
       }
       if (typeof rate.country !== 'string' || !/^[A-Z]{2}$/.test(rate.country)) {
         problems.push(`country ${JSON.stringify(rate.country)} is not ISO 3166-1 alpha-2`);

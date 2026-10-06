@@ -36,6 +36,7 @@ import type {
   LocalizedString,
   Money,
   PriceDraftImport,
+  PriceTier,
   ProductDraftImport,
   ProductPriceModeEnum,
   ProductTypeImport,
@@ -67,6 +68,7 @@ export type {
   LocalizedString,
   Money,
   PriceDraftImport,
+  PriceTier,
   ProductDraftImport,
   ProductPriceModeEnum,
   ProductTypeImport,
@@ -268,11 +270,17 @@ export interface PlannedTaxCategory {
   rates: PlannedTaxRate[];
 }
 
-/** TaxRateDraft, minus the rounding target, which the feed cannot express. */
+/**
+ * TaxRateDraft. `taxRoundingTarget` is declared here because the SDK's own
+ * types do not model it; the API accepts and returns it all the same
+ * (verified on a live project), and the SDK sends whatever body it is given.
+ */
 export interface PlannedTaxRate {
   name: string;
   amount: number;
   includedInPrice: boolean;
+  /** Absent means the API's default, `Net`. */
+  taxRoundingTarget?: 'Net' | 'Tax';
   country: string;
   state?: string;
   /** Present only for a combined rate; their sum equals `amount`. */

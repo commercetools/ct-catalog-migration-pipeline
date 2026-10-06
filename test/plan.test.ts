@@ -1373,3 +1373,111 @@ test('payloads: Modular shows the detached variants and their Standalone Prices'
   const shapes = [...md.matchAll(/— (\d+) variant\(s\)/g)].map((m) => Number(m[1]));
   assert.ok(shapes.every((n) => n > 0), 'no Modular product may render as 0 variants');
 });
+
+// ---------------------------------------------------------------------------
+// Price tiers
+// ---------------------------------------------------------------------------
+
+/** The channels fixture's feed, with `mutate` applied, planned under `priceMode`. */
+function tieredPlan(
+  mutate: (rows: Record<string, unknown>[]) => void,
+  priceMode: 'embedded' | 'standalone' = 'embedded',
+) {
+  const { config, feedDir: source } = loadConfig(
+    resolve(ROOT, 'fixtures', 'channels', 'migration.config.json'),
+  );
+  config.target.priceMode = priceMode;
+  const rows = readFileSync(resolve(source, 'catalog.ndjson'), 'utf8')
+    .split('\n')
+    .filter((l) => l.trim())
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+  mutate(rows);
+  const dir = mkdtempSync(join(tmpdir(), 'ct-tiers-'));
+  const feedDir = join(dir, 'feed');
+  mkdirSync(feedDir);
+  writeFileSync(join(feedDir, 'catalog.ndjson'), rows.map((r) => JSON.stringify(r)).join('\n'));
+  const { feed } = validateFeed(feedDir, SCHEMA, config);
+  return buildPlan(feed, deriveProductTypes(feed, config), config);
+}
+
+const withTiers = (rows: Record<string, unknown>[]) => {
+  const variant = rows.find((r) => r._type === 'variant' && Array.isArray(r.prices))!;
+  (variant.prices as Record<string, unknown>[])[0].tiers = [
+    { minimumQuantity: 10, amount: '17.99' },
+    { minimumQuantity: 50, amount: '15.5' },
+  ];
+};
+
+test('tiers: an embedded price carries its quantity breaks in minor units, in the base currency', () => {
+  const r = tieredPlan(withTiers);
+  const tiered = r.plan.products
+    .flatMap((p) => variantsOf(p))
+    .flatMap((v) => pricesOf(v))
+    .find((p) => p.tiers !== undefined);
+  assert.ok(tiered, 'a price with tiers should be in the plan');
+  assert.equal(tiered.tiers!.length, 2);
+  assert.deepEqual(
+    tiered.tiers!.map((t) => [t.minimumQuantity, t.value.centAmount, t.value.currencyCode]),
+    [
+      [10, 1799, 'GBP'],
+      [50, 1550, 'GBP'],
+    ],
+  );
+  assert.equal(tiered.tiers![0].value.fractionDigits, 2);
+});
+
+test('tiers: a standalone price carries the same quantity breaks', () => {
+  const r = tieredPlan(withTiers, 'standalone');
+  const tiered = r.plan.standalonePrices.find((p) => p.tiers !== undefined);
+  assert.ok(tiered, 'a standalone price with tiers should be in the plan');
+  assert.deepEqual(
+    tiered.tiers!.map((t) => [t.minimumQuantity, t.value.centAmount]),
+    [
+      [10, 1799],
+      [50, 1550],
+    ],
+  );
+});
+
+test('tiers: a price without tiers carries no tiers field at all', () => {
+  const r = tieredPlan(() => {});
+  for (const p of r.plan.products.flatMap((x) => variantsOf(x)).flatMap((v) => pricesOf(v))) {
+    assert.ok(!('tiers' in p), 'an absent field, not an empty one');
+  }
+});
+
+test('tiers: a tier with too many decimal places refuses the whole price', () => {
+  const r = tieredPlan((rows) => {
+    const variant = rows.find((x) => x._type === 'variant' && Array.isArray(x.prices))!;
+    (variant.prices as Record<string, unknown>[])[0].tiers = [
+      { minimumQuantity: 10, amount: '17.999' },
+    ];
+  });
+  const d = r.diagnostics.find((x) => x.code === 'money-precision');
+  assert.ok(d, 'rounding a tier would silently change a price');
+  assert.match(d.message, /tier from quantity 10/);
+});
+
+test('tiers: the sample payloads decode each tier back from minor units', () => {
+  const md = renderPayloads(tieredPlan(withTiers).plan);
+  assert.match(md, /embedded tier from 10/);
+  assert.match(md, /embedded tier from 50/);
+  assert.match(md, /17\.99/);
+});
+
+test('tax: a rounding target is carried onto the rate and into the review decision', () => {
+  const tax = { ...STANDARD, rates: [{ ...STANDARD.rates[0], taxRoundingTarget: 'Tax' }] };
+  const r = taxPlan([tax]);
+  const rate = r.plan.prerequisites.taxCategories![0].rates[0];
+  assert.equal(rate.taxRoundingTarget, 'Tax');
+  const d = r.plan.decisions.find((x) => x.subject === 'taxCategory:standard');
+  assert.ok(d);
+  assert.match(d.outcome, /rounds the tax amount/);
+});
+
+test('tax: an absent rounding target stays absent, so the API default (Net) applies', () => {
+  const r = taxPlan([STANDARD]);
+  for (const rate of r.plan.prerequisites.taxCategories![0].rates) {
+    assert.ok(!('taxRoundingTarget' in rate));
+  }
+});

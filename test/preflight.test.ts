@@ -1439,3 +1439,44 @@ test('tax: an unreadable list is an error naming the read scope', async () => {
   assert.ok(d);
   assert.match(d.message, /view_tax_categories, which view_products also grants/);
 });
+
+test('tax: a different rounding target on an existing category is named, not changed', async () => {
+  const plan = planWithTax();
+  (plan.prerequisites.taxCategories[0].rates[0] as { taxRoundingTarget?: string }).taxRoundingTarget =
+    'Tax';
+  const { clients, recorded } = fakeClients({
+    taxCategories: [
+      {
+        key: 'standard',
+        name: 'Standard',
+        rates: [
+          { country: 'GB', amount: 0.2, includedInPrice: true, taxRoundingTarget: 'Net' },
+          { country: 'IE', amount: 0.23, includedInPrice: true },
+        ],
+      },
+    ],
+  });
+  const r = await preflight(clients, config(), plan);
+  const d = r.diagnostics.find((x) => x.code === 'tax-category-rates-differ');
+  assert.ok(d);
+  assert.match(d.message, /GB rounds the Net in the project, Tax in the feed/);
+  assert.ok(!/IE rounds/.test(d.message), 'an absent target is the API default, Net, on both sides');
+  assert.deepEqual(recorded.updates, []);
+});
+
+test('tax: an absent target equals Net, so a project saying Net is not a difference', async () => {
+  const { clients } = fakeClients({
+    taxCategories: [
+      {
+        key: 'standard',
+        name: 'Standard',
+        rates: [
+          { country: 'GB', amount: 0.2, includedInPrice: true, taxRoundingTarget: 'Net' },
+          { country: 'IE', amount: 0.23, includedInPrice: true, taxRoundingTarget: 'Net' },
+        ],
+      },
+    ],
+  });
+  const r = await preflight(clients, config(), planWithTax());
+  assert.ok(!r.diagnostics.some((x) => x.code === 'tax-category-rates-differ'));
+});

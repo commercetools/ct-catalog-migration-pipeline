@@ -59,6 +59,7 @@ four need no credentials at all.
 | `preflight` | yes | Asks whether the project will accept the plan, in a handful of GETs |
 | `load` | yes | Dry run by default; `--execute` is the only thing that writes |
 | `verify` | yes | Reads the project back and reconciles it against the plan |
+| `teardown` | yes | Deletes what the plan created, scoped to `keys.prefix` (dry run unless `--execute --confirm-project <key>`) |
 
 ```bash
 npm run pipeline -- validate  --config ../migration/migration.config.json
@@ -69,6 +70,8 @@ npm run pipeline -- preflight --config ../migration/migration.config.json
 npm run pipeline -- load      --config ../migration/migration.config.json            # dry run
 npm run pipeline -- load      --config ../migration/migration.config.json --execute
 npm run pipeline -- verify    --config ../migration/migration.config.json
+npm run pipeline -- teardown  --config ../migration/migration.config.json            # dry run
+npm run pipeline -- teardown  --config ../migration/migration.config.json --execute --confirm-project <project-key>
 ```
 
 The engagement lives **beside** this repo, not inside it:

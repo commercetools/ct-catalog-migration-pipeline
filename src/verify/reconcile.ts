@@ -529,6 +529,14 @@ function compareTaxCategory(
           `planned ${rate.amount} ${rate.includedInPrice ? 'included' : 'added'}`,
       );
     }
+    // The SDK's TaxRate type does not model the target, but the response carries it.
+    const haveTarget = (other as { taxRoundingTarget?: string }).taxRoundingTarget ?? 'Net';
+    const wantTarget = rate.taxRoundingTarget ?? 'Net';
+    if (rate.includedInPrice && other.includedInPrice && haveTarget !== wantTarget) {
+      differences.push(
+        `${scope(rate)} rounds the ${haveTarget} in the project, planned ${wantTarget}`,
+      );
+    }
   }
   const plannedScopes = new Set(planned.rates.map(scope));
   for (const key of have.keys()) {
@@ -1045,6 +1053,55 @@ function describeMoney(m: { currencyCode: string; centAmount: number } | undefin
   return m ? `${m.currencyCode} ${m.centAmount}` : '(none)';
 }
 
+/**
+ * Quantity breaks, compared by minimumQuantity rather than by position: the
+ * project may return them in any order, and the quantity is what identifies a
+ * tier. A tier missing from the project is the one that matters most, because
+ * the base price still prices a single unit and nothing else looks wrong.
+ */
+function compareTiers(
+  owner: string,
+  planned: { minimumQuantity: number; value: PriceDraftImport['value'] }[] | undefined,
+  actual: { minimumQuantity: number; value: TypedMoney }[] | undefined,
+  diagnostics: Diagnostic[],
+): void {
+  const wanted = planned ?? [];
+  const got = new Map((actual ?? []).map((t) => [t.minimumQuantity, t]));
+  for (const tier of wanted) {
+    const found = got.get(tier.minimumQuantity);
+    if (!found) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-missing',
+        message:
+          `${owner}: the tier from quantity ${tier.minimumQuantity} ` +
+          `(${describeMoney(tier.value)}) is not in the project. The base price still prices ` +
+          'a single unit, so only larger orders pay the wrong amount.',
+      });
+    } else if (!moneyEqual(found.value, tier.value)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'price-tier-value-differs',
+        message:
+          `${owner}, tier from quantity ${tier.minimumQuantity}: the project has ` +
+          `${describeMoney(found.value)} and the plan says ${describeMoney(tier.value)}.`,
+      });
+    }
+  }
+  const plannedQuantities = new Set(wanted.map((t) => t.minimumQuantity));
+  for (const extra of got.keys()) {
+    if (!plannedQuantities.has(extra)) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'price-tier-unplanned',
+        message:
+          `${owner}: the project has a tier from quantity ${extra} that the plan does not ` +
+          'carry. It may be left over from an earlier load or added by hand.',
+      });
+    }
+  }
+}
+
 function compareEmbeddedPrices(
   productKey: string,
   sku: string,
@@ -1081,7 +1138,26 @@ function compareEmbeddedPrices(
           'A wrong amount is the defect that looks most like success.',
       });
     }
+    compareTiers(
+      `Variant '${sku}' on product '${productKey}', price '${price.key}'`,
+      price.tiers,
+      got.tiers,
+      diagnostics,
+    );
   }
+}
+
+/**
+ * Whether two timestamps name the same moment, whatever their spelling: `Z`
+ * against `.000Z`, or an offset against UTC. Both unset is equal; one unset is
+ * not; a value that does not parse is compared as text and so never equal to a
+ * differently spelled one.
+ */
+function sameInstant(a: unknown, b: unknown): boolean {
+  if ((a ?? undefined) === (b ?? undefined)) return true;
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const x = Date.parse(a);
+  return !Number.isNaN(x) && x === Date.parse(b);
 }
 
 function compareStandalonePrice(
@@ -1110,16 +1186,24 @@ function compareStandalonePrice(
     });
   }
 
+  compareTiers(`Standalone price '${planned.key}'`, planned.tiers, actual.tiers, diagnostics);
+
   // Scope is part of a price's identity, and none of it can be updated: the
   // Import API returns InvalidFieldsUpdate for country, customerGroup and
   // channel. A difference here means the price has to be deleted and remade.
-  const scope: [string, unknown, unknown][] = [
-    ['country', actual.country, planned.country],
-    ['validFrom', actual.validFrom, planned.validFrom],
-    ['validUntil', actual.validUntil, planned.validUntil],
+  //
+  // The validity window is compared as instants, not as strings: the plan holds
+  // `2026-09-30T23:00:00Z` and the project returns `2026-09-30T23:00:00.000Z`
+  // for the very same moment. Compared as text, every windowed price was
+  // reported as needing delete-and-recreate, which a reader who trusts the
+  // message would do to live prices.
+  const scope: [string, unknown, unknown, (a: unknown, b: unknown) => boolean][] = [
+    ['country', actual.country, planned.country, (a, b) => (a ?? undefined) === (b ?? undefined)],
+    ['validFrom', actual.validFrom, planned.validFrom, sameInstant],
+    ['validUntil', actual.validUntil, planned.validUntil, sameInstant],
   ];
-  for (const [field, got, expected] of scope) {
-    if ((got ?? undefined) !== (expected ?? undefined)) {
+  for (const [field, got, expected, same] of scope) {
+    if (!same(got, expected)) {
       diagnostics.push({
         severity: 'error',
         code: 'standalone-price-scope-differs',

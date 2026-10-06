@@ -1457,3 +1457,97 @@ test('tax: a category declared twice is a duplicate record', () => {
   });
   assert.ok(codes(r.diagnostics).includes('duplicate-record'));
 });
+
+test('variant: a "key" field is refused and the message says why', () => {
+  // variant.key used to be accepted and silently ignored: the key is always
+  // derived from the SKU, so a value here never did anything.
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'variant')!.key = 'my-own-key';
+  });
+  const r = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  const d = r.diagnostics.find((x) => x.code === 'schema-violation');
+  assert.ok(d, 'the field is rejected');
+  assert.match(d.message, /'key'/);
+  assert.match(d.message, /<keys\.prefix>-<sku>/);
+});
+
+test('schema: an unknown property is named in the message', () => {
+  const loaded = channelFeed((rows) => {
+    rows.find((r) => r._type === 'variant')!.colour = 'red';
+  });
+  const r = validateFeed(loaded.feedDir, SCHEMA, loaded.config);
+  const d = r.diagnostics.find((x) => x.code === 'schema-violation');
+  assert.ok(d);
+  assert.match(d.message, /additional properties: 'colour'/);
+});
+
+test('tiers: quantity breaks on a feed price validate; malformed ones are refused', () => {
+  const tiered = (tiers: unknown) =>
+    validateFeed(
+      ...(() => {
+        const loaded = channelFeed((rows) => {
+          const v = rows.find((r) => r._type === 'variant' && Array.isArray(r.prices))!;
+          (v.prices as Record<string, unknown>[])[0].tiers = tiers;
+        });
+        return [loaded.feedDir, SCHEMA, loaded.config] as const;
+      })(),
+    );
+
+  assert.deepEqual(
+    codes(tiered([{ minimumQuantity: 10, amount: '9.99' }]).diagnostics).filter((c) => c === 'schema-violation'),
+    [],
+  );
+  for (const bad of [
+    [{ minimumQuantity: 10 }],
+    [{ amount: '9.99' }],
+    [{ minimumQuantity: 0, amount: '9.99' }],
+    [{ minimumQuantity: 1, amount: '9.99' }],
+    [{ minimumQuantity: 2.5, amount: '9.99' }],
+    [{ minimumQuantity: 10, amount: '9.99', currency: 'GBP' }],
+    [],
+  ]) {
+    assert.ok(
+      codes(tiered(bad).diagnostics).includes('schema-violation'),
+      `refused: ${JSON.stringify(bad)}`,
+    );
+  }
+});
+
+test('tax: taxRoundingTarget is accepted as Net or Tax and refused as anything else', () => {
+  const withTarget = (target: unknown) =>
+    taxFeed((rows) => {
+      (rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] }).rates[0]
+        .taxRoundingTarget = target;
+    });
+  for (const ok of ['Net', 'Tax']) {
+    const r = withTarget(ok);
+    assert.ok(!codes(r.diagnostics).includes('schema-violation'), ok);
+    assert.equal(r.feed.taxCategories.get('standard')?.rates?.[0].taxRoundingTarget, ok);
+  }
+  for (const bad of ['Both', 'net', '', 1]) {
+    assert.ok(codes(withTarget(bad).diagnostics).includes('schema-violation'), String(bad));
+  }
+});
+
+test('tax: a rounding target on a rate that is not included in the price has no effect, and says so', () => {
+  const r = taxFeed((rows) => {
+    const rate = (rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] })
+      .rates[0];
+    rate.includedInPrice = false;
+    rate.taxRoundingTarget = 'Tax';
+  });
+  const d = r.diagnostics.find((x) => x.code === 'tax-rounding-target-ignored');
+  assert.ok(d);
+  assert.equal(d.severity, 'warning', 'the API accepts and stores it, so this is not an error');
+  assert.ok((d.line ?? 0) > 0);
+  assert.equal(hasErrors(r.diagnostics), false);
+});
+
+test('tax: no warning when the target is stated on an included rate, or not stated at all', () => {
+  const r = taxFeed((rows) => {
+    (rows.find((x) => x._type === 'taxCategory') as { rates: Record<string, unknown>[] }).rates[0]
+      .taxRoundingTarget = 'Tax';
+  });
+  assert.ok(!codes(r.diagnostics).includes('tax-rounding-target-ignored'));
+  assert.ok(!codes(taxFeed(() => {}).diagnostics).includes('tax-rounding-target-ignored'));
+});

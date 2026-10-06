@@ -35,6 +35,13 @@ export type AttributeValue =
   | LocalizedString
   | (string | number | boolean)[];
 
+export interface FeedPriceTier {
+  /** The tier applies to the whole line-item quantity once this is reached. */
+  minimumQuantity: number;
+  /** In the currency of the base price: a tier has no currency of its own. */
+  amount: DecimalAmount;
+}
+
 export interface FeedPrice {
   currency: string;
   amount: DecimalAmount;
@@ -43,6 +50,7 @@ export interface FeedPrice {
   channel?: string;
   validFrom?: string;
   validTo?: string;
+  tiers?: FeedPriceTier[];
 }
 
 export interface FeedImage {
@@ -192,7 +200,6 @@ export interface FeedVariant {
   _type: 'variant';
   sku: string;
   product: string;
-  key?: string;
   /** Language-independent codes only. */
   axisValues?: Record<string, string>;
   /** Display text only — never identity. */
@@ -281,6 +288,12 @@ export interface FeedTaxRate {
   /** Fraction in [0, 1]. */
   amount: number;
   includedInPrice: boolean;
+  /**
+   * Which derived amount `taxRoundingMode` rounds when `includedInPrice` is
+   * true: the net price or the tax amount. Absent means the API's default,
+   * `Net`. Meaningless when `includedInPrice` is false.
+   */
+  taxRoundingTarget?: 'Net' | 'Tax';
   /**
    * Required by the API and shown on orders as the tax portion's name — so a
    * derived one lands on invoices. Derived from country and amount when
