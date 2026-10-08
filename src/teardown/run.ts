@@ -38,7 +38,7 @@ import type { PipelineConfig } from '../model/config.js';
 import type { Diagnostic } from '../contract/validate.js';
 import type { MigrationPlan } from '../model/plan.js';
 import { planBatches } from '../load/batches.js';
-import { fetchSnapshot } from '../verify/snapshot.js';
+import { chunk, fetchSnapshot, KEYS_PER_QUERY } from '../verify/snapshot.js';
 import type { ProjectSnapshot } from '../verify/reconcile.js';
 
 /** In deletion order. */
@@ -74,6 +74,11 @@ export interface TeardownResult {
   storesChanged: { store: string; removed: string[] }[];
   /** Selections left in place because a store outside the plan still holds them. */
   blocked: { selection: string; stores: string[] }[];
+  /**
+   * Planned categories left in place because deleting one would delete categories
+   * the plan does not name: someone else's, created below it. `below` names them.
+   */
+  blockedCategories: { category: string; below: string[] }[];
   /** Left alone on purpose: verbatim-keyed, and the project's. */
   untouched: {
     channels: string[];
@@ -96,6 +101,12 @@ export interface TeardownOptions {
    * Defaults to 12 tries 5 seconds apart. Tests set the delay to 0.
    */
   selectionClear?: { attempts: number; delayMs: number };
+  /**
+   * How often, and how long apart, a category delete is retried while the API says
+   * another operation on the category tree is running. Defaults to 6 tries 2 seconds
+   * apart. Tests set the delay to 0.
+   */
+  treeBusy?: { attempts: number; delayMs: number };
 }
 
 const zero = (): Record<TeardownKind, number> =>
@@ -152,28 +163,115 @@ export function keysOutsidePrefix(
   return bad;
 }
 
-/** Deepest categories first, so a parent is never deleted under a child. */
-function categoriesDeepestFirst(plan: MigrationPlan): string[][] {
-  const parentOf = new Map<string, string | undefined>(
-    plan.categories.map((c) => [c.key, (c.parent as { key?: string } | undefined)?.key]),
+/** A planned category's planned parent, if it has one: the parent key of a root is not in the plan. */
+function plannedParents(plan: MigrationPlan): Map<string, string | undefined> {
+  const keys = new Set(plan.categories.map((c) => c.key));
+  return new Map(
+    plan.categories.map((c) => {
+      const parent = (c.parent as { key?: string } | undefined)?.key;
+      return [c.key, parent !== undefined && keys.has(parent) ? parent : undefined];
+    }),
   );
-  const depth = (key: string): number => {
-    let d = 0;
-    let at = parentOf.get(key);
+}
+
+/**
+ * The plan's categories grouped by tree, each tree deepest first.
+ *
+ * Two reasons, both seen live. A parent must go after its children, because
+ * deleting a category deletes everything below it. And the API serialises
+ * operations on one category tree: two deletes in the same tree at once, such as
+ * two siblings, get a 400 on the second ("another operation on the category tree
+ * is performed"). So a tree is deleted one category at a time, and trees run
+ * side by side.
+ */
+function categoryTrees(plan: MigrationPlan): string[][] {
+  const parentOf = plannedParents(plan);
+  const rootAndDepth = (key: string): { root: string; depth: number } => {
+    let depth = 0;
+    let at = key;
     const seen = new Set<string>([key]);
-    while (at !== undefined && parentOf.has(at) && !seen.has(at)) {
-      seen.add(at);
-      d++;
-      at = parentOf.get(at);
+    for (let up = parentOf.get(at); up !== undefined && !seen.has(up); up = parentOf.get(at)) {
+      seen.add(up);
+      depth++;
+      at = up;
     }
-    return d;
+    return { root: at, depth };
   };
-  const levels = new Map<number, string[]>();
+  const trees = new Map<string, { key: string; depth: number }[]>();
   for (const c of plan.categories) {
-    const d = depth(c.key);
-    levels.set(d, [...(levels.get(d) ?? []), c.key]);
+    const { root, depth } = rootAndDepth(c.key);
+    trees.set(root, [...(trees.get(root) ?? []), { key: c.key, depth }]);
   }
-  return [...levels.keys()].sort((a, b) => b - a).map((d) => levels.get(d)!);
+  return [...trees.values()].map((members) => members.sort((a, b) => b.depth - a.depth).map((m) => m.key));
+}
+
+/**
+ * Categories in the project, not in the plan, directly below a planned one.
+ *
+ * Deleting a category deletes its whole subtree ("Deleting a root Category
+ * deletes the whole Category tree", and probed live on 2026-10-06), so a category
+ * someone else created under one of ours would go with it without being named
+ * anywhere. Keyed by the planned parent. A planned category found below a
+ * foreign one is not a problem here: its own children are read like any other's.
+ */
+async function foreignCategoryChildren(
+  clients: Clients,
+  plan: MigrationPlan,
+  snapshot: ProjectSnapshot,
+  presentKeys: string[],
+): Promise<Map<string, string[]>> {
+  const planned = new Set(plan.categories.map((c) => c.key));
+  const keyById = new Map<string, string>();
+  for (const key of presentKeys) {
+    const id = snapshot.categories.get(key)?.id;
+    if (id) keyById.set(id, key);
+  }
+  const PAGE = 500;
+  const found = new Map<string, string[]>();
+  for (const ids of chunk([...keyById.keys()], KEYS_PER_QUERY)) {
+    const where = `parent(id in (${ids.map((id) => JSON.stringify(id)).join(', ')}))`;
+    for (let offset = 0; ; offset += PAGE) {
+      const page = (
+        await clients.platform.categories().get({ queryArgs: { where, limit: PAGE, offset } }).execute()
+      ).body.results;
+      for (const child of page) {
+        if (child.key !== undefined && planned.has(child.key)) continue;
+        const parentKey = keyById.get(child.parent?.id ?? '');
+        if (parentKey === undefined) continue;
+        found.set(parentKey, [...(found.get(parentKey) ?? []), child.key ?? child.id]);
+      }
+      if (page.length < PAGE) break;
+    }
+  }
+  return found;
+}
+
+/**
+ * The planned categories that stay, and the foreign ones each would take with it.
+ * A planned ancestor of a category that stays has to stay too: its delete would
+ * sweep up the same foreign categories.
+ */
+function categoriesHeldBack(
+  plan: MigrationPlan,
+  foreign: Map<string, string[]>,
+  presentKeys: string[],
+): { category: string; below: string[] }[] {
+  const parentOf = plannedParents(plan);
+  const held = new Map<string, Set<string>>();
+  for (const [planned, below] of foreign) {
+    const seen = new Set<string>();
+    for (let at: string | undefined = planned; at !== undefined && !seen.has(at); at = parentOf.get(at)) {
+      seen.add(at);
+      const names = held.get(at) ?? new Set<string>();
+      for (const b of below) names.add(b);
+      held.set(at, names);
+    }
+  }
+  const present = new Set(presentKeys);
+  return [...held]
+    .filter(([key]) => present.has(key))
+    .map(([category, names]) => ({ category, below: [...names].sort() }))
+    .sort((a, b) => a.category.localeCompare(b.category));
 }
 
 interface Remover {
@@ -232,6 +330,8 @@ async function deleteOne(
   alwaysFresh: boolean,
   /** Called on a "referenced by a product-selection" refusal; true means wait was done, try again. */
   onSelectionRefusal?: (key: string) => Promise<boolean>,
+  /** Called on a "category tree is busy" refusal; true means wait was done, try again. */
+  onTreeBusy?: (key: string) => Promise<boolean>,
 ): Promise<'deleted' | 'gone'> {
   let version = alwaysFresh ? undefined : versionHint;
   for (let attempt = 0; attempt < 3; attempt++) {
@@ -256,6 +356,18 @@ async function deleteOne(
         (await onSelectionRefusal(key))
       ) {
         attempt--; // waiting for a reference to clear is not a version conflict
+        version = undefined;
+        continue;
+      }
+      if (
+        status === 400 &&
+        onTreeBusy !== undefined &&
+        /category tree/.test(describe(err)) &&
+        (await onTreeBusy(key))
+      ) {
+        // Read it again before retrying: whatever held the tree may have removed
+        // this category, which is then gone, not failed.
+        attempt--;
         version = undefined;
         continue;
       }
@@ -321,6 +433,7 @@ export async function runTeardown(
     failed: [],
     storesChanged: [],
     blocked: [],
+    blockedCategories: [],
     untouched: {
       channels: plan.prerequisites.channels.map((c) => c.key),
       customerGroups: plan.prerequisites.customerGroups.map((c) => c.key),
@@ -432,6 +545,26 @@ export async function runTeardown(
   }
   for (const [selection, stores] of blockedBy) result.blocked.push({ selection, stores });
 
+  // Deleting a category deletes everything below it, so a planned category with
+  // someone else's category beneath it has to stay. Read before the dry run
+  // returns, so the dry run says so too.
+  if (present.categories.length > 0) {
+    try {
+      const foreign = await foreignCategoryChildren(clients, plan, snapshot, present.categories);
+      result.blockedCategories = categoriesHeldBack(plan, foreign, present.categories);
+    } catch (err) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'teardown-unreadable',
+        message:
+          `Could not read the categories below the planned ones (${describe(err)}), so it is ` +
+          'unknown whether deleting one would also delete a category this plan does not name. ' +
+          'Nothing was deleted.',
+      });
+      return result;
+    }
+  }
+
   if (!options.execute) return result;
 
   const concurrency = options.concurrency ?? 4;
@@ -459,6 +592,20 @@ export async function runTeardown(
   };
   const waits = new Map<string, number>();
 
+  // A category delete is refused while another operation runs on its tree. Within
+  // this run trees are deleted one category at a time, so what is left is someone
+  // else's operation, or two planned trees under one root outside the plan: both
+  // pass on their own, so wait a bounded time and read the category again.
+  const treeBusy = options.treeBusy ?? { attempts: 6, delayMs: 2_000 };
+  const treeWaits = new Map<string, number>();
+  const waitForTree = async (key: string): Promise<boolean> => {
+    const n = (treeWaits.get(key) ?? 0) + 1;
+    treeWaits.set(key, n);
+    if (n > treeBusy.attempts) return false;
+    await new Promise((r) => setTimeout(r, treeBusy.delayMs));
+    return true;
+  };
+
   const deleteKeys = async (kind: Exclude<TeardownKind, 'containers'>, keys: string[]) => {
     await mapLimit(keys, concurrency, async (key) => {
       try {
@@ -468,6 +615,7 @@ export async function runTeardown(
           versionOf(kind, snapshot, key),
           kind === 'products',
           kind === 'products' ? waitForSelectionClear : undefined,
+          kind === 'categories' ? waitForTree : undefined,
         );
         if (outcome === 'deleted') result.deleted[kind]++;
       } catch (err) {
@@ -519,10 +667,16 @@ export async function runTeardown(
   await deleteKeys('variants', present.variants);
   await deleteKeys('products', present.products);
 
-  const present_categories = new Set(present.categories);
-  for (const level of categoriesDeepestFirst(plan)) {
-    await deleteKeys('categories', level.filter((k) => present_categories.has(k)));
-  }
+  // Trees side by side, each one category at a time and deepest first. A planned
+  // category that holds someone else's stays, and so do its planned ancestors; the
+  // planned categories below it still go.
+  const deletableCategories = new Set(present.categories);
+  for (const held of result.blockedCategories) deletableCategories.delete(held.category);
+  await mapLimit(categoryTrees(plan), concurrency, async (tree) => {
+    for (const key of tree) {
+      if (deletableCategories.has(key)) await deleteKeys('categories', [key]);
+    }
+  });
   await deleteKeys('productTypes', present.productTypes);
 
   for (const key of presentContainers) {
@@ -596,6 +750,14 @@ export function renderTeardown(result: TeardownResult): string {
         'which this plan does not list. Take it off the store(s) and run teardown again.',
     );
   }
+  for (const b of result.blockedCategories) {
+    lines.push('');
+    lines.push(
+      `NOT deleted: category '${b.category}' has categories below it that this plan does not name ` +
+        `(${b.below.join(', ')}), and deleting it would delete them too. Move or delete those, ` +
+        'then run teardown again.',
+    );
+  }
   const u = result.untouched;
   if (u.channels.length + u.customerGroups.length + u.taxCategories.length + u.stores.length > 0) {
     lines.push('');
@@ -619,7 +781,7 @@ export function renderTeardown(result: TeardownResult): string {
 export function teardownComplete(result: TeardownResult): boolean {
   if (result.diagnostics.some((d) => d.severity === 'error')) return false;
   if (!result.executed) return true;
-  if (result.failed.length > 0 || result.blocked.length > 0) return false;
+  if (result.failed.length > 0 || result.blocked.length > 0 || result.blockedCategories.length > 0) return false;
   if (!result.remaining) return false;
   return TEARDOWN_KINDS.every((k) => (result.remaining![k] ?? 0) === 0);
 }
