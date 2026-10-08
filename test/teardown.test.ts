@@ -20,7 +20,7 @@ import { validateFeed } from '../src/contract/validate.js';
 import { loadConfig } from '../src/model/config.js';
 import { deriveProductTypes } from '../src/derive/product-types.js';
 import { buildPlan } from '../src/map/plan.js';
-import { keysOutsidePrefix, runTeardown, teardownComplete } from '../src/teardown/run.js';
+import { keysOutsidePrefix, renderTeardown, runTeardown, teardownComplete } from '../src/teardown/run.js';
 import type { Clients } from '../src/client/factory.js';
 import type { MigrationPlan } from '../src/model/plan.js';
 
@@ -55,6 +55,8 @@ interface Res {
   [field: string]: unknown;
 }
 
+const TREE_BUSY = 'Cannot delete the category while another operation on the category tree is performed.';
+
 class FakeProject {
   kinds = new Map<string, Map<string, Res>>();
   /** `kind:key` per successful delete, in order. */
@@ -67,6 +69,16 @@ class FakeProject {
   private pendingRefusals = 0;
   /** Product delete attempts that reached the API's checks. */
   productDeleteAttempts = 0;
+  /** Root ids of category trees with a delete in flight: the API serialises operations on a tree. */
+  private treesInFlight = new Set<unknown>();
+  /** Category keys whose next N deletes are refused as "tree busy", as another client's operation would. */
+  busyTimes = new Map<string, number>();
+  /** Of those, the ones that are gone by the time the delete is retried (the tree operation removed them). */
+  vanishOnBusy = new Set<string>();
+  /** Set to make a category read by parent fail, as a missing scope would. */
+  failParentQuery = false;
+  /** Every `where` a category list was asked for, to check the foreign-child read is chunked. */
+  parentQueries: string[] = [];
 
   kind(name: string) {
     let m = this.kinds.get(name);
@@ -93,6 +105,20 @@ class FakeProject {
         execute: async () => {
           const all = [...self.kind(kind).values()];
           const where = queryArgs.where;
+          if (kind === 'categories' && where?.startsWith('parent(id in')) {
+            // The children of these ids, whoever created them.
+            self.parentQueries.push(where);
+            if (self.failParentQuery) throw self.err(403, 'insufficient_scope');
+            const parents = new Set([...where.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]));
+            const children = all.filter((c) => parents.has(c.parentId as string));
+            return {
+              body: {
+                results: children.map((c) => ({ ...c, parent: { typeId: 'category', id: c.parentId } })),
+                total: children.length,
+                count: children.length,
+              },
+            };
+          }
           const results = where
             ? (() => {
                 const wanted = new Set([...where.matchAll(/"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]));
@@ -133,9 +159,28 @@ class FakeProject {
             if (self.broken.has(key)) throw self.err(500, 'boom');
             if (r.version !== queryArgs.version) throw self.err(409, 'ConcurrentModification');
             self.refuse(kind, r);
+            let tree: unknown;
+            if (kind === 'categories') {
+              const busy = self.busyTimes.get(key) ?? 0;
+              if (busy > 0) {
+                self.busyTimes.set(key, busy - 1);
+                if (self.vanishOnBusy.has(key)) self.kind(kind).delete(key);
+                throw self.err(400, TREE_BUSY);
+              }
+              // Observed live on 2026-10-07: two deletes in one tree at once, the
+              // second is refused. They are one microtask apart here, which is
+              // enough for the fake to see them overlap.
+              tree = self.rootOf(r);
+              if (self.treesInFlight.has(tree)) throw self.err(400, TREE_BUSY);
+              self.treesInFlight.add(tree);
+              await Promise.resolve();
+            }
             self.kind(kind).delete(key);
             self.log.push(`${kind}:${key}`);
-            if (kind === 'categories') self.cascade(r.id);
+            if (kind === 'categories') {
+              self.cascade(r.id);
+              self.treesInFlight.delete(tree);
+            }
             if (kind === 'productSelections') self.pendingRefusals = self.clearDelayAttempts;
             // The observed trap: a price delete changes the product it prices.
             if (kind === 'standalonePrices') for (const p of self.kind('products').values()) p.version++;
@@ -144,6 +189,15 @@ class FakeProject {
         }),
       }),
     });
+  }
+
+  private rootOf(category: Res): unknown {
+    let at = category;
+    for (;;) {
+      const up = [...this.kind('categories').values()].find((c) => c.id === at.parentId);
+      if (!up) return at.id;
+      at = up;
+    }
   }
 
   /** Deleting a category deletes its descendants too, without a log entry of their own. */
@@ -326,6 +380,152 @@ test('teardown: categories are deleted children first', async () => {
     const parent = (child.parent as { key: string }).key;
     assert.ok(order.indexOf(child.key) < order.indexOf(parent), `${child.key} before its parent ${parent}`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Category trees
+// ---------------------------------------------------------------------------
+
+/** The fixture plan with one more level: a category under `<prefix>-tops`. */
+function planWithGrandchild() {
+  const { config, plan } = planFor('classic-standalone');
+  const template = plan.categories[0];
+  const grandchild = { ...template, key: `${PREFIX}-sleeves`, parent: { typeId: 'category', key: `${PREFIX}-tops` } };
+  return { config, plan: { ...plan, categories: [...plan.categories, grandchild] } as MigrationPlan };
+}
+
+test('teardown: sibling categories in one tree are deleted one at a time, not in parallel', async () => {
+  // The API serialises operations on a category tree and refuses the second of two
+  // concurrent deletes: seen live on 2026-10-07 as a 400 on one of two siblings.
+  const { config, plan } = planFor('classic-standalone');
+  const parents = plan.categories.map((c) => (c.parent as { key?: string } | undefined)?.key).filter(Boolean);
+  assert.ok(new Set(parents).size < parents.length, 'the fixture needs two categories under one parent');
+  const world = projectHolding(plan, PREFIX);
+
+  const r = await runTeardown(world.clients(), plan, config, { execute: true, concurrency: 4 });
+  assert.deepEqual(r.failed, []);
+  assert.equal(world.count('categories', `${PREFIX}-`), 0);
+  assert.equal(r.deleted.categories, plan.categories.length, 'each one deleted by its own request, none swept up by a parent');
+});
+
+test('teardown: a category refused because its tree is busy is retried', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  world.busyTimes.set(`${PREFIX}-tops`, 2);
+
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    treeBusy: { attempts: 5, delayMs: 0 },
+  });
+  assert.deepEqual(r.failed, []);
+  assert.equal(world.count('categories', `${PREFIX}-`), 0);
+  assert.equal(r.deleted.categories, plan.categories.length);
+});
+
+test('teardown: a category refused as busy that is gone when read again counts as deleted, not failed', async () => {
+  // The first live Modular teardown: the 400 was followed by the category
+  // disappearing with its parent's tree, and the run reported a failure for a
+  // category that no longer existed.
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  world.busyTimes.set(`${PREFIX}-outerwear`, 1);
+  world.vanishOnBusy.add(`${PREFIX}-outerwear`);
+
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    treeBusy: { attempts: 5, delayMs: 0 },
+  });
+  assert.deepEqual(r.failed, []);
+  assert.equal(r.remaining?.categories, 0);
+  assert.equal(teardownComplete(r), true);
+});
+
+test('teardown: a tree that stays busy is reported after a bounded wait', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  world.busyTimes.set(`${PREFIX}-tops`, 1000);
+
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    treeBusy: { attempts: 3, delayMs: 0 },
+  });
+  const f = r.failed.find((x) => x.key === `${PREFIX}-tops`);
+  assert.ok(f);
+  assert.match(f.reason, /category tree/);
+  assert.equal(teardownComplete(r), false);
+});
+
+test('teardown: a category someone else created under a planned one is left, with its ancestors, and named', async () => {
+  const { config, plan } = planWithGrandchild();
+  const world = projectHolding(plan, PREFIX);
+  // Not ours: a category under `<prefix>-tops`. Deleting `tops` would delete it too.
+  world.add('categories', 'colleague-category', { parentId: `id-categories-${PREFIX}-tops` });
+
+  const r = await runTeardown(world.clients(), plan, config, { execute: true });
+
+  assert.ok(world.kind('categories').has('colleague-category'), "someone else's category survives");
+  // `tops` holds it, and `apparel` holds `tops`: both stay.
+  for (const held of [`${PREFIX}-tops`, `${PREFIX}-apparel`]) {
+    assert.ok(world.kind('categories').has(held), `${held} is held back`);
+  }
+  // Everything that can go still goes: the planned leaf under `tops`, the sibling and the other root.
+  for (const gone of [`${PREFIX}-sleeves`, `${PREFIX}-outerwear`, `${PREFIX}-accessories`]) {
+    assert.ok(!world.kind('categories').has(gone), `${gone} is deleted`);
+  }
+  assert.deepEqual(
+    r.blockedCategories.map((b) => b.category).sort(),
+    [`${PREFIX}-apparel`, `${PREFIX}-tops`],
+  );
+  assert.deepEqual(r.blockedCategories.find((b) => b.category === `${PREFIX}-tops`)?.below, ['colleague-category']);
+  assert.deepEqual(r.blockedCategories.find((b) => b.category === `${PREFIX}-apparel`)?.below, ['colleague-category']);
+  assert.equal(r.remaining?.categories, 2);
+  assert.equal(teardownComplete(r), false);
+  assert.match(renderTeardown(r), /NOT deleted: category '.*tops' .*colleague-category/s);
+});
+
+test('teardown: the dry run names the held-back categories and deletes nothing', async () => {
+  const { config, plan } = planWithGrandchild();
+  const world = projectHolding(plan, PREFIX);
+  world.add('categories', 'colleague-category', { parentId: `id-categories-${PREFIX}-tops` });
+  const before = world.count('categories');
+
+  const r = await runTeardown(world.clients(), plan, config, { execute: false });
+  assert.equal(world.count('categories'), before);
+  assert.deepEqual(
+    r.blockedCategories.map((b) => b.category).sort(),
+    [`${PREFIX}-apparel`, `${PREFIX}-tops`],
+  );
+});
+
+test('teardown: the foreign-category read is chunked and asks for children by parent id', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+
+  await runTeardown(world.clients(), plan, config, { execute: false });
+  assert.ok(world.parentQueries.length >= 1);
+  for (const where of world.parentQueries) {
+    assert.match(where, /^parent\(id in \("id-categories-[^"]+"(, "id-categories-[^"]+")*\)\)$/);
+  }
+});
+
+test('teardown: a category tree that cannot be read stops the run before any delete', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  world.failParentQuery = true;
+
+  const r = await runTeardown(world.clients(), plan, config, { execute: true });
+  const d = r.diagnostics.find((x) => x.code === 'teardown-unreadable');
+  assert.ok(d);
+  assert.match(d.message, /categor/);
+  assert.deepEqual(world.log, []);
+});
+
+test('teardown: nothing is held back when every category under a planned one is planned', async () => {
+  const { config, plan } = planWithGrandchild();
+  const world = projectHolding(plan, PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, { execute: true });
+  assert.deepEqual(r.blockedCategories, []);
+  assert.equal(world.count('categories', `${PREFIX}-`), 0);
 });
 
 test('teardown: a product whose version moved under its price deletes is still removed', async () => {

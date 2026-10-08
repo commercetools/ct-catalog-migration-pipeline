@@ -225,6 +225,8 @@ export async function runLoad(
   }
 
   const stages: StageOutcome[] = [];
+  const waited = options.wait === true;
+  const expected = new Map<string, ExpectedOperations>();
 
   for (const stage of plan.loadOrder) {
     const stageBatches = batches.batches.filter((b) => b.stage === stage);
@@ -234,6 +236,11 @@ export async function runLoad(
     for (const key of containers) {
       const container = batches.containers.find((c) => c.key === key)!;
       await ensureContainer(clients, key, container.resourceType, diagnostics);
+      // Before anything is posted: the summary counts operations over 48 hours,
+      // earlier runs included, so "registered" has to be measured from here.
+      if (waited && !expected.has(key)) {
+        expected.set(key, { baseline: await readSummaryTotal(clients, key), operations: 0 });
+      }
     }
 
     const outcome = await pushStage(
@@ -244,6 +251,16 @@ export async function runLoad(
     );
     outcome.containers = containers;
     stages.push(outcome);
+
+    if (waited) {
+      for (const batch of stageBatches) {
+        expected.get(batch.containerKey)!.operations += batch.resourceKeys.length;
+      }
+      // A rejected request registers no operations, so it is not waited for.
+      for (const failure of outcome.failed) {
+        expected.get(failure.containerKey)!.operations -= failure.resourceKeys.length;
+      }
+    }
 
     for (const failure of outcome.failed) {
       diagnostics.push({
@@ -256,12 +273,12 @@ export async function runLoad(
     }
   }
 
-  const waited = options.wait === true;
   const summaries = await readSummaries(
     clients,
     batches,
     diagnostics,
     waited,
+    expected,
     options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
     options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
   );
@@ -1040,11 +1057,54 @@ async function pushStage(
 // Summaries
 // ---------------------------------------------------------------------------
 
+/**
+ * What `--wait` has to see in a container's Import Summary before it can trust
+ * `processing === 0`.
+ *
+ * The Import API registers operations a moment after it accepts the request,
+ * so a summary read straight after the push can show `total: 0` with nothing
+ * processing — which looks exactly like "finished". The summary is also
+ * cumulative over 48 hours, so "this run's operations are in" means the total
+ * has risen by this run's count above what it was before the push.
+ */
+interface ExpectedOperations {
+  /** The container's total before this run posted anything; undefined if unreadable. */
+  baseline: number | undefined;
+  /** Resources in accepted requests: one operation each. */
+  operations: number;
+}
+
+async function readSummaryTotal(clients: Clients, key: string): Promise<number | undefined> {
+  try {
+    return (
+      await clients.importApi
+        .importContainers()
+        .withImportContainerKeyValue({ importContainerKey: key })
+        .importSummaries()
+        .get()
+        .execute()
+    ).body.total;
+  } catch {
+    // Not an error here: the read after the push reports it as
+    // `summary-unavailable`, and the wait falls back to `processing` alone.
+    return undefined;
+  }
+}
+
+function operationsRegistered(
+  summary: ImportSummary,
+  expected: ExpectedOperations | undefined,
+): boolean {
+  if (expected === undefined || expected.baseline === undefined) return true;
+  return summary.total >= expected.baseline + expected.operations;
+}
+
 async function readSummaries(
   clients: Clients,
   batches: LoadBatches,
   diagnostics: Diagnostic[],
   wait: boolean,
+  expected: Map<string, ExpectedOperations>,
   timeoutMs: number,
   sleep: (ms: number) => Promise<void>,
 ): Promise<LoadResult['summaries']> {
@@ -1076,7 +1136,10 @@ async function readSummaries(
         break;
       }
 
-      if (!wait || summary.states.processing === 0 || Date.now() > deadline) break;
+      const settled =
+        operationsRegistered(summary, expected.get(container.key)) &&
+        summary.states.processing === 0;
+      if (!wait || settled || Date.now() > deadline) break;
 
       // Backing off rather than polling tightly: the docs are explicit that
       // frequent summary polling slows the import it is measuring.
@@ -1089,12 +1152,24 @@ async function readSummaries(
 
   if (wait) {
     const stillProcessing = out.filter((s) => s.summary.states.processing > 0);
-    if (stillProcessing.length > 0) {
+    const notRegistered = out.filter(
+      (s) => !operationsRegistered(s.summary, expected.get(s.containerKey)),
+    );
+    if (stillProcessing.length > 0 || notRegistered.length > 0) {
+      const what: string[] = [];
+      if (notRegistered.length > 0) {
+        what.push(
+          `${notRegistered.length} container(s) that had not registered all of this run's operations`,
+        );
+      }
+      if (stillProcessing.length > 0) {
+        what.push(`${stillProcessing.length} container(s) still processing`);
+      }
       diagnostics.push({
         severity: 'warning',
         code: 'wait-timed-out',
         message:
-          `Stopped waiting with ${stillProcessing.length} container(s) still processing. ` +
+          `Stopped waiting with ${what.join(' and ')}. ` +
           'The import continues server-side; re-read the summaries later.',
       });
     }
