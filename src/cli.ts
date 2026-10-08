@@ -27,7 +27,7 @@ import { describeCredentials, loadCredentials, MissingCredentialsError } from '.
 import { createClients } from './client/factory.js';
 import { effectiveCatalogModel, preflight } from './preflight/check.js';
 import { runLoad } from './load/run.js';
-import { countInFlight, fetchSnapshot } from './verify/snapshot.js';
+import { countInFlight, describeInFlight, fetchSnapshot } from './verify/snapshot.js';
 import { planBatches } from './load/batches.js';
 import { reconcile } from './verify/reconcile.js';
 import { renderLoad, writeLoadArtefacts } from './load/report.js';
@@ -862,18 +862,7 @@ async function runVerify(opts: Opts): Promise<number> {
       inFlightNotes.push({
         severity: 'warning',
         code: 'operations-in-flight',
-        message:
-          `${pending} import operation(s) are still in flight for this plan ` +
-          `(${flight.unresolved} unresolved, ${flight.processing} processing), and ` +
-          `${absent.length} planned resource(s) are reported absent below.\n` +
-          '      Those two facts are probably the same fact. An `unresolved` operation is ' +
-          'waiting for a KeyReference target — a category for its parent, a product for ' +
-          'its category — and completes on its own once the target lands, any time within ' +
-          '48 hours of the operation being created.\n' +
-          '      `--wait` does **not** cover this: it drains `processing`, not the ' +
-          'resolution window. Wait and re-run `verify` before treating the absences below ' +
-          'as a failed load. If the count does not fall, something the plan referenced was ' +
-          'never imported.',
+        message: describeInFlight(flight, absent.length, new Date()),
       });
     }
   }
