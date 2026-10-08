@@ -273,6 +273,8 @@ interface Recorded {
   containerReads: string[];
   posts: { stage: string; containerKey: string; resources: number }[];
   summaryReads: string[];
+  /** Summary reads made before anything was posted to the container: the wait's baseline. */
+  baselineReads: string[];
   /** Call order, to check stages are not interleaved wrongly. */
   sequence: string[];
 }
@@ -295,6 +297,17 @@ interface FakeOptions {
   states?: Partial<OperationStates>;
   /** Summaries report processing until this many reads have happened. */
   processingUntilRead?: number;
+  /**
+   * Operations the container already holds from earlier runs. The summary is
+   * cumulative over 48 hours, so a reused container starts above zero.
+   */
+  priorOperations?: number;
+  /**
+   * The Import API registers operations a moment after it accepts the request:
+   * for this many reads after the first post, the summary still shows only the
+   * prior operations, with nothing processing.
+   */
+  registrationLagReads?: number;
   summaryError?: unknown;
 }
 
@@ -324,6 +337,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     containerReads: [],
     posts: [],
     summaryReads: [],
+    baselineReads: [],
     sequence: [],
   };
 
@@ -376,15 +390,29 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
           get: () => ({
             execute: async () => {
               if (options.summaryError) throw options.summaryError;
+              const prior = options.priorOperations ?? 0;
+              const posted = recorded.posts
+                .filter((p) => p.containerKey === importContainerKey)
+                .reduce((n, p) => n + p.resources, 0);
+              if (posted === 0) {
+                recorded.baselineReads.push(importContainerKey);
+                return { body: { total: prior, states: states() } as ImportSummary };
+              }
               recorded.summaryReads.push(importContainerKey);
               const reads = recorded.summaryReads.filter(
                 (k) => k === importContainerKey,
               ).length;
+              if (
+                options.registrationLagReads !== undefined &&
+                reads <= options.registrationLagReads
+              ) {
+                return { body: { total: prior, states: states() } as ImportSummary };
+              }
               const stillProcessing =
                 options.processingUntilRead !== undefined &&
                 reads < options.processingUntilRead;
               const summary: ImportSummary = {
-                total: 1,
+                total: prior + posted,
                 states: stillProcessing
                   ? states({ processing: 1 })
                   : states(options.states),
@@ -727,6 +755,85 @@ test('wait: a timeout says the import continues server-side', async () => {
   const d = result.diagnostics.find((x) => x.code === 'wait-timed-out');
   assert.ok(d);
   assert.match(d.message, /continues server-side/);
+});
+
+test('wait: an empty summary straight after the push is not "finished"', async () => {
+  // The Import API registers operations a moment after accepting the request,
+  // so the first reads show nothing processing because nothing is there yet.
+  const { clients, recorded } = fakeClients({
+    registrationLagReads: 2,
+    states: { imported: 1 },
+  });
+  const result = await runLoad(clients, basePlan(), config(), {
+    execute: true,
+    wait: true,
+    sleep: noSleep,
+  });
+
+  // Two reads that saw nothing, then the one that saw the operations.
+  assert.equal(recorded.summaryReads.filter((k) => k === 'mig-category').length, 3);
+  assert.ok(!result.diagnostics.some((d) => d.code === 'wait-timed-out'));
+  for (const s of result.summaries) assert.ok(s.summary.total > 0, s.containerKey);
+});
+
+test('wait: a reused container is compared against its total before the push', async () => {
+  // The summary is cumulative over 48 hours. Comparing it with this run's
+  // operation count alone would be satisfied at once by an earlier run's total.
+  const { clients, recorded } = fakeClients({
+    containerExists: true,
+    priorOperations: 500,
+    registrationLagReads: 1,
+    states: { imported: 1 },
+  });
+  const result = await runLoad(clients, basePlan(), config(), {
+    execute: true,
+    wait: true,
+    sleep: noSleep,
+  });
+
+  assert.equal(recorded.summaryReads.filter((k) => k === 'mig-category').length, 2);
+  assert.ok(!result.diagnostics.some((d) => d.code === 'wait-timed-out'));
+  // One baseline read per container, before anything was posted to it.
+  assert.deepEqual(
+    [...recorded.baselineReads].sort(),
+    result.batches.containers.map((c) => c.key).sort(),
+  );
+});
+
+test('wait: giving up before the operations registered says so', async () => {
+  const { clients } = fakeClients({ registrationLagReads: 1000 });
+  const result = await runLoad(clients, basePlan(), config(), {
+    execute: true,
+    wait: true,
+    waitTimeoutMs: -1,
+    sleep: noSleep,
+  });
+  const d = result.diagnostics.find((x) => x.code === 'wait-timed-out');
+  assert.ok(d);
+  assert.match(d.message, /had not registered/);
+  assert.match(d.message, /continues server-side/);
+});
+
+test('wait: a rejected request is not waited for', async () => {
+  // A rejected request registers no operations, so its resources are not part
+  // of what the summary has to reach.
+  const plan = planWithProducts(45);
+  const { clients, recorded } = fakeClients({
+    failResourceKey: plan.products[25].key,
+    states: { imported: 1 },
+  });
+  const result = await runLoad(clients, plan, config(), {
+    execute: true,
+    wait: true,
+    waitTimeoutMs: -1,
+    sleep: noSleep,
+  });
+
+  // 45 products in three requests, one rejected: the summary can only ever
+  // reach the 25 that were accepted, so waiting for 45 would run to the deadline.
+  const drafts = recorded.posts.filter((p) => p.stage === 'product-draft');
+  assert.equal(drafts.length, 2);
+  assert.ok(!result.diagnostics.some((d) => d.code === 'wait-timed-out'));
 });
 
 test('summaries: an unreadable summary is a warning, not a failed load', async () => {
