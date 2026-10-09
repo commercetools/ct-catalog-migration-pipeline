@@ -40,6 +40,7 @@ import { buildPlan } from '../src/map/plan.js';
 import { reconcile, type ProjectSnapshot } from '../src/verify/reconcile.js';
 import {
   countInFlight,
+  describeInFlight,
   fetchSnapshot,
   keyPredicate,
   KEYS_PER_QUERY,
@@ -939,6 +940,37 @@ test('in-flight: a failed read says "cannot say", not "nothing pending"', async 
   const { clients } = fakeImportApi(Object.assign(new Error('gone'), { statusCode: 404 }));
   const r = await countInFlight(clients, ['mig-category']);
   assert.equal(r.readable, false);
+});
+
+// The note that goes with the counts. The Import API's unresolved count
+// plateaus: a live load sat at 96 unresolved for five minutes, then resolved on
+// its own, and again flat for five minutes before reaching 104 of 104. A rule
+// of "if the count does not fall between runs" read two runs four minutes apart
+// as a stall, and the session resubmitted twice. The note gives a time window
+// instead, and stamps when it read, so two outputs can be compared.
+
+const FLIGHT_AT = new Date('2026-10-08T09:02:07.500Z');
+
+test('in-flight note: states the counts and when they were read', () => {
+  const note = describeInFlight({ unresolved: 96, processing: 3 }, 12, FLIGHT_AT);
+  assert.match(note, /99 import operation\(s\) are still in flight/);
+  assert.match(note, /96 unresolved, 3 processing/);
+  assert.match(note, /12 planned resource\(s\) are reported absent/);
+  assert.match(note, /read at 09:02:07Z/);
+});
+
+test('in-flight note: judges a stall over a window, not between two runs', () => {
+  const note = describeInFlight({ unresolved: 96, processing: 0 }, 96, FLIGHT_AT);
+  assert.match(note, /about 15 minutes/);
+  assert.match(note, /flat for several minutes/);
+  assert.match(note, /not between two runs|two runs a few minutes apart/);
+  assert.doesNotMatch(note, /does not fall\b(?! across)/, 'the old run-to-run rule must be gone');
+});
+
+test('in-flight note: still says --wait does not cover the resolution window', () => {
+  const note = describeInFlight({ unresolved: 5, processing: 0 }, 5, FLIGHT_AT);
+  assert.match(note, /`--wait` does \*\*not\*\* cover this/);
+  assert.match(note, /48 hours/);
 });
 
 // ---------------------------------------------------------------------------

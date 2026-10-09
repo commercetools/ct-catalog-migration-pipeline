@@ -323,3 +323,38 @@ export async function countInFlight(
   }
   return { unresolved, processing, readable: true };
 }
+
+/**
+ * The note `verify` prints when something is absent and operations are in flight.
+ *
+ * The count of unresolved operations plateaus: a live load sat at 96 for five
+ * minutes, resolved on its own, and was flat again for another five before it
+ * reached 104 of 104. So "the count did not fall between two runs" is not a
+ * stall, and a rule worded that way sent a session off to resubmit twice. A stall
+ * is a count that has not fallen over a window, so the note says so and stamps the
+ * time of the read, which is what lets two outputs be compared.
+ */
+export function describeInFlight(
+  flight: { unresolved: number; processing: number },
+  absent: number,
+  now: Date,
+): string {
+  const pending = flight.unresolved + flight.processing;
+  const readAt = `${now.toISOString().slice(11, 19)}Z`;
+  return (
+    `${pending} import operation(s) are still in flight for this plan ` +
+    `(${flight.unresolved} unresolved, ${flight.processing} processing; read at ${readAt}), and ` +
+    `${absent} planned resource(s) are reported absent below.\n` +
+    '      Those two facts are probably the same fact. An `unresolved` operation is ' +
+    'waiting for a KeyReference target — a category for its parent, a product for ' +
+    'its category — and completes on its own once the target lands, any time within ' +
+    '48 hours of the operation being created.\n' +
+    '      `--wait` does **not** cover this: it drains `processing`, not the ' +
+    'resolution window. Wait and re-run `verify` before treating the absences below ' +
+    'as a failed load.\n' +
+    '      The count can sit flat for several minutes and then fall on its own, so do not ' +
+    'read two runs a few minutes apart as a stall. Judge it over a window of about 15 ' +
+    'minutes: only if the unresolved count has not fallen at all across that span, ' +
+    'something the plan referenced was never imported.'
+  );
+}
