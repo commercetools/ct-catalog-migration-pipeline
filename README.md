@@ -72,6 +72,7 @@ npm run pipeline -- load      --config ../migration/migration.config.json --exec
 npm run pipeline -- verify    --config ../migration/migration.config.json
 npm run pipeline -- teardown  --config ../migration/migration.config.json            # dry run
 npm run pipeline -- teardown  --config ../migration/migration.config.json --execute --confirm-project <project-key>
+npm run pipeline -- teardown  --config ../migration/migration.config.json --execute --confirm-project <project-key> --include-created-tax-categories   # also the tax categories this plan's load created
 ```
 
 The engagement lives **beside** this repo, not inside it:

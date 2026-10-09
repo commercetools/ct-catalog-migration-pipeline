@@ -56,7 +56,7 @@ export const TEARDOWN_KINDS = [
 export type TeardownKind = (typeof TEARDOWN_KINDS)[number];
 
 export interface TeardownFailure {
-  kind: TeardownKind;
+  kind: TeardownKind | 'taxCategories';
   key: string;
   reason: string;
 }
@@ -86,6 +86,12 @@ export interface TeardownResult {
     taxCategories: string[];
     stores: string[];
   };
+  /**
+   * Tax categories a load of this plan created (from `created-prerequisites.json`,
+   * limited to keys the plan names), which of them the project holds, and which of
+   * those this run deleted. Deleted only with `removeCreatedTaxCategories`.
+   */
+  taxCategories: { createdByLoad: string[]; present: string[]; deleted: string[]; removing: boolean };
   /** After an execute: planned resources the project still holds, per kind. */
   remaining?: Record<TeardownKind, number>;
   diagnostics: Diagnostic[];
@@ -93,6 +99,14 @@ export interface TeardownResult {
 
 export interface TeardownOptions {
   execute: boolean;
+  /** Tax category keys a load created, as recorded by `load`. */
+  createdTaxCategories?: string[];
+  /**
+   * Also delete those tax categories. Off by default: a tax category is the
+   * project's, and the API refuses the delete while a product or a shipping
+   * method uses it.
+   */
+  removeCreatedTaxCategories?: boolean;
   /** In-flight deletes within one kind. */
   concurrency?: number;
   /**
@@ -322,6 +336,21 @@ function removers(clients: Clients): Record<Exclude<TeardownKind, 'containers'>,
   };
 }
 
+function taxCategoryRemover(clients: Clients): Remover {
+  const p = clients.platform;
+  return {
+    fresh: async (key) => {
+      try {
+        return (await p.taxCategories().withKey({ key }).get().execute()).body.version;
+      } catch (err) {
+        if (statusOf(err) === 404) return undefined;
+        throw err;
+      }
+    },
+    remove: (key, version) => p.taxCategories().withKey({ key }).delete({ queryArgs: { version } }).execute(),
+  };
+}
+
 /** Deletes one resource. A 404 is success (already gone); a 409 is retried with a fresh version. */
 async function deleteOne(
   remover: Remover,
@@ -434,6 +463,12 @@ export async function runTeardown(
     storesChanged: [],
     blocked: [],
     blockedCategories: [],
+    taxCategories: {
+      createdByLoad: [],
+      present: [],
+      deleted: [],
+      removing: options.removeCreatedTaxCategories === true,
+    },
     untouched: {
       channels: plan.prerequisites.channels.map((c) => c.key),
       customerGroups: plan.prerequisites.customerGroups.map((c) => c.key),
@@ -565,6 +600,23 @@ export async function runTeardown(
     }
   }
 
+  // The tax categories a load created: read in a dry run too, so it can say
+  // they are there and how to remove them.
+  const plannedTax = new Set((plan.prerequisites.taxCategories ?? []).map((t) => t.key));
+  result.taxCategories.createdByLoad = [...new Set(options.createdTaxCategories ?? [])].filter((k) =>
+    plannedTax.has(k),
+  );
+  const taxRemover = taxCategoryRemover(clients);
+  for (const key of result.taxCategories.createdByLoad) {
+    try {
+      if ((await taxRemover.fresh(key)) !== undefined) result.taxCategories.present.push(key);
+    } catch {
+      // Not read, so not known to be gone: treated as there, so that asking for
+      // the delete fails loudly rather than skipping it.
+      result.taxCategories.present.push(key);
+    }
+  }
+
   if (!options.execute) return result;
 
   const concurrency = options.concurrency ?? 4;
@@ -693,6 +745,18 @@ export async function runTeardown(
     }
   }
 
+  // After the products: a product holding the category makes the API refuse it.
+  if (options.removeCreatedTaxCategories) {
+    for (const key of result.taxCategories.present) {
+      try {
+        const outcome = await deleteOne(taxRemover, key, undefined, true);
+        if (outcome === 'deleted') result.taxCategories.deleted.push(key);
+      } catch (err) {
+        result.failed.push({ kind: 'taxCategories', key, reason: describe(err) });
+      }
+    }
+  }
+
   // Verified, not assumed: read the project again.
   const after = await fetchSnapshot(clients, plan);
   if (after.unreadable.length === 0) {
@@ -758,14 +822,30 @@ export function renderTeardown(result: TeardownResult): string {
         'then run teardown again.',
     );
   }
+  const t = result.taxCategories;
+  if (t.present.length > 0) {
+    lines.push('');
+    if (result.executed && t.deleted.length > 0) {
+      lines.push(`Tax categories this plan's load created, deleted: ${t.deleted.join(', ')}`);
+    } else if (!result.executed && t.removing) {
+      lines.push(`Tax categories this plan's load created, would be deleted: ${t.present.join(', ')}`);
+    } else if (!t.removing) {
+      lines.push(
+        `Tax categories this plan's load created, still in the project: ${t.present.join(', ')}. ` +
+          'Left alone; add --include-created-tax-categories to delete them (the API refuses ' +
+          'while a product or a shipping method uses one).',
+      );
+    }
+  }
   const u = result.untouched;
-  if (u.channels.length + u.customerGroups.length + u.taxCategories.length + u.stores.length > 0) {
+  const taxLeft = u.taxCategories.filter((k) => !t.deleted.includes(k));
+  if (u.channels.length + u.customerGroups.length + taxLeft.length + u.stores.length > 0) {
     lines.push('');
     lines.push("Left alone on purpose (verbatim keys, the project's own):");
     const row = (label: string, keys: string[]) => keys.length > 0 && lines.push(`  ${label}: ${keys.join(', ')}`);
     row('channels', u.channels);
     row('customer groups', u.customerGroups);
-    row('tax categories', u.taxCategories);
+    row('tax categories', taxLeft);
     row('stores', u.stores);
   }
   if (result.failed.length > 0) {

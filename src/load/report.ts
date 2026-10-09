@@ -9,6 +9,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { recordCreatedPrerequisites } from './created.js';
 import type { LoadResult } from './run.js';
 import { stringifyArtefact } from '../model/artefact.js';
 
@@ -56,6 +57,9 @@ export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
       },
     ),
   );
+  // Rewritten by every execute, so a second load would lose what the first
+  // created; teardown reads the ledger instead.
+  recordCreatedPrerequisites(outDir, result);
   return path;
 }
 

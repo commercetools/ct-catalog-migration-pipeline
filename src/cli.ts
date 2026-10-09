@@ -26,6 +26,7 @@ import { MAX_VARIANTS_CLASSIC, requiredCatalogModel } from './model/limits.js';
 import { describeCredentials, loadCredentials, MissingCredentialsError } from './client/credentials.js';
 import { createClients } from './client/factory.js';
 import { effectiveCatalogModel, preflight } from './preflight/check.js';
+import { readCreatedPrerequisites } from './load/created.js';
 import { runLoad } from './load/run.js';
 import { countInFlight, describeInFlight, fetchSnapshot } from './verify/snapshot.js';
 import { planBatches } from './load/batches.js';
@@ -60,6 +61,7 @@ Options:
   --execute         load only: actually send the Import Requests
   --wait            load only: poll Import Summaries until nothing is processing
   --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
+  --include-created-tax-categories  teardown only: also delete the tax categories this plan's load created
   --concurrency <n> load only: in-flight Import Requests (default 4)
   --json            Emit diagnostics as JSON
   --quiet           Suppress warnings, report errors only
@@ -90,6 +92,7 @@ async function main(): Promise<number> {
         wait: { type: 'boolean', default: false },
         concurrency: { type: 'string', default: '4' },
         'confirm-project': { type: 'string', default: '' },
+        'include-created-tax-categories': { type: 'boolean', default: false },
       },
       allowPositionals: false,
     }));
@@ -110,6 +113,7 @@ async function main(): Promise<number> {
     wait: values.wait as boolean,
     concurrency: Number(values.concurrency),
     confirmProject: values['confirm-project'] as string,
+    includeCreatedTaxCategories: values['include-created-tax-categories'] as boolean,
   };
 
   switch (command) {
@@ -186,6 +190,7 @@ interface Opts {
   wait: boolean;
   concurrency: number;
   confirmProject: string;
+  includeCreatedTaxCategories: boolean;
 }
 
 function runDerive(opts: Opts): number {
@@ -770,6 +775,19 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
     return 1;
   }
 
+  // What `load` recorded as created. A damaged file only matters if the delete
+  // of those categories was asked for; otherwise teardown goes on without the hint.
+  let createdTaxCategories: string[] = [];
+  try {
+    createdTaxCategories = readCreatedPrerequisites(outDirFor(opts)).taxCategories;
+  } catch (err) {
+    if (opts.includeCreatedTaxCategories) {
+      console.error(`${(err as Error).message} Nothing was deleted.`);
+      return 1;
+    }
+    console.error(`warn  ${(err as Error).message} Ignored: no tax category will be offered for removal.`);
+  }
+
   const clients = createClients(credentials);
   console.log(describeCredentials(credentials));
   console.log('');
@@ -777,6 +795,8 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
   const result = await runTeardown(clients, plan, config, {
     execute: opts.execute,
     concurrency: opts.concurrency,
+    createdTaxCategories,
+    removeCreatedTaxCategories: opts.includeCreatedTaxCategories,
   });
 
   for (const d of result.diagnostics) {
