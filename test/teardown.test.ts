@@ -21,6 +21,7 @@ import { loadConfig } from '../src/model/config.js';
 import { deriveProductTypes } from '../src/derive/product-types.js';
 import { buildPlan } from '../src/map/plan.js';
 import { keysOutsidePrefix, renderTeardown, runTeardown, teardownComplete } from '../src/teardown/run.js';
+import { createProgress } from '../src/progress/progress.js';
 import type { Clients } from '../src/client/factory.js';
 import type { MigrationPlan } from '../src/model/plan.js';
 
@@ -695,7 +696,8 @@ test('teardown cli: --execute without --confirm-project is refused before anythi
   const run = (extra: string[]) =>
     spawnSync(
       process.execPath,
-      [cli, 'teardown', '--execute', '--config', resolve(ROOT, 'fixtures', 'classic-standalone', 'migration.config.json'), '--env', env, ...extra],
+      // --out: an executing command writes out/progress.log, and the fixture's own out/ is tracked.
+      [cli, 'teardown', '--execute', '--config', resolve(ROOT, 'fixtures', 'classic-standalone', 'migration.config.json'), '--out', dir, '--env', env, ...extra],
       { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } },
     );
 
@@ -826,4 +828,56 @@ test('teardown: a tax category the API refuses to delete is reported as a failur
   assert.equal(r.failed[0].kind, 'taxCategories');
   assert.equal(r.taxCategories.deleted.length, 0);
   assert.equal(teardownComplete(r), false);
+});
+
+// ---------------------------------------------------------------------------
+// Progress: ticks, not changes
+// ---------------------------------------------------------------------------
+
+function everyPoll() {
+  let t = 0;
+  const lines: string[] = [];
+  const progress = createProgress({
+    command: 'teardown --execute',
+    intervalMs: 1,
+    now: () => (t += 1000),
+    write: (l) => lines.push(l),
+    timer: false,
+  });
+  return { progress, lines };
+}
+
+test('progress: teardown says what it is reading and what it is deleting, with counts', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  const { progress, lines } = everyPoll();
+
+  await runTeardown(world.clients(), plan, config, { execute: true, progress });
+
+  const text = lines.join('\n');
+  assert.match(text, /teardown: deleting products: \d+\/\d+/);
+  assert.match(text, /teardown: deleting categories: \d+\/\d+/);
+  assert.match(text, /read project: reading .+: \d+\/\d+ planned key\(s\)/);
+});
+
+test('progress: a delete retried because the category tree is busy shows up as a retry on the next tick', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  const leaf = plan.categories[plan.categories.length - 1].key;
+  world.busyTimes.set(leaf, 1);
+  const { progress, lines } = everyPoll();
+
+  await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    progress,
+    treeBusy: { attempts: 3, delayMs: 0 },
+  });
+  assert.match(lines.join('\n'), /deleting categories: \d+\/\d+ · 1 retry/);
+});
+
+test('progress: without a reporter teardown behaves as before', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, { execute: true });
+  assert.ok(teardownComplete(r));
 });

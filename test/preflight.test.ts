@@ -34,6 +34,7 @@ import {
 } from '../src/client/credentials.js';
 import { createClients, type Clients } from '../src/client/factory.js';
 import { effectiveCatalogModel, preflight } from '../src/preflight/check.js';
+import { createProgress } from '../src/progress/progress.js';
 import { loadConfig } from '../src/model/config.js';
 import { loadPlan } from '../src/audit/load-plan.js';
 
@@ -1479,4 +1480,22 @@ test('tax: an absent target equals Net, so a project saying Net is not a differe
   });
   const r = await preflight(clients, config(), planWithTax());
   assert.ok(!r.diagnostics.some((x) => x.code === 'tax-category-rates-differ'));
+});
+
+test('progress: preflight names what it is reading, on ticks', async () => {
+  let t = 0;
+  const lines: string[] = [];
+  const progress = createProgress({
+    command: 'preflight',
+    intervalMs: 1,
+    now: () => (t += 1000),
+    write: (l) => lines.push(l),
+    timer: false,
+  });
+  const { clients } = fakeClients();
+  await preflight(clients, config(), plan(), { progress });
+  const text = lines.join('\n');
+  assert.match(text, /preflight: reading channels, customer groups and tax categories/);
+  assert.match(text, /preflight: reading the project's ProductTypes/);
+  assert.match(text, /preflight: reading existing resource counts/);
 });

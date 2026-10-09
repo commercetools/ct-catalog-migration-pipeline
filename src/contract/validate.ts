@@ -66,6 +66,7 @@ import {
   VARIANT_WARN_THRESHOLD,
   requiredCatalogModel,
 } from '../model/limits.js';
+import { noProgress, pollEvery, type Progress } from '../progress/progress.js';
 
 export interface Diagnostic {
   severity: 'error' | 'warning';
@@ -180,6 +181,7 @@ export function validateFeed(
   feedDir: string,
   schemaPath: string,
   config: PipelineConfig,
+  progress: Progress = noProgress,
 ): ValidationResult {
   const branches = compileBranches(schemaPath);
   const feed = emptyFeed();
@@ -187,7 +189,15 @@ export function validateFeed(
   let accepted = 0;
   let rejected = 0;
 
+  // Counted as it goes and reported on ticks only (see progress.ts).
+  const activity = progress.activity('validate');
+  const pulse = pollEvery(progress);
+  let files = 0;
+  let records = 0;
+  activity.status(() => `reading the feed: ${records.toLocaleString('en-US')} record(s) in ${files} file(s)`);
+
   for (const file of feedFiles(feedDir)) {
+    files++;
     const text = readFileSync(file, 'utf8');
     const lines = text.split('\n');
 
@@ -196,6 +206,8 @@ export function validateFeed(
       // Blank lines are tolerated; NDJSON writers often leave a trailing one.
       if (raw === '') continue;
 
+      records++;
+      pulse();
       const line = i + 1;
 
       let record: unknown;
@@ -251,10 +263,12 @@ export function validateFeed(
   // the integrity pass report orphans and childless products that are really
   // just consequences of the earlier failure — chasing those wastes the
   // adapter author's time.
+  activity.status(() => `checking ${records.toLocaleString('en-US')} record(s) against each other`);
   if (rejected === 0) {
     checkIntegrity(feed, diagnostics);
     checkAgainstConfig(feed, config, diagnostics);
   }
+  activity.done();
 
   return { feed, diagnostics, accepted, rejected };
 }

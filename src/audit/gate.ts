@@ -45,6 +45,7 @@ import {
   variantSku,
   variantsOf,
 } from '../model/plan.js';
+import { noProgress, pollEvery, type Progress } from '../progress/progress.js';
 
 /** Embedded Prices per Variant. The variant caps are shared with `validate`. */
 const MAX_EMBEDDED_PRICES = 100;
@@ -69,7 +70,11 @@ export interface AuditResult {
   };
 }
 
-export function auditPlan(plan: MigrationPlan, config: PipelineConfig): AuditResult {
+export function auditPlan(
+  plan: MigrationPlan,
+  config: PipelineConfig,
+  progress: Progress = noProgress,
+): AuditResult {
   const diagnostics: Diagnostic[] = [];
   const checked = {
     productTypes: plan.productTypes.length,
@@ -95,7 +100,16 @@ export function auditPlan(plan: MigrationPlan, config: PipelineConfig): AuditRes
   checkReferences(plan, diagnostics);
   checkOrderHints(plan.categories, diagnostics);
 
+  const activity = progress.activity('audit');
+  const pulse = pollEvery(progress);
+  let audited = 0;
+  activity.status(
+    () => `checking products: ${audited.toLocaleString('en-US')}/${plan.products.length.toLocaleString('en-US')}`,
+  );
+
   for (const product of plan.products) {
+    audited++;
+    pulse();
     const variants = variantsFor(product.key);
     checked.variants += variants.length;
 
@@ -121,6 +135,7 @@ export function auditPlan(plan: MigrationPlan, config: PipelineConfig): AuditRes
     checkAdvisory(product, variants, pricedSkus, diagnostics);
   }
 
+  activity.done();
   checkUnpopulatedAttributes(plan, definitions, diagnostics);
   checkCategoryUsage(plan, diagnostics);
   checkPriceModeConsistency(plan, config, diagnostics);

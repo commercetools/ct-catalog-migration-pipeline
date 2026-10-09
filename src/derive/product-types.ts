@@ -37,6 +37,7 @@ import type {
 import type { Diagnostic } from '../contract/validate.js';
 import { attributeDefinitionsOf } from '../model/plan.js';
 import { resourceKey } from '../map/identity.js';
+import { noProgress, pollEvery, type Progress } from '../progress/progress.js';
 
 /** Soft project limit; exceeding it needs a performance review with support. */
 const MAX_PRODUCT_TYPES = 1000;
@@ -203,7 +204,11 @@ function groupProducts(
   return groups;
 }
 
-function observeGroup(feed: CatalogFeed, productCodes: string[]): Map<string, Observation> {
+function observeGroup(
+  feed: CatalogFeed,
+  productCodes: string[],
+  onProduct?: () => void,
+): Map<string, Observation> {
   const observations = new Map<string, Observation>();
   const get = (name: string) => {
     let obs = observations.get(name);
@@ -215,6 +220,7 @@ function observeGroup(feed: CatalogFeed, productCodes: string[]): Map<string, Ob
   };
 
   for (const code of productCodes) {
+    onProduct?.();
     const product = feed.products.get(code);
     if (!product) continue;
 
@@ -896,6 +902,7 @@ function buildDefinition(
 export function deriveProductTypes(
   feed: CatalogFeed,
   config: PipelineConfig,
+  progress: Progress = noProgress,
 ): DeriveResult {
   const diagnostics: Diagnostic[] = [];
   const decisions: MappingDecision[] = [];
@@ -922,6 +929,13 @@ export function deriveProductTypes(
   }
 
   const groups = groupProducts(feed, config);
+  const activity = progress.activity('derive');
+  const pulse = pollEvery(progress);
+  let observed = 0;
+  const totalProducts = feed.products.size;
+  activity.status(
+    () => `observing attributes: ${observed.toLocaleString('en-US')}/${totalProducts.toLocaleString('en-US')} product(s)`,
+  );
   const productTypes = new Map<string, ProductTypeImport>();
   const assignment = new Map<string, string>();
 
@@ -937,7 +951,10 @@ export function deriveProductTypes(
     const key = resourceKey(config.keys.prefix, sourceKey);
     for (const code of memberCodes) assignment.set(code, key);
 
-    const observations = observeGroup(feed, memberCodes);
+    const observations = observeGroup(feed, memberCodes, () => {
+      observed++;
+      pulse();
+    });
 
     // An attribute that is an axis for some products in a group and an ordinary
     // attribute for others cannot be expressed: the constraint belongs to the
