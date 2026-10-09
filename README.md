@@ -72,6 +72,7 @@ npm run pipeline -- load      --config ../migration/migration.config.json --exec
 npm run pipeline -- verify    --config ../migration/migration.config.json
 npm run pipeline -- teardown  --config ../migration/migration.config.json            # dry run
 npm run pipeline -- teardown  --config ../migration/migration.config.json --execute --confirm-project <project-key>
+npm run pipeline -- teardown  --config ../migration/migration.config.json --execute --confirm-project <project-key> --include-created-tax-categories   # also the tax categories this plan's load created
 ```
 
 The engagement lives **beside** this repo, not inside it:
@@ -91,6 +92,25 @@ The engagement lives **beside** this repo, not inside it:
 
 `--out` defaults to `out` **relative to the config**, so pointing `--config` at
 the engagement writes the artefacts there.
+
+### Progress
+
+A command that takes a while says so on **stderr**, on a fixed interval and never
+when something changes: one line per tick naming where it is, such as
+`5m10s  load: waiting on ah12-category (container 1/3) · 7/12 imported · 5 unresolved · 0 processing · unchanged for 1m30s`,
+and `done in 12m41s` when it ends. `--progress-interval <seconds>` sets the
+interval (default 30, `0` for no ticks); a command shorter than that prints only
+the closing line, and `--quiet` prints none. stdout is untouched, so `--json`
+output stays parseable.
+
+`derive`, `plan`, `load`, `verify` and `teardown --execute` also append the same
+lines, timestamped, to `out/progress.log`, so a caller that pipes the command
+through `tail` (and so sees nothing until it exits) can read it while the
+command runs. Commands that write nothing else, such as `validate`, `audit`,
+`preflight` and a `teardown` dry run, write no log.
+
+Synchronous stages tick from their loops, so a tick can be late by the length of one
+step between polls, never early.
 
 ## Configuration
 

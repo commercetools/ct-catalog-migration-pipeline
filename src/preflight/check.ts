@@ -25,6 +25,7 @@ import {
   indexVariants,
   pricesOf,
 } from '../model/plan.js';
+import { noProgress, type Progress } from '../progress/progress.js';
 
 /**
  * `Project` and `ProductCatalogModel` come from the platform SDK. The catalog
@@ -57,10 +58,13 @@ export async function preflight(
   clients: Clients,
   config: PipelineConfig,
   plan: MigrationPlan | undefined,
-  options: { apply?: boolean } = {},
+  options: { apply?: boolean; progress?: Progress } = {},
 ): Promise<PreflightResult> {
   const diagnostics: Diagnostic[] = [];
   const pending = { languages: [] as string[], currencies: [] as string[] };
+  const activity = (options.progress ?? noProgress).activity('preflight');
+  let reading = "the project's settings";
+  activity.status(() => `reading ${reading}`);
 
   let project: Project;
   try {
@@ -196,9 +200,17 @@ export async function preflight(
     });
   }
 
+  reading = 'channels, customer groups and tax categories';
+  options.progress?.poll();
   await checkPrerequisites(clients, plan, diagnostics);
+  reading = "the project's ProductTypes";
+  options.progress?.poll();
   await checkProjectProductTypes(clients, config, plan, diagnostics);
+  reading = 'stores and product selections';
+  options.progress?.poll();
   await checkStoresAndSelections(clients, project, plan, diagnostics);
+  reading = 'existing resource counts';
+  options.progress?.poll();
 
   const counts = await resourceCounts(clients, diagnostics);
   if (counts) warnIfPopulated(project, counts, config, diagnostics);

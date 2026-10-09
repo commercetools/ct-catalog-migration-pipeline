@@ -21,6 +21,7 @@ import { loadConfig } from '../src/model/config.js';
 import { deriveProductTypes } from '../src/derive/product-types.js';
 import { buildPlan } from '../src/map/plan.js';
 import { keysOutsidePrefix, renderTeardown, runTeardown, teardownComplete } from '../src/teardown/run.js';
+import { createProgress } from '../src/progress/progress.js';
 import type { Clients } from '../src/client/factory.js';
 import type { MigrationPlan } from '../src/model/plan.js';
 
@@ -695,7 +696,8 @@ test('teardown cli: --execute without --confirm-project is refused before anythi
   const run = (extra: string[]) =>
     spawnSync(
       process.execPath,
-      [cli, 'teardown', '--execute', '--config', resolve(ROOT, 'fixtures', 'classic-standalone', 'migration.config.json'), '--env', env, ...extra],
+      // --out: an executing command writes out/progress.log, and the fixture's own out/ is tracked.
+      [cli, 'teardown', '--execute', '--config', resolve(ROOT, 'fixtures', 'classic-standalone', 'migration.config.json'), '--out', dir, '--env', env, ...extra],
       { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } },
     );
 
@@ -716,4 +718,166 @@ test('teardown: the dry run counts only the containers that still exist', async 
   const r = await runTeardown(world.clients(), plan, config, { execute: false });
   assert.ok(r.planned.containers > r.present.containers, 'one of the planned containers is already gone');
   assert.equal(r.present.containers, world.containers.size);
+});
+
+// ---------------------------------------------------------------------------
+// Tax categories a load created
+// ---------------------------------------------------------------------------
+
+/** The plan, with one tax category in it, held by the project. */
+function withTaxCategory(prefix: string) {
+  const { config, plan: base } = planFor('classic-standalone');
+  const plan = {
+    ...base,
+    prerequisites: {
+      ...base.prerequisites,
+      taxCategories: [{ key: 'standard', name: 'standard', rates: [] }],
+    },
+  } as MigrationPlan;
+  const world = projectHolding(plan, prefix);
+  return { config, plan, world };
+}
+
+test('teardown: a tax category the load created is reported and left, with the flag that removes it', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: ['standard'],
+  });
+  assert.deepEqual(r.taxCategories.createdByLoad, ['standard']);
+  assert.deepEqual(r.taxCategories.present, ['standard']);
+  assert.deepEqual(r.taxCategories.deleted, []);
+  assert.ok(world.kind('taxCategories').has('standard'), 'still the project\'s unless asked');
+  assert.match(renderTeardown(r), /still in the project: standard.*--include-created-tax-categories/s);
+  assert.ok(teardownComplete(r));
+});
+
+test('teardown: with the flag the created tax category goes, after the products', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: ['standard'],
+    removeCreatedTaxCategories: true,
+  });
+  assert.deepEqual(r.failed, []);
+  assert.deepEqual(r.taxCategories.deleted, ['standard']);
+  assert.equal(world.kind('taxCategories').has('standard'), false);
+  assert.ok(world.log.indexOf('taxCategories:standard') > world.log.findLastIndex((e) => e.startsWith('products:')));
+  const text = renderTeardown(r);
+  assert.match(text, /load created, deleted: standard/);
+  assert.doesNotMatch(text, /tax categories: standard/, 'no longer listed as left alone');
+  assert.ok(teardownComplete(r));
+});
+
+test('teardown: a tax category the plan names but no load of it created is never removed', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: [],
+    removeCreatedTaxCategories: true,
+  });
+  assert.deepEqual(r.taxCategories.createdByLoad, []);
+  assert.ok(world.kind('taxCategories').has('standard'), 'it was there before this plan: the project\'s');
+});
+
+test('teardown: a recorded key the plan does not name is ignored, not deleted', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  world.add('taxCategories', 'someone-elses');
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: ['someone-elses'],
+    removeCreatedTaxCategories: true,
+  });
+  assert.deepEqual(r.taxCategories.createdByLoad, []);
+  assert.ok(world.kind('taxCategories').has('someone-elses'));
+});
+
+test('teardown: a dry run with the flag says what it would delete and deletes nothing', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: false,
+    createdTaxCategories: ['standard'],
+    removeCreatedTaxCategories: true,
+  });
+  assert.match(renderTeardown(r), /would be deleted: standard/);
+  assert.deepEqual(world.log, []);
+});
+
+test('teardown: a created tax category that is already gone is neither listed nor a failure', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  world.kind('taxCategories').delete('standard');
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: ['standard'],
+    removeCreatedTaxCategories: true,
+  });
+  assert.deepEqual(r.taxCategories.present, []);
+  assert.deepEqual(r.failed, []);
+  assert.ok(teardownComplete(r));
+});
+
+test('teardown: a tax category the API refuses to delete is reported as a failure, and the run is not complete', async () => {
+  const { config, plan, world } = withTaxCategory(PREFIX);
+  world.broken.add('standard');
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: ['standard'],
+    removeCreatedTaxCategories: true,
+  });
+  assert.equal(r.failed.length, 1);
+  assert.equal(r.failed[0].kind, 'taxCategories');
+  assert.equal(r.taxCategories.deleted.length, 0);
+  assert.equal(teardownComplete(r), false);
+});
+
+// ---------------------------------------------------------------------------
+// Progress: ticks, not changes
+// ---------------------------------------------------------------------------
+
+function everyPoll() {
+  let t = 0;
+  const lines: string[] = [];
+  const progress = createProgress({
+    command: 'teardown --execute',
+    intervalMs: 1,
+    now: () => (t += 1000),
+    write: (l) => lines.push(l),
+    timer: false,
+  });
+  return { progress, lines };
+}
+
+test('progress: teardown says what it is reading and what it is deleting, with counts', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  const { progress, lines } = everyPoll();
+
+  await runTeardown(world.clients(), plan, config, { execute: true, progress });
+
+  const text = lines.join('\n');
+  assert.match(text, /teardown: deleting products: \d+\/\d+/);
+  assert.match(text, /teardown: deleting categories: \d+\/\d+/);
+  assert.match(text, /read project: reading .+: \d+\/\d+ planned key\(s\)/);
+});
+
+test('progress: a delete retried because the category tree is busy shows up as a retry on the next tick', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  const leaf = plan.categories[plan.categories.length - 1].key;
+  world.busyTimes.set(leaf, 1);
+  const { progress, lines } = everyPoll();
+
+  await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    progress,
+    treeBusy: { attempts: 3, delayMs: 0 },
+  });
+  assert.match(lines.join('\n'), /deleting categories: \d+\/\d+ · 1 retry/);
+});
+
+test('progress: without a reporter teardown behaves as before', async () => {
+  const { config, plan } = planFor('classic-standalone');
+  const world = projectHolding(plan, PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, { execute: true });
+  assert.ok(teardownComplete(r));
 });

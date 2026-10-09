@@ -28,6 +28,7 @@ import type { Clients } from '../client/factory.js';
 import type { MigrationPlan } from '../model/plan.js';
 import type { Diagnostic } from '../contract/validate.js';
 import type { ProjectSnapshot } from './reconcile.js';
+import { noProgress, type Progress } from '../progress/progress.js';
 
 /**
  * Keys per `key in (...)` predicate.
@@ -66,16 +67,20 @@ async function fetchByKey<T>(
   query: (predicate: string) => Promise<T[]>,
   keyOf: (item: T) => string | undefined,
   diagnostics: Diagnostic[],
+  track?: ReadTracker,
 ): Promise<{ byKey: Map<string, T>; readable: boolean }> {
   const byKey = new Map<string, T>();
   if (keys.length === 0) return { byKey, readable: true };
+  if (track) Object.assign(track, { kind, done: 0, total: keys.length });
 
   for (const part of chunk(keys, KEYS_PER_QUERY)) {
+    track?.poll?.();
     try {
       for (const item of await query(keyPredicate(part))) {
         const key = keyOf(item);
         if (key !== undefined) byKey.set(key, item);
       }
+      if (track) track.done += part.length;
     } catch (err) {
       diagnostics.push({
         severity: 'error',
@@ -93,6 +98,15 @@ async function fetchByKey<T>(
   return { byKey, readable: true };
 }
 
+/** What a tick says about the read in progress: counters only, updated freely and printed on ticks. */
+interface ReadTracker {
+  kind: string;
+  done: number;
+  total: number;
+  /** Lets a tick fall due before each read, so it names the read that is about to wait. */
+  poll?: () => void;
+}
+
 export interface SnapshotResult {
   snapshot: ProjectSnapshot;
   diagnostics: Diagnostic[];
@@ -103,9 +117,16 @@ export interface SnapshotResult {
 export async function fetchSnapshot(
   clients: Clients,
   plan: MigrationPlan,
+  progress: Progress = noProgress,
 ): Promise<SnapshotResult> {
   const diagnostics: Diagnostic[] = [];
   const unreadable: string[] = [];
+  const track: ReadTracker = { kind: 'the project', done: 0, total: 0, poll: () => progress.poll() };
+  const activity = progress.activity('read project');
+  activity.status(
+    () =>
+      `reading ${track.kind}: ${track.done.toLocaleString('en-US')}/${track.total.toLocaleString('en-US')} planned key(s)`,
+  );
 
   const productTypes = await fetchByKey<ProductType>(
     'product type(s)',
@@ -115,6 +136,7 @@ export async function fetchSnapshot(
         .body.results,
     (p) => p.key,
     diagnostics,
+    track,
   );
   if (!productTypes.readable) unreadable.push('productTypes');
 
@@ -126,6 +148,7 @@ export async function fetchSnapshot(
         .body.results,
     (c) => c.key,
     diagnostics,
+    track,
   );
   if (!categories.readable) unreadable.push('categories');
 
@@ -137,6 +160,7 @@ export async function fetchSnapshot(
         .body.results,
     (p) => p.key,
     diagnostics,
+    track,
   );
   if (!products.readable) unreadable.push('products');
 
@@ -152,6 +176,7 @@ export async function fetchSnapshot(
         .body.results,
     (v) => v.key,
     diagnostics,
+    track,
   );
   if (!variants.readable) unreadable.push('variants');
 
@@ -167,6 +192,7 @@ export async function fetchSnapshot(
       ).body.results,
     (p) => p.key,
     diagnostics,
+    track,
   );
   if (!standalonePrices.readable) unreadable.push('standalonePrices');
 
@@ -182,6 +208,7 @@ export async function fetchSnapshot(
       ).body.results,
     (sel) => sel.key,
     diagnostics,
+    track,
   );
   if (!productSelections.readable) unreadable.push('productSelections');
 
@@ -197,6 +224,7 @@ export async function fetchSnapshot(
       ).body.results,
     (entry) => entry.key,
     diagnostics,
+    track,
   );
   if (!inventory.readable) unreadable.push('inventory');
 
@@ -210,6 +238,7 @@ export async function fetchSnapshot(
         .body.results,
     (st) => st.key,
     diagnostics,
+    track,
   );
   if (!stores.readable) unreadable.push('stores');
 
@@ -224,6 +253,7 @@ export async function fetchSnapshot(
         .body.results,
     (t) => t.key,
     diagnostics,
+    track,
   );
   if (!taxCategories.readable) unreadable.push('taxCategories');
 
@@ -246,6 +276,8 @@ export async function fetchSnapshot(
 
   const taxCategoryKeyById = new Map<string, string>();
   for (const [key, category] of taxCategories.byKey) taxCategoryKeyById.set(category.id, key);
+
+  activity.done();
 
   return {
     snapshot: {

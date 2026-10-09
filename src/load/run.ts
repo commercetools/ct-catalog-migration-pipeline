@@ -34,6 +34,7 @@ import {
 } from '../model/plan.js';
 import type { Diagnostic } from '../contract/validate.js';
 import { planBatches, summarise, type Batch, type LoadBatches } from './batches.js';
+import { formatDuration, noProgress, type Activity, type Progress } from '../progress/progress.js';
 
 export interface LoadOptions {
   /** False — the default — sends nothing. */
@@ -44,6 +45,8 @@ export interface LoadOptions {
   concurrency?: number;
   /** Ceiling on --wait, in milliseconds. */
   waitTimeoutMs?: number;
+  /** Reports on ticks where the load is, including what `--wait` is waiting for. */
+  progress?: Progress;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -105,6 +108,19 @@ export async function runLoad(
 ): Promise<LoadResult> {
   const diagnostics: Diagnostic[] = [];
   const batches = planBatches(plan, config);
+  const progress = options.progress ?? noProgress;
+  const activity = progress.activity('load');
+  // Counters move as often as the work does; a tick prints them (see progress.ts).
+  let live: { stage: string; number: number; of: number; outcome?: StageOutcome } | undefined;
+  activity.status(() =>
+    live?.outcome
+      ? `pushing ${live.stage} (stage ${live.number}/${live.of}): ` +
+        `${live.outcome.accepted + live.outcome.failed.length}/${live.outcome.requests} request(s), ` +
+        `${live.outcome.resources.toLocaleString('en-US')} resource(s) in the stage`
+      : live
+        ? `preparing the import containers for ${live.stage} (stage ${live.number}/${live.of})`
+        : 'checking and creating channels, customer groups and tax categories',
+  );
 
   for (const warning of batches.warnings) {
     diagnostics.push({ severity: 'warning', code: 'batching', message: warning });
@@ -227,10 +243,12 @@ export async function runLoad(
   const stages: StageOutcome[] = [];
   const waited = options.wait === true;
   const expected = new Map<string, ExpectedOperations>();
+  const stagesWithRequests = plan.loadOrder.filter((s) => batches.batches.some((b) => b.stage === s));
 
   for (const stage of plan.loadOrder) {
     const stageBatches = batches.batches.filter((b) => b.stage === stage);
     if (stageBatches.length === 0) continue;
+    live = { stage, number: stagesWithRequests.indexOf(stage) + 1, of: stagesWithRequests.length };
 
     const containers = [...new Set(stageBatches.map((b) => b.containerKey))];
     for (const key of containers) {
@@ -248,6 +266,10 @@ export async function runLoad(
       stage,
       stageBatches,
       options.concurrency ?? DEFAULT_CONCURRENCY,
+      (o) => {
+        live!.outcome = o;
+      },
+      progress,
     );
     outcome.containers = containers;
     stages.push(outcome);
@@ -273,6 +295,7 @@ export async function runLoad(
     }
   }
 
+  live = undefined;
   const summaries = await readSummaries(
     clients,
     batches,
@@ -281,6 +304,8 @@ export async function runLoad(
     expected,
     options.waitTimeoutMs ?? DEFAULT_WAIT_TIMEOUT_MS,
     options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+    progress,
+    activity,
   );
 
   reportStates(summaries, diagnostics);
@@ -290,6 +315,7 @@ export async function runLoad(
   if (platformStages(plan.loadOrder, 'after').includes('store')) {
     const wanted = plan.prerequisites?.stores ?? [];
     if (wanted.length > 0) {
+      activity.status(() => 'creating the stores');
       prerequisites.push(await ensureStores(clients, wanted, options, diagnostics));
     }
   }
@@ -1020,6 +1046,8 @@ async function pushStage(
   stage: LoadStage,
   batches: Batch[],
   concurrency: number,
+  onOutcome?: (outcome: StageOutcome) => void,
+  progress?: Progress,
 ): Promise<StageOutcome> {
   const outcome: StageOutcome = {
     stage,
@@ -1029,6 +1057,7 @@ async function pushStage(
     accepted: 0,
     failed: [],
   };
+  onOutcome?.(outcome);
 
   let next = 0;
   const worker = async (): Promise<void> => {
@@ -1044,6 +1073,7 @@ async function pushStage(
           message: describeError(err),
         });
       }
+      progress?.poll();
     }
   };
 
@@ -1107,13 +1137,42 @@ async function readSummaries(
   expected: Map<string, ExpectedOperations>,
   timeoutMs: number,
   sleep: (ms: number) => Promise<void>,
+  progress: Progress,
+  activity: Activity,
 ): Promise<LoadResult['summaries']> {
   const out: LoadResult['summaries'] = [];
 
+  let containerNumber = 0;
   for (const container of batches.containers) {
+    containerNumber++;
     let summary: ImportSummary | undefined;
     const deadline = Date.now() + timeoutMs;
     let delay = 2_000;
+
+    // What a tick says while this container is read or waited on. `reads` and
+    // `changedAt` exist so that "unchanged for" is only claimed once a second
+    // read has confirmed it: the plateaus the Import API shows are normal, and
+    // the time a count has sat flat is what tells one from a stall.
+    let latest: ImportSummary | undefined;
+    let reads = 0;
+    let lastStates = '';
+    let changedAt = progress.now();
+    const position = `${containerNumber}/${batches.containers.length}`;
+    activity.status(() => {
+      if (latest === undefined) return `reading the import summary of ${container.key} (container ${position})`;
+      const s = latest.states;
+      const parts = [
+        `${wait ? 'waiting on' : 'read'} ${container.key} (container ${position})`,
+        `${s.imported}/${latest.total} imported`,
+        `${s.unresolved} unresolved`,
+        `${s.processing} processing`,
+      ];
+      if (s.rejected > 0) parts.push(`${s.rejected} rejected`);
+      if (s.validationFailed > 0) parts.push(`${s.validationFailed} validation failed`);
+      const flat = progress.now() - changedAt;
+      if (wait && reads > 1 && flat >= 1000) parts.push(`unchanged for ${formatDuration(flat)}`);
+      return parts.join(' · ');
+    });
 
     for (;;) {
       try {
@@ -1136,6 +1195,14 @@ async function readSummaries(
         break;
       }
 
+      latest = summary;
+      reads++;
+      const states = JSON.stringify(summary.states);
+      if (states !== lastStates) {
+        lastStates = states;
+        changedAt = progress.now();
+      }
+
       const settled =
         operationsRegistered(summary, expected.get(container.key)) &&
         summary.states.processing === 0;
@@ -1145,6 +1212,7 @@ async function readSummaries(
       // frequent summary polling slows the import it is measuring.
       await sleep(delay);
       delay = Math.min(delay * 2, 30_000);
+      progress.poll();
     }
 
     if (summary) out.push({ containerKey: container.key, summary });

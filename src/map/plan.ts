@@ -51,6 +51,7 @@ import {
 import type { Diagnostic } from '../contract/validate.js';
 import { allocateSlug, chooseMasterSku, orderHint, resourceKey } from './identity.js';
 import { toTypedMoney } from './money.js';
+import { noProgress, pollEvery, type Progress } from '../progress/progress.js';
 
 /** Soft project limit on Categories. */
 const MAX_CATEGORIES = 10000;
@@ -64,6 +65,7 @@ export function buildPlan(
   feed: CatalogFeed,
   model: DerivedModel,
   config: PipelineConfig,
+  progress: Progress = noProgress,
 ): PlanResult {
   const diagnostics: Diagnostic[] = [];
   const decisions: MappingDecision[] = [];
@@ -83,13 +85,25 @@ export function buildPlan(
   }
 
   const categories = mapCategories(feed, config, decisions, diagnostics);
+  const activity = progress.activity('plan');
+  const pulse = pollEvery(progress);
+  let mapped = 0;
+  const totalProducts = feed.products.size;
+  activity.status(
+    () => `mapping products: ${mapped.toLocaleString('en-US')}/${totalProducts.toLocaleString('en-US')}`,
+  );
   const { products, variants, standalonePrices } = mapProducts(
     feed,
     model,
     config,
     decisions,
     diagnostics,
+    () => {
+      mapped++;
+      pulse();
+    },
   );
+  activity.done();
 
   // Recorded once with a count rather than per image: the decision is the host,
   // and it is the kind of thing that is only visibly wrong on a storefront.
@@ -680,6 +694,7 @@ function mapProducts(
   config: PipelineConfig,
   decisions: MappingDecision[],
   diagnostics: Diagnostic[],
+  onProduct?: () => void,
 ): MappedProducts {
   const locales = config.market.requiredLocales;
   const takenSlugs = new Map<string, Set<string>>();
@@ -690,6 +705,7 @@ function mapProducts(
   const modular = config.target.catalogModel === 'Modular';
 
   for (const code of [...feed.products.keys()].sort()) {
+    onProduct?.();
     const product = feed.products.get(code)!;
     const productTypeKey = model.assignment.get(code);
     if (!productTypeKey) {

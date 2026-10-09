@@ -8,7 +8,7 @@
  */
 
 import { fileURLToPath } from 'node:url';
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 
@@ -26,6 +26,8 @@ import { MAX_VARIANTS_CLASSIC, requiredCatalogModel } from './model/limits.js';
 import { describeCredentials, loadCredentials, MissingCredentialsError } from './client/credentials.js';
 import { createClients } from './client/factory.js';
 import { effectiveCatalogModel, preflight } from './preflight/check.js';
+import { readCreatedPrerequisites } from './load/created.js';
+import { createProgress, type Progress } from './progress/progress.js';
 import { runLoad } from './load/run.js';
 import { countInFlight, describeInFlight, fetchSnapshot } from './verify/snapshot.js';
 import { planBatches } from './load/batches.js';
@@ -34,7 +36,14 @@ import { renderLoad, writeLoadArtefacts } from './load/report.js';
 import { renderTeardown, runTeardown, teardownComplete } from './teardown/run.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SCHEMA = resolve(HERE, '..', 'schema', 'catalog-feed.schema.json');
+/** The schema ships beside `dist/`; walking up also finds it from the test build, one level deeper. */
+function findSchema(from: string): string {
+  for (let dir = from; ; dir = dirname(dir)) {
+    const candidate = resolve(dir, 'schema', 'catalog-feed.schema.json');
+    if (existsSync(candidate) || dirname(dir) === dir) return candidate;
+  }
+}
+const SCHEMA = findSchema(HERE);
 
 const USAGE = `
 Usage: npm run pipeline -- <command> [options]
@@ -60,9 +69,12 @@ Options:
   --execute         load only: actually send the Import Requests
   --wait            load only: poll Import Summaries until nothing is processing
   --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
+  --include-created-tax-categories  teardown only: also delete the tax categories this plan's load created
   --concurrency <n> load only: in-flight Import Requests (default 4)
+  --progress-interval <seconds>  Seconds between progress lines on stderr (default 30, 0 = none);
+                    a command shorter than that prints only 'done in <time>'
   --json            Emit diagnostics as JSON
-  --quiet           Suppress warnings, report errors only
+  --quiet           Suppress warnings and progress lines, report errors only
 `.trim();
 
 async function main(): Promise<number> {
@@ -90,6 +102,8 @@ async function main(): Promise<number> {
         wait: { type: 'boolean', default: false },
         concurrency: { type: 'string', default: '4' },
         'confirm-project': { type: 'string', default: '' },
+        'include-created-tax-categories': { type: 'boolean', default: false },
+        'progress-interval': { type: 'string', default: '30' },
       },
       allowPositionals: false,
     }));
@@ -98,7 +112,13 @@ async function main(): Promise<number> {
     return 1;
   }
 
-  const opts = {
+  const intervalSeconds = Number(values['progress-interval']);
+  if (!Number.isFinite(intervalSeconds) || intervalSeconds < 0) {
+    console.error(`--progress-interval must be a number of seconds, 0 or more.\n\n${USAGE}`);
+    return 1;
+  }
+
+  const base = {
     config: values.config as string,
     json: values.json as boolean,
     quiet: values.quiet as boolean,
@@ -110,8 +130,32 @@ async function main(): Promise<number> {
     wait: values.wait as boolean,
     concurrency: Number(values.concurrency),
     confirmProject: values['confirm-project'] as string,
+    includeCreatedTaxCategories: values['include-created-tax-categories'] as boolean,
   };
 
+  // Written beside the other artefacts, so a caller that pipes the command
+  // through `tail` can still read it while the command runs. Not for the
+  // commands that write nothing (a teardown dry run says so in its docs).
+  const writesArtefacts =
+    ['derive', 'plan', 'load', 'verify'].includes(command) || (command === 'teardown' && base.execute);
+  const progress = createProgress({
+    command: [command, base.execute ? '--execute' : '', base.wait ? '--wait' : ''].filter(Boolean).join(' '),
+    intervalMs: intervalSeconds * 1000,
+    quiet: base.quiet,
+    file: writesArtefacts ? join(outDirFor(base), 'progress.log') : undefined,
+  });
+  const opts = { ...base, progress };
+
+  let code = 1;
+  try {
+    code = await runCommand(command, opts);
+    return code;
+  } finally {
+    progress.finish(code);
+  }
+}
+
+async function runCommand(command: string, opts: Opts): Promise<number> {
   switch (command) {
     case 'validate':
       return runValidate(opts);
@@ -144,9 +188,9 @@ async function main(): Promise<number> {
 }
 
 
-function runValidate(opts: { config: string; json: boolean; quiet: boolean }): number {
+function runValidate(opts: { config: string; json: boolean; quiet: boolean; progress: Progress }): number {
   const { config, feedDir, configPath } = loadConfig(resolve(opts.config));
-  const result = validateFeed(feedDir, SCHEMA, config);
+  const result = validateFeed(feedDir, SCHEMA, config, opts.progress);
 
   const shown = opts.quiet
     ? result.diagnostics.filter((d) => d.severity === 'error')
@@ -186,6 +230,8 @@ interface Opts {
   wait: boolean;
   concurrency: number;
   confirmProject: string;
+  includeCreatedTaxCategories: boolean;
+  progress: Progress;
 }
 
 function runDerive(opts: Opts): number {
@@ -193,7 +239,7 @@ function runDerive(opts: Opts): number {
 
   // Derivation over an invalid feed would report defects that are really just
   // consequences of the feed being broken, so validation gates it.
-  const validation = validateFeed(feedDir, SCHEMA, config);
+  const validation = validateFeed(feedDir, SCHEMA, config, opts.progress);
   if (hasErrors(validation.diagnostics)) {
     console.error(
       'The feed does not validate, so no model was derived.\n' +
@@ -202,7 +248,7 @@ function runDerive(opts: Opts): number {
     return 1;
   }
 
-  const model = deriveProductTypes(validation.feed, config);
+  const model = deriveProductTypes(validation.feed, config, opts.progress);
   const shown = opts.quiet
     ? model.diagnostics.filter((d) => d.severity === 'error')
     : model.diagnostics;
@@ -293,7 +339,7 @@ function runDerive(opts: Opts): number {
 function runPlan(opts: Opts): number {
   const { config, feedDir, configPath } = loadConfig(resolve(opts.config));
 
-  const validation = validateFeed(feedDir, SCHEMA, config);
+  const validation = validateFeed(feedDir, SCHEMA, config, opts.progress);
   if (hasErrors(validation.diagnostics)) {
     console.error(
       'The feed does not validate, so no plan was built.\nRun `validate` and fix the errors first.',
@@ -301,7 +347,7 @@ function runPlan(opts: Opts): number {
     return 1;
   }
 
-  const model = deriveProductTypes(validation.feed, config);
+  const model = deriveProductTypes(validation.feed, config, opts.progress);
   if (hasErrors(model.diagnostics)) {
     console.error(
       'The product model has unresolved errors, so no plan was built.\nRun `derive` and fix them first.',
@@ -309,7 +355,7 @@ function runPlan(opts: Opts): number {
     return 1;
   }
 
-  const { plan, diagnostics } = buildPlan(validation.feed, model, config);
+  const { plan, diagnostics } = buildPlan(validation.feed, model, config, opts.progress);
   const shown = opts.quiet
     ? diagnostics.filter((d) => d.severity === 'error')
     : diagnostics;
@@ -446,7 +492,7 @@ function runAudit(opts: Opts): number {
     return 1;
   }
 
-  const { diagnostics: gateDiagnostics, checked } = auditPlan(plan, config);
+  const { diagnostics: gateDiagnostics, checked } = auditPlan(plan, config, opts.progress);
   const diagnostics = [...freshness, ...gateDiagnostics];
   const shown = opts.quiet
     ? diagnostics.filter((d) => d.severity === 'error')
@@ -541,7 +587,7 @@ async function runPreflight(opts: Opts): Promise<number> {
   }
 
   const clients = createClients(credentials);
-  const result = await preflight(clients, config, plan, { apply: opts.apply });
+  const result = await preflight(clients, config, plan, { apply: opts.apply, progress: opts.progress });
 
   const shown = opts.quiet
     ? result.diagnostics.filter((d) => d.severity === 'error')
@@ -637,7 +683,7 @@ async function runLoadCommand(opts: Opts): Promise<number> {
   // The gate runs again here rather than trusting that someone ran it. It is
   // free, and the alternative is discovering a rejected invariant one request
   // at a time, after some of the catalog has already landed.
-  const audit = auditPlan(plan, config);
+  const audit = auditPlan(plan, config, opts.progress);
   const auditErrors = audit.diagnostics.filter((d) => d.severity === 'error');
   if (auditErrors.length > 0) {
     console.error(
@@ -673,6 +719,7 @@ async function runLoadCommand(opts: Opts): Promise<number> {
     execute: opts.execute,
     wait: opts.wait,
     concurrency: opts.concurrency,
+    progress: opts.progress,
   });
 
   const shown = opts.quiet
@@ -770,6 +817,19 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
     return 1;
   }
 
+  // What `load` recorded as created. A damaged file only matters if the delete
+  // of those categories was asked for; otherwise teardown goes on without the hint.
+  let createdTaxCategories: string[] = [];
+  try {
+    createdTaxCategories = readCreatedPrerequisites(outDirFor(opts)).taxCategories;
+  } catch (err) {
+    if (opts.includeCreatedTaxCategories) {
+      console.error(`${(err as Error).message} Nothing was deleted.`);
+      return 1;
+    }
+    console.error(`warn  ${(err as Error).message} Ignored: no tax category will be offered for removal.`);
+  }
+
   const clients = createClients(credentials);
   console.log(describeCredentials(credentials));
   console.log('');
@@ -777,6 +837,9 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
   const result = await runTeardown(clients, plan, config, {
     execute: opts.execute,
     concurrency: opts.concurrency,
+    createdTaxCategories,
+    removeCreatedTaxCategories: opts.includeCreatedTaxCategories,
+    progress: opts.progress,
   });
 
   for (const d of result.diagnostics) {
@@ -826,6 +889,7 @@ async function runVerify(opts: Opts): Promise<number> {
   const { snapshot, diagnostics: readDiagnostics, unreadable } = await fetchSnapshot(
     clients,
     plan,
+    opts.progress,
   );
 
   // Comparing against a kind that could not be read would report every planned

@@ -30,6 +30,7 @@ import {
   MAX_RESOURCES_PER_REQUEST,
 } from '../src/load/batches.js';
 import { runLoad } from '../src/load/run.js';
+import { createProgress } from '../src/progress/progress.js';
 import { renderLoad, writeLoadArtefacts } from '../src/load/report.js';
 import type { MigrationPlan, ProductDraftImport } from '../src/model/plan.js';
 
@@ -1668,4 +1669,61 @@ test('tax: a rounding target is sent with the rate a missing category is created
     rates: { taxRoundingTarget?: string }[];
   };
   assert.equal(body.rates[0].taxRoundingTarget, 'Tax');
+});
+
+// ---------------------------------------------------------------------------
+// Progress: ticks, not changes
+// ---------------------------------------------------------------------------
+
+test('progress: --wait says which container it waits on and how long the counts have been unchanged, once per tick', async () => {
+  let t = 0;
+  const lines: string[] = [];
+  const progress = createProgress({
+    command: 'load --execute --wait',
+    intervalMs: 30_000,
+    now: () => t,
+    write: (l) => lines.push(l),
+    timer: false,
+  });
+  const { clients, recorded } = fakeClients({ processingUntilRead: 12 });
+  await runLoad(clients, basePlan(), config(), {
+    execute: true,
+    wait: true,
+    progress,
+    sleep: async (ms) => {
+      t += ms;
+    },
+  });
+
+  assert.ok(lines.length >= 2, lines.join('\n'));
+  assert.ok(lines.length < recorded.summaryReads.length, 'fewer lines than reads: a tick, not every poll');
+  const last = lines[lines.length - 1];
+  assert.match(
+    last,
+    /^\d+m\d\ds {2}load: waiting on \S+ \(container \d+\/\d+\) · \d+\/\d+ imported · \d+ unresolved · \d+ processing · unchanged for \d+m?\d*s/,
+  );
+});
+
+test('progress: the push reports requests accepted in the stage, from the counters, when a tick falls due', async () => {
+  let t = 0;
+  const lines: string[] = [];
+  const progress = createProgress({
+    command: 'load --execute',
+    intervalMs: 1,
+    now: () => (t += 1000),
+    write: (l) => lines.push(l),
+    timer: false,
+  });
+  const { clients } = fakeClients();
+  await runLoad(clients, basePlan(), config(), { execute: true, progress, sleep: noSleep });
+  assert.ok(
+    lines.some((l) => /load: pushing \S+ \(stage \d+\/\d+\): \d+\/\d+ request\(s\), [\d,]+ resource\(s\) in the stage/.test(l)),
+    lines.join('\n'),
+  );
+});
+
+test('progress: without a reporter the load behaves as before', async () => {
+  const { clients } = fakeClients();
+  const result = await runLoad(clients, basePlan(), config(), { execute: true, sleep: noSleep });
+  assert.equal(result.executed, true);
 });
