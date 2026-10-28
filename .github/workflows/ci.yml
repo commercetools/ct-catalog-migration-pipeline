@@ -24,8 +24,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # engines.node is >=20: test the floor and the current LTS line.
-        node: ["20", "22"]
+        # engines.node is >=22: test the floor and the current LTS line.
+        node: ["22", "24"]
     steps:
       - uses: actions/checkout@v4
 
