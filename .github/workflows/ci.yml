@@ -1,0 +1,61 @@
+name: CI
+
+# Runs on every push to a branch (fast feedback while working) and on pull
+# requests (the merge gate). Pushes to a branch with an open PR run both; the
+# concurrency group below cancels the superseded run.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines.node is >=20: test the floor and the current LTS line.
+        node: ["20", "22"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # --ignore-scripts: dependency install scripts have no business running
+      # in CI; nothing in this project needs them.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # No network, no credentials: the suite runs against fixtures only.
+      - name: Test
+        run: npm test
+
+  # One stable check name for branch protection, independent of the matrix.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any test job did not succeed
+        run: |
+          [ "${{ needs.test.result }}" = "success" ] || {
+            echo "::error::test job result: ${{ needs.test.result }}"
+            exit 1
+          }
