@@ -31,7 +31,7 @@ npm install
 npm test               # 371 tests, no network, no credentials, ~5 seconds
 ```
 
-Node 20 or newer. No global install; every command runs through `npm run`.
+Node 22 or newer. No global install; every command runs through `npm run`.
 
 **Ignore this checkout before cloning it.** Clone it inside a git repository
 without ignoring it first and `git add -A` records it as a **gitlink** — mode

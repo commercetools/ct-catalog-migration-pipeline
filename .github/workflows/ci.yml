@@ -1,0 +1,86 @@
+name: CI
+
+# Runs on every push to a branch (fast feedback while working) and on pull
+# requests (the merge gate). Pushes to a branch with an open PR run both; the
+# concurrency group below cancels the superseded run.
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  merge_group:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines.node is >=22: test the floor and the current LTS line.
+        node: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      # --ignore-scripts: dependency install scripts have no business running
+      # in CI; nothing in this project needs them.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      # No network, no credentials: the suite runs against fixtures only.
+      - name: Test
+        run: npm test
+
+  # One stable check name for branch protection, independent of the matrix.
+  ci-result:
+    name: CI result
+    if: always()
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any test job did not succeed
+        run: |
+          [ "${{ needs.test.result }}" = "success" ] || {
+            echo "::error::test job result: ${{ needs.test.result }}"
+            exit 1
+          }
+
+  # Dependabot has no automerge of its own. This job runs after the tests, so a
+  # merge can never happen before CI, whatever the branch protection says.
+  # Only the two minor-and-patch groups from dependabot.yml qualify: majors,
+  # the SDK group and runtime dependencies stay for manual review.
+  # Needs "Allow auto-merge" in the repository settings.
+  dependabot-automerge:
+    name: Dependabot automerge
+    needs: ci-result
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@v3
+
+      - name: Enable auto-merge for the minor-and-patch groups
+        if: contains(fromJSON('["dev-dependencies", "actions"]'), steps.metadata.outputs.dependency-group)
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
