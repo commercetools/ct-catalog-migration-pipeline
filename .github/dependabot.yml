@@ -1,0 +1,44 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    # Cooldown applies to version updates only; security updates still open at once.
+    cooldown:
+      default-days: 3
+    groups:
+      # First match wins, so the SDKs stay out of the dev-dependency batch.
+      commercetools-sdks:
+        patterns:
+          - "@commercetools/*"
+      # Minor and patch updates of dev dependencies. ci.yml merges this group
+      # once CI is green; majors arrive as separate PRs and are reviewed by hand.
+      dev-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+    ignore:
+      # Stay on the Node floor's types (engines.node is >=22).
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    cooldown:
+      default-days: 3
+    groups:
+      # Minor and patch updates of actions, merged by ci.yml once CI is green.
+      actions:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch

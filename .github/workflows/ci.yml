@@ -59,3 +59,28 @@ jobs:
             echo "::error::test job result: ${{ needs.test.result }}"
             exit 1
           }
+
+  # Dependabot has no automerge of its own. This job runs after the tests, so a
+  # merge can never happen before CI, whatever the branch protection says.
+  # Only the two minor-and-patch groups from dependabot.yml qualify: majors,
+  # the SDK group and runtime dependencies stay for manual review.
+  # Needs "Allow auto-merge" in the repository settings.
+  dependabot-automerge:
+    name: Dependabot automerge
+    needs: ci-result
+    if: github.event_name == 'pull_request' && github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - id: metadata
+        uses: dependabot/fetch-metadata@v3
+
+      - name: Enable auto-merge for the minor-and-patch groups
+        if: contains(fromJSON('["dev-dependencies", "actions"]'), steps.metadata.outputs.dependency-group)
+        run: gh pr merge --auto --squash "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
