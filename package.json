@@ -20,14 +20,14 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@commercetools/importapi-sdk": "^7.1.1",
-    "@commercetools/platform-sdk": "^9.5.0",
+    "@commercetools/importapi-sdk": "^7.1.2",
+    "@commercetools/platform-sdk": "^9.7.0",
     "@commercetools/ts-client": "^5.0.3",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
-    "@types/node": "^22.10.0",
+    "@types/node": "^22.20.5",
     "typescript": "^7.0.2"
   }
 }
