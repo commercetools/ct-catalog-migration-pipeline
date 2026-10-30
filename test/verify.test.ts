@@ -117,6 +117,7 @@ function matchingSnapshot(plan: MigrationPlan, config: ReturnType<typeof fixture
       name: c.name,
       slug: c.slug,
       ancestors: [],
+      stores: [],
       orderHint: c.orderHint ?? '0.5',
       ...(c.parent ? { parent: { typeId: 'category' as const, id: categoryIdOf(c.parent.key!) } } : {}),
     } as Category);
