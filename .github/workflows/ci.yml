@@ -64,7 +64,11 @@ jobs:
   # merge can never happen before CI, whatever the branch protection says.
   # Only the two minor-and-patch groups from dependabot.yml qualify: majors,
   # the SDK group and runtime dependencies stay for manual review.
-  # Needs "Allow auto-merge" in the repository settings.
+  # The organisation's default-branch ruleset requires one approving review, so
+  # for those two groups this job approves the PR itself once CI is green. That
+  # means no human reviews them: the CI gate and the group filter are the only
+  # checks. Needs "Allow auto-merge" and "Allow GitHub Actions to create and
+  # approve pull requests" in the repository settings.
   dependabot-automerge:
     name: Dependabot automerge
     needs: ci-result
@@ -78,9 +82,14 @@ jobs:
       - id: metadata
         uses: dependabot/fetch-metadata@v3
 
-      - name: Enable auto-merge for the minor-and-patch groups
+      - name: Approve and enable auto-merge for the minor-and-patch groups
         if: contains(fromJSON('["dev-dependencies", "actions"]'), steps.metadata.outputs.dependency-group)
-        run: gh pr merge --auto --squash "$PR_URL"
+        # After the approval nothing may be left to wait for, and GitHub
+        # refuses to enable auto-merge on a PR that is already mergeable, so
+        # fall back to merging directly.
+        run: |
+          gh pr review --approve "$PR_URL"
+          gh pr merge --auto --squash "$PR_URL" || gh pr merge --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
