@@ -66,7 +66,9 @@ Options:
   --out <dir>       Where artefacts are written and read (default: ./out)
   --env <path>      Credentials file (default: ./.env)
   --apply           preflight only: additively add missing locales/currencies
-  --execute         load only: actually send the Import Requests
+  --switch-catalog-model  preflight only: switch the project to target.catalogModel, but only
+                    if it holds no products (a write; never implied by --apply)
+  --execute        load only: actually send the Import Requests
   --wait            load only: poll Import Summaries until nothing is processing
   --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
   --include-created-tax-categories  teardown only: also delete the tax categories this plan's load created
@@ -98,6 +100,7 @@ async function main(): Promise<number> {
         payloads: { type: 'boolean', default: false },
         env: { type: 'string', default: '.env' },
         apply: { type: 'boolean', default: false },
+        'switch-catalog-model': { type: 'boolean', default: false },
         execute: { type: 'boolean', default: false },
         wait: { type: 'boolean', default: false },
         concurrency: { type: 'string', default: '4' },
@@ -126,6 +129,7 @@ async function main(): Promise<number> {
     payloads: values.payloads as boolean,
     env: values.env as string,
     apply: values.apply as boolean,
+    switchCatalogModel: values['switch-catalog-model'] as boolean,
     execute: values.execute as boolean,
     wait: values.wait as boolean,
     concurrency: Number(values.concurrency),
@@ -226,6 +230,7 @@ interface Opts {
   payloads: boolean;
   env: string;
   apply: boolean;
+  switchCatalogModel: boolean;
   execute: boolean;
   wait: boolean;
   concurrency: number;
@@ -587,7 +592,11 @@ async function runPreflight(opts: Opts): Promise<number> {
   }
 
   const clients = createClients(credentials);
-  const result = await preflight(clients, config, plan, { apply: opts.apply, progress: opts.progress });
+  const result = await preflight(clients, config, plan, {
+    apply: opts.apply,
+    switchCatalogModel: opts.switchCatalogModel,
+    progress: opts.progress,
+  });
 
   const shown = opts.quiet
     ? result.diagnostics.filter((d) => d.severity === 'error')
@@ -602,6 +611,8 @@ async function runPreflight(opts: Opts): Promise<number> {
           counts: result.counts,
           pending: result.pending,
           applied: result.applied,
+          switchable: result.switchable,
+          switched: result.switched,
           planLoaded: plan !== undefined,
           diagnostics: shown,
         },
@@ -640,7 +651,11 @@ async function runPreflight(opts: Opts): Promise<number> {
   }
 
   if (errors.length === 0) {
-    console.log(result.applied ? 'Preflight passed, after applying the changes above.' : 'Preflight passed.');
+    console.log(
+      result.applied || result.switched
+        ? 'Preflight passed, after applying the changes above.'
+        : 'Preflight passed.',
+    );
     console.log('Next: `load` — a dry run writes the exact request bodies and sends nothing.');
     return 0;
   }
@@ -650,6 +665,13 @@ async function runPreflight(opts: Opts): Promise<number> {
   if (fixable && !opts.apply) {
     console.log('Re-run with --apply to add the missing locales and currencies.');
     console.log('Existing values are preserved — the update sends the union, never a replacement.');
+  }
+  if (result.switchable && !opts.switchCatalogModel) {
+    console.log(
+      `The project holds no products, so it can be switched from ${result.switchable.from} to ` +
+        `${result.switchable.to}: re-run with --switch-catalog-model.`,
+    );
+    console.log('That is a write to the project, so confirm it before running it.');
   }
   return 1;
 }
