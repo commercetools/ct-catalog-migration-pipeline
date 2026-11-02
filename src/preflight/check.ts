@@ -5,10 +5,13 @@
  * GETs. Every failure it catches would otherwise surface as a wall of rejected
  * Import Operations, hours into a load, with an error per record.
  *
- * It is read-only unless `apply` is requested, and even then it only ever *adds*
- * locales and currencies. It will not change `productCatalogModel`: switching
- * a project's catalog model is a decision about the whole implementation, not
- * something a migration tool should do on the way past.
+ * It is read-only unless a write is asked for, and each write has its own flag.
+ * `apply` only ever *adds* locales and currencies. `switchCatalogModel` changes
+ * `productCatalogModel`, which is a decision about the whole implementation and
+ * not something a migration tool should do on the way past — so it is a flag of
+ * its own, never implied by `apply`, and it is refused unless the project holds
+ * no products. A project that does needs the staged Modular Catalog migration,
+ * whose Variant copy job only commercetools support can run.
  */
 
 import type { Project, TaxCategory } from '@commercetools/platform-sdk';
@@ -35,6 +38,12 @@ import { noProgress, type Progress } from '../progress/progress.js';
 export type { Project } from '@commercetools/platform-sdk';
 export type CatalogModel = NonNullable<Project['productCatalogModel']>;
 
+/** A change of catalog model: from what the project runs to what the config asks for. */
+export interface CatalogModelSwitch {
+  from: CatalogModel;
+  to: 'Classic' | 'Modular';
+}
+
 export interface PreflightResult {
   project?: Project;
   diagnostics: Diagnostic[];
@@ -43,6 +52,13 @@ export interface PreflightResult {
   applied: boolean;
   /** Existing resource counts, to catch a load aimed at the wrong project. */
   counts?: { productTypes: number; categories: number; products: number };
+  /**
+   * Set when the project runs the other catalog model and holds no products,
+   * which is the only case `switchCatalogModel` is willing to change.
+   */
+  switchable?: CatalogModelSwitch;
+  /** The switch preflight made. */
+  switched?: CatalogModelSwitch;
 }
 
 /**
@@ -58,7 +74,7 @@ export async function preflight(
   clients: Clients,
   config: PipelineConfig,
   plan: MigrationPlan | undefined,
-  options: { apply?: boolean; progress?: Progress } = {},
+  options: { apply?: boolean; switchCatalogModel?: boolean; progress?: Progress } = {},
 ): Promise<PreflightResult> {
   const diagnostics: Diagnostic[] = [];
   const pending = { languages: [] as string[], currencies: [] as string[] };
@@ -213,24 +229,49 @@ export async function preflight(
   options.progress?.poll();
 
   const counts = await resourceCounts(clients, diagnostics);
-  if (counts) warnIfPopulated(project, counts, config, diagnostics);
+  if (counts) {
+    await refineCatalogModelFinding(clients, project, config, counts, diagnostics);
+    warnIfPopulated(project, counts, config, diagnostics);
+  }
 
   let applied = false;
   if (options.apply && (pending.languages.length > 0 || pending.currencies.length > 0)) {
     applied = await applyAdditive(clients, project, pending, diagnostics);
   }
 
+  // The catalog-model switch is its own write behind its own flag: `--apply`
+  // never implies it, whatever the project holds.
+  const switchable = counts ? switchTarget(project, config, counts) : undefined;
+  let switched: CatalogModelSwitch | undefined;
+  let current = project;
+  if (options.switchCatalogModel) {
+    reading = 'the project again, before switching its catalog model';
+    options.progress?.poll();
+    const outcome = await switchCatalogModel(clients, project, config, counts, diagnostics);
+    if (outcome) {
+      switched = outcome.switch;
+      current = outcome.project;
+    }
+  }
+
+  let shown = applied ? withoutResolvedByApply(diagnostics) : diagnostics;
+  // Same reasoning for the switch: the mismatch it fixed would otherwise be
+  // reported next to the note that says it was fixed.
+  if (switched) shown = shown.filter((d) => d.code !== 'catalog-model-mismatch');
+
   return {
-    project,
+    project: current,
     // The checks ran against the project as it was found, so a successful
     // apply leaves its own findings behind as stale errors — each still
     // advising `--apply`, which is what just happened. Reporting a problem
     // that no longer exists, with a remedy already carried out, teaches the
     // reader to stop trusting the output.
-    diagnostics: applied ? withoutResolvedByApply(diagnostics) : diagnostics,
+    diagnostics: shown,
     pending,
     applied,
     ...(counts ? { counts } : {}),
+    ...(switchable && !switched ? { switchable } : {}),
+    ...(switched ? { switched } : {}),
   };
 }
 
@@ -278,23 +319,367 @@ function checkCatalogModel(
   const configured = config.target.catalogModel;
   if (actual === configured) return;
 
+  // `InMigration` is the middle of the staged Modular migration, not a third
+  // shape this pipeline can load. While it lasts, every Variant write has to
+  // reach both the embedded and the standalone representation, and a load
+  // writes only one. It also cannot be answered with the advice below: the
+  // config only accepts Classic and Modular, so "set target.catalogModel to
+  // 'InMigration'" would send the reader to a value the config refuses.
+  if (actual === 'InMigration') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'catalog-model-in-migration',
+      message:
+        `The project's productCatalogModel is InMigration, but target.catalogModel is ` +
+        `${configured}. InMigration is the middle of the staged Modular Catalog migration: ` +
+        'variants resolve from the standalone resources while the embedded ones are still ' +
+        'accepted, and every Variant write has to reach both representations. This ' +
+        'pipeline writes one of them (embedded under Classic, standalone under Modular), ' +
+        'so a load would leave the two out of step.\n' +
+        '      It does not load into a project in InMigration. Finish the migration first ' +
+        `(${MODULAR_GUIDE}) so that the project is on Modular, then set target.catalogModel ` +
+        "to 'Modular', re-run `plan` and run preflight again.",
+    });
+    return;
+  }
+
+  const lead =
+    `The project's productCatalogModel is ${actual}` +
+    (project.productCatalogModel === undefined ? ' (unset, which means Classic)' : '') +
+    `, but target.catalogModel is ${configured}. These are not interchangeable: ` +
+    'Classic embeds variants in the Product; Modular manages them as standalone ' +
+    'resources imported through VariantImport, and forbids embedded prices. The ' +
+    'plan was built for one shape and this project runs the other, so the load ' +
+    'would be rejected resource by resource.';
+
+  // Classic → Modular is the one switch whose advice depends on what the project
+  // holds, which this check does not know yet: the counts are read later, and
+  // `refineCatalogModelFinding` replaces this finding once they are. What stands
+  // here is what holds either way, for the case where the counts cannot be read.
+  if (actual === 'Classic' && configured === 'Modular') {
+    diagnostics.push({
+      severity: 'error',
+      code: 'catalog-model-mismatch',
+      message:
+        `${lead}\n` +
+        '      What to do depends on whether the project holds products, and preflight ' +
+        'could not tell (counting them needs view_products). An empty project is switched ' +
+        'with one setProductCatalogModel action. A project that already holds products ' +
+        'cannot just be switched: it needs the staged Modular Catalog migration, whose ' +
+        `Variant copy job only commercetools support can run (${MODULAR_GUIDE}).\n` +
+        '      If no product has more than 100 variants, the way out is the other one: set ' +
+        "target.catalogModel to 'Classic' and re-run `plan` — the shape is decided at map " +
+        'time, so changing the config alone is not enough.',
+    });
+    return;
+  }
+
   diagnostics.push({
     severity: 'error',
     code: 'catalog-model-mismatch',
     message:
-      `The project's productCatalogModel is ${actual}` +
-      (project.productCatalogModel === undefined ? ' (unset, which means Classic)' : '') +
-      `, but target.catalogModel is ${configured}. These are not interchangeable: ` +
-      'Classic embeds variants in the Product; Modular manages them as standalone ' +
-      'resources imported through VariantImport, and forbids embedded prices. The ' +
-      'plan was built for one shape and this project runs the other, so the load ' +
-      'would be rejected resource by resource.\n' +
+      `${lead}\n` +
       '      Set target.catalogModel to ' +
       `'${actual}' and re-run \`plan\` — the shape is decided at map time, so ` +
       'changing the config alone is not enough. preflight will not change the ' +
       'project for you: switching a live catalog model is a decision about the whole ' +
       'implementation.',
   });
+}
+
+/** The commercetools guide for moving an existing project from Classic to Modular. */
+const MODULAR_GUIDE = 'https://docs.commercetools.com/guides/migration-guides/modular-catalog-migration';
+
+/**
+ * Products with a price embedded in a variant, current or staged — the guide's
+ * own query. The Variant copy job fails while any remains.
+ */
+const EMBEDDED_PRICES =
+  'masterData(current(masterVariant(prices is not empty))) or ' +
+  'masterData(current(variants(prices is not empty))) or ' +
+  'masterData(staged(masterVariant(prices is not empty))) or ' +
+  'masterData(staged(variants(prices is not empty)))';
+
+/**
+ * Says what a Classic project asked to become Modular actually needs, once the
+ * product total is known.
+ *
+ * An empty project is switched with one action. A project that holds products
+ * is not: its variants are embedded, so it has to go through the staged
+ * migration, and the Variant copy job in the middle of it is run by
+ * commercetools support, on request. That is the case the reader has to be
+ * stopped at and told to wait, rather than finding out from a rejected load or
+ * from the first answer that says "just call setProductCatalogModel".
+ *
+ * The finding is replaced where it stands, not appended: the first one was
+ * written before the counts existed and would otherwise survive next to its own
+ * correction. Scope is greenfield only; "greenfield" is zero products.
+ */
+async function refineCatalogModelFinding(
+  clients: Clients,
+  project: Project,
+  config: PipelineConfig,
+  counts: NonNullable<PreflightResult['counts']>,
+  diagnostics: Diagnostic[],
+): Promise<void> {
+  const at = diagnostics.findIndex((d) => d.code === 'catalog-model-mismatch');
+  if (at < 0) return;
+
+  // The reverse, Modular → Classic, has nothing to copy back when the project
+  // holds no products; the finding that stands is right, and only gains the
+  // pointer to the flag.
+  if (effectiveCatalogModel(project) === 'Modular' && config.target.catalogModel === 'Classic') {
+    if (counts.products === 0) {
+      diagnostics[at] = {
+        ...diagnostics[at]!,
+        message:
+          `${diagnostics[at]!.message}\n` +
+          '      The project holds no products, so preflight can also switch it back: re-run ' +
+          'with --switch-catalog-model.',
+      };
+    }
+    return;
+  }
+  if (effectiveCatalogModel(project) !== 'Classic' || config.target.catalogModel !== 'Modular') {
+    return;
+  }
+
+  const unset = project.productCatalogModel === undefined ? ' (unset, which means Classic)' : '';
+  const keepClassic =
+    "If no product has more than 100 variants, you can skip all of it: set target.catalogModel to 'Classic' " +
+    'and re-run `plan` — the shape is decided at map time, so changing the config alone is not enough.';
+
+  if (counts.products === 0) {
+    diagnostics[at] = {
+      severity: 'error',
+      code: 'catalog-model-mismatch',
+      message:
+        `The project's productCatalogModel is Classic${unset}, but target.catalogModel is ` +
+        'Modular, and the plan was built for the Modular shape (standalone variants, no ' +
+        'embedded prices). The project holds no products, so nothing needs copying: preflight can ' +
+        'switch it. Re-run with --switch-catalog-model — one setProductCatalogModel action to ' +
+        "'Modular', which needs manage_project_settings and is a write to the project, so " +
+        'confirm it first. Or send that action yourself and run preflight again.\n' +
+        `      ${keepClassic}`,
+    };
+    return;
+  }
+
+  const embedded = await embeddedPriceTotal(clients);
+  const prices =
+    embedded === undefined
+      ? 'preflight could not count how many carry an embedded price (the copy job fails while ' +
+        'any remains, so check that before requesting it).'
+      : embedded === 0
+        ? 'None carries an embedded price, which the copy job requires.'
+        : `${embedded} of them still carry an embedded price. The copy job fails while any ` +
+          'remains, so move those prices to Standalone Prices first.';
+
+  diagnostics[at] = {
+    severity: 'error',
+    code: 'catalog-model-needs-copy',
+    message:
+      `The project's productCatalogModel is Classic${unset}, but target.catalogModel is ` +
+      `Modular, and the project already holds ${counts.products} product(s) whose variants are ` +
+      'embedded. Switching it is not one action: it is the staged Modular Catalog migration, ' +
+      'and its Variant copy job, which creates the standalone Variants from the embedded ones, ' +
+      'is run by commercetools support on request. This pipeline does not do that part.\n' +
+      `      ${prices}\n` +
+      '      Request the copy job as the guide describes, then wait for it to succeed and for ' +
+      "support's consistency report before going on. Follow the guide through to setting the " +
+      "model to Modular, then re-run `plan` and run preflight again.\n" +
+      `      Guide: ${MODULAR_GUIDE}\n` +
+      `      ${keepClassic}`,
+  };
+}
+
+/** How many products still carry an embedded price, or undefined when it cannot be read. */
+async function embeddedPriceTotal(clients: Clients): Promise<number | undefined> {
+  try {
+    const res = await clients.platform
+      .products()
+      .get({ queryArgs: { limit: 0, withTotal: true, where: EMBEDDED_PRICES } })
+      .execute();
+    return res.body.total ?? 0;
+  } catch {
+    // Not fatal, and not worth a finding of its own: the message says it could
+    // not be counted, which is all the reader needs.
+    return undefined;
+  }
+}
+
+/**
+ * What `switchCatalogModel` would change, or undefined when it must not.
+ *
+ * Only between Classic and Modular, and only when the project holds no
+ * products. Greenfield means zero products: categories and ProductTypes do not
+ * depend on the model, products do — their variants are embedded or standalone.
+ * Anything else, including a project in InMigration, is not this pipeline's to
+ * move.
+ */
+function switchTarget(
+  project: Project,
+  config: PipelineConfig,
+  counts: NonNullable<PreflightResult['counts']>,
+): CatalogModelSwitch | undefined {
+  const from = effectiveCatalogModel(project);
+  const to = config.target.catalogModel;
+  if (from === to) return undefined;
+  if (from !== 'Classic' && from !== 'Modular') return undefined;
+  if (counts.products > 0) return undefined;
+  return { from, to };
+}
+
+/** The project's product total, or undefined when it cannot be read. */
+async function productTotal(clients: Clients): Promise<number | undefined> {
+  try {
+    const res = await clients.platform
+      .products()
+      .get({ queryArgs: { limit: 0, withTotal: true } })
+      .execute();
+    return res.body.total ?? 0;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Switches an empty project to the catalog model the config asks for.
+ *
+ * Opt-in, behind its own flag, and refused unless the project holds no
+ * products: with products the variants are embedded, and moving them is the
+ * staged migration with a copy job that only commercetools support can run.
+ * Every refusal says why, so the flag is never silent.
+ *
+ * The first read of the counts is minutes old by the time this runs, so the
+ * project and the product total are read again immediately before the write,
+ * and again from the top after a 409 — a project that gained a product in
+ * between is not switched. Nothing is written without a version, and the
+ * response is checked: an accepted update that leaves the project on the old
+ * model is an error, not a success.
+ */
+async function switchCatalogModel(
+  clients: Clients,
+  project: Project,
+  config: PipelineConfig,
+  counts: PreflightResult['counts'],
+  diagnostics: Diagnostic[],
+): Promise<{ switch: CatalogModelSwitch; project: Project } | undefined> {
+  const refuse = (message: string): undefined => {
+    diagnostics.push({
+      severity: 'error',
+      code: 'catalog-model-switch-refused',
+      message: `--switch-catalog-model changed nothing: ${message}`,
+    });
+    return undefined;
+  };
+
+  const from = effectiveCatalogModel(project);
+  const to = config.target.catalogModel;
+
+  if (from === to) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'catalog-model-switch-unneeded',
+      message:
+        `--switch-catalog-model changed nothing: the project already runs ${from}, which is ` +
+        'what target.catalogModel asks for.',
+    });
+    return undefined;
+  }
+  if (from !== 'Classic' && from !== 'Modular') {
+    return refuse(
+      `the project's model is ${from}, and this pipeline only switches between Classic and ` +
+        'Modular. See the finding above.',
+    );
+  }
+  if (counts === undefined) {
+    return refuse(
+      'the number of products could not be read (counting them needs view_products), and the ' +
+        'switch is only made on a project that holds none.',
+    );
+  }
+  if (counts.products > 0) {
+    return refuse(
+      `the project holds ${counts.products} product(s), and a project with products cannot just ` +
+        'be switched. See the finding above for what it needs.',
+    );
+  }
+
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    let current: Project;
+    try {
+      current = (await clients.platform.get().execute()).body;
+    } catch (err) {
+      return refuse(`the project could not be read again before the write: ${describeError(err)}`);
+    }
+    const now = effectiveCatalogModel(current);
+    if (now !== from) {
+      return refuse(
+        `the project's model changed from ${from} to ${now} while preflight was running. ` +
+          'Run preflight again.',
+      );
+    }
+
+    const total = await productTotal(clients);
+    if (total === undefined) {
+      return refuse(
+        'the products could not be counted again immediately before the write, and the switch ' +
+          'is only made on a project that holds none.',
+      );
+    }
+    if (total > 0) {
+      return refuse(
+        `a product appeared since preflight first counted: the project now holds ${total}. ` +
+          'Run preflight again.',
+      );
+    }
+
+    try {
+      const res = await clients.platform
+        .post({
+          body: {
+            version: current.version,
+            actions: [{ action: 'setProductCatalogModel', productCatalogModel: to }],
+          },
+        })
+        .execute();
+      if (effectiveCatalogModel(res.body) !== to) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'catalog-model-switch-failed',
+          message:
+            `The update was accepted, but the project reports ${effectiveCatalogModel(res.body)} ` +
+            `instead of ${to}. Read the project again before relying on either.`,
+        });
+        return undefined;
+      }
+      diagnostics.push({
+        severity: 'warning',
+        code: 'catalog-model-switched',
+        message:
+          `Switched the project's productCatalogModel from ${from} to ${to}; it held no ` +
+          "products. Nothing else was changed. To switch it back while it is still empty, set " +
+          `target.catalogModel to '${from}', re-run \`plan\` and run preflight with ` +
+          '--switch-catalog-model again.',
+      });
+      return { switch: { from, to }, project: res.body };
+    } catch (err) {
+      // A 409 means someone changed the project between the read and the write.
+      // Start over rather than retrying the stale version: the guard above has to
+      // hold for the project as it is now.
+      if (statusOf(err) === 409 && attempt === 1) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'project-update-failed',
+        message:
+          `Could not switch the catalog model: ${describeError(err)}\n` +
+          'Switching it needs manage_project_settings.',
+      });
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 /**

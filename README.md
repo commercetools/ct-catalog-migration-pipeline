@@ -56,7 +56,7 @@ four need no credentials at all.
 | `derive` | no | Builds ProductTypes from declared or observed attribute types |
 | `plan` | no | Maps the feed to commercetools drafts and writes the decision log |
 | `audit` | no | Re-derives every invariant the API enforces, from the written plan |
-| `preflight` | yes | Asks whether the project will accept the plan, in a handful of GETs |
+| `preflight` | yes | Asks whether the project will accept the plan, in a handful of GETs. Read-only unless a write is requested: `--apply` adds missing locales and currencies, and `--switch-catalog-model` switches a project that holds no products to `target.catalogModel` |
 | `load` | yes | Dry run by default; `--execute` is the only thing that writes |
 | `verify` | yes | Reads the project back and reconciles it against the plan |
 | `teardown` | yes | Deletes what the plan created, scoped to `keys.prefix` (dry run unless `--execute --confirm-project <key>`) |
@@ -122,7 +122,7 @@ refuses an absent or placeholder value rather than defaulting one.
 | Value | Why it cannot be defaulted |
 | :--- | :--- |
 | `keys.prefix` | Written into every key the migration creates, and what bounds a teardown to its own work. Ships as `REPLACE-ME`, which the loader refuses. |
-| `target.catalogModel` | `Classic` or `Modular`. Decides the whole import shape, and must match the project's own setting. |
+| `target.catalogModel` | `Classic` or `Modular`. Decides the whole import shape, and must match the project's own setting. `preflight` checks it. A project that holds no products can be switched with `preflight --switch-catalog-model` (needs `manage_project_settings`; a write, never implied by `--apply`). One that holds products cannot: its variants are embedded, so it needs the staged [Modular Catalog migration](https://docs.commercetools.com/guides/migration-guides/modular-catalog-migration), whose Variant copy job only commercetools support can run. |
 | `target.priceMode` | `embedded` or `standalone`. A product whose mode disagrees with where its prices are imports cleanly, reports success, and shows no price. |
 | `market.defaultLocale` | Derived labels and slugs land here. A locale the project does not accept makes every affected record fail. |
 | `market.currencyFractionDigits` | Minor-unit conversion per currency. A wrong value is a silently wrong price, not an error. |

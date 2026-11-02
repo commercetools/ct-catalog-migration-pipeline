@@ -295,7 +295,18 @@ const PROJECT: Project = {
 interface FakeOptions {
   project?: Partial<Project>;
   /** Totals per resource; a number throws nothing, an Error rejects. */
-  counts?: { productTypes?: number | Error; categories?: number | Error; products?: number | Error };
+  counts?: {
+    productTypes?: number | Error;
+    categories?: number | Error;
+    /**
+     * A list answers the plain total read by read (the last entry repeats), so a
+     * test can have a product appear between preflight's first count and the
+     * re-count just before a write.
+     */
+    products?: number | Error | (number | Error)[];
+    /** Products with an embedded price: the answer to the one read that carries a `where`. */
+    embeddedPrices?: number | Error;
+  };
   /**
    * ProductTypes the project already holds, with attributes — what the
    * project-wide attribute name→type check compares the plan against.
@@ -316,6 +327,8 @@ interface FakeOptions {
   projectError?: unknown;
   /** Thrown on the first update attempt. */
   updateError?: unknown;
+  /** The update is accepted but the project keeps the model it had. */
+  ignoreModelUpdate?: boolean;
 }
 
 interface Recorded {
@@ -325,6 +338,8 @@ interface Recorded {
   countReads: number;
   /** Full ProductType reads, for the attribute name→type check. */
   productTypeReads: number;
+  /** Reads of products carrying an embedded price: made only when a copy job could be needed. */
+  embeddedPriceReads: number;
 }
 
 function httpError(statusCode: number, message: string): Error & { statusCode: number } {
@@ -337,11 +352,18 @@ function httpError(statusCode: number, message: string): Error & { statusCode: n
  * returning undefined.
  */
 function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: Recorded } {
-  const recorded: Recorded = { updates: [], projectReads: 0, countReads: 0, productTypeReads: 0 };
+  const recorded: Recorded = {
+    updates: [],
+    projectReads: 0,
+    countReads: 0,
+    productTypeReads: 0,
+    embeddedPriceReads: 0,
+  };
   let version = (options.project?.version ?? PROJECT.version) as number;
   let updateAttempts = 0;
+  let productReads = 0;
 
-  const results = (value: unknown[] | Error | undefined) => ({
+  const results =(value: unknown[] | Error | undefined) => ({
     get: () => ({
       execute: async () => {
         if (value instanceof Error) throw value;
@@ -404,12 +426,48 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
         recorded.updates.push(body);
         updateAttempts++;
         if (options.updateError && updateAttempts === 1) throw options.updateError;
-        return { body: { ...PROJECT, ...options.project, version: version + 1 } };
+        // Apply the one action that changes the model, as the API would, so a
+        // test can read the new model back from the response.
+        const switchTo = body.actions.find((a) => a.action === 'setProductCatalogModel') as
+          | { productCatalogModel: string }
+          | undefined;
+        const model = options.ignoreModelUpdate
+          ? undefined
+          : switchTo?.productCatalogModel;
+        return {
+          body: {
+            ...PROJECT,
+            ...options.project,
+            ...(model ? { productCatalogModel: model } : {}),
+            version: version + 1,
+          },
+        };
       },
     }),
     productTypes,
     categories: () => total(options.counts?.categories),
-    products: () => total(options.counts?.products),
+    // Two different reads share this endpoint: the plain total, and the guide's
+    // "prices is not empty" predicate. The real API tells them apart by `where`,
+    // so the double has to as well, or one answer would serve both.
+    products: () => ({
+      get: ({ queryArgs }: { queryArgs?: { where?: string } } = {}) => ({
+        execute: async () => {
+          if (queryArgs?.where?.includes('prices is not empty')) {
+            recorded.embeddedPriceReads++;
+            const e = options.counts?.embeddedPrices;
+            if (e instanceof Error) throw e;
+            return { body: { total: e ?? 0 } };
+          }
+          recorded.countReads++;
+          const configured = options.counts?.products;
+          const p = Array.isArray(configured)
+            ? configured[Math.min(productReads++, configured.length - 1)]
+            : configured;
+          if (p instanceof Error) throw p;
+          return { body: { total: p ?? 0 } };
+        },
+      }),
+    }),
     // Prerequisites the pipeline cannot create, so it can only verify them.
     channels: () => results(options.channels),
     customerGroups: () => results(options.customerGroups),
@@ -526,6 +584,371 @@ test('preflight: a Modular project against a Modular plan passes', async () => {
     !r.diagnostics.some((x) => x.code === 'catalog-model-mismatch'),
     'the model the project runs is the model the plan targets',
   );
+});
+
+// ---------------------------------------------------------------------------
+// Classic project, Modular config: what the switch needs depends on what the
+// project holds. Greenfield means zero products.
+// ---------------------------------------------------------------------------
+
+function modularConfig() {
+  return loadConfig(resolve(ROOT, 'fixtures', 'modular-standalone', 'migration.config.json'))
+    .config;
+}
+
+/** The findings about the catalog model, whatever their code: there must be exactly one. */
+function modelFindings<T extends { code: string }>(diagnostics: T[]): T[] {
+  return diagnostics.filter((d) => d.code.startsWith('catalog-model-'));
+}
+
+test('preflight: a Classic project with no products can simply be switched to Modular', async () => {
+  const { clients, recorded } = fakeClients({ counts: { products: 0 } });
+  const r = await preflight(clients, modularConfig(), undefined);
+
+  const found = modelFindings(r.diagnostics);
+  assert.equal(found.length, 1, 'the first finding is replaced, not left beside its correction');
+  const d = found[0]!;
+  assert.equal(d.code, 'catalog-model-mismatch');
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /holds no products/);
+  assert.match(d.message, /nothing needs copying/);
+  assert.match(d.message, /setProductCatalogModel/);
+  assert.match(d.message, /manage_project_settings/);
+  // No copy job in the way, so none is mentioned as a requirement.
+  assert.doesNotMatch(d.message, /commercetools support/);
+  assert.equal(recorded.embeddedPriceReads, 0, 'an empty project has no embedded prices to count');
+  assert.deepEqual(recorded.updates, [], 'preflight reads; it does not switch the model');
+});
+
+test('preflight: a Classic project that holds products needs the support-run Variant copy', async () => {
+  const { clients, recorded } = fakeClients({ counts: { products: 3, embeddedPrices: 0 } });
+  const r = await preflight(clients, modularConfig(), undefined);
+
+  const found = modelFindings(r.diagnostics);
+  assert.equal(found.length, 1);
+  const d = found[0]!;
+  assert.equal(d.code, 'catalog-model-needs-copy');
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /already holds 3 product\(s\)/);
+  assert.match(d.message, /Variant copy job/);
+  assert.match(d.message, /commercetools support/);
+  assert.match(d.message, /This pipeline does not do that part/);
+  assert.match(d.message, /None carries an embedded price/);
+  // The reader is told to wait, and what to do once it has succeeded.
+  assert.match(d.message, /wait for it to succeed and for support's consistency report/);
+  assert.match(d.message, /re-run `plan` and run preflight again/);
+  assert.match(d.message, /guides\/migration-guides\/modular-catalog-migration/);
+  // The way out that needs no copy at all.
+  assert.match(d.message, /no product has more than 100 variants/);
+  assert.equal(recorded.embeddedPriceReads, 1);
+  assert.deepEqual(recorded.updates, []);
+});
+
+test('preflight: products with embedded prices are named, because the copy job fails on them', async () => {
+  const { clients } = fakeClients({ counts: { products: 5, embeddedPrices: 2 } });
+  const r = await preflight(clients, modularConfig(), undefined);
+  const d = modelFindings(r.diagnostics)[0]!;
+  assert.equal(d.code, 'catalog-model-needs-copy');
+  assert.match(d.message, /2 of them still carry an embedded price/);
+  assert.match(d.message, /Standalone Prices first/);
+});
+
+test('preflight: an embedded-price count that cannot be read does not hide the copy requirement', async () => {
+  const { clients } = fakeClients({
+    counts: { products: 5, embeddedPrices: httpError(403, 'forbidden') },
+  });
+  const r = await preflight(clients, modularConfig(), undefined);
+  const d = modelFindings(r.diagnostics)[0]!;
+  assert.equal(d.code, 'catalog-model-needs-copy');
+  assert.match(d.message, /could not count how many carry an embedded price/);
+});
+
+test('preflight: when products cannot be counted the finding covers both cases', async () => {
+  // Counting needs view_products. Without it the finding cannot say which
+  // branch applies, so it must stand on its own: both paths, no claim.
+  const { clients, recorded } = fakeClients({
+    counts: { products: httpError(403, 'forbidden'), productTypes: 0, categories: 0 },
+  });
+  const r = await preflight(clients, modularConfig(), undefined);
+
+  const found = modelFindings(r.diagnostics);
+  assert.equal(found.length, 1);
+  const d = found[0]!;
+  assert.equal(d.code, 'catalog-model-mismatch');
+  assert.match(d.message, /could not tell/);
+  assert.match(d.message, /empty project is switched with one setProductCatalogModel action/);
+  assert.match(d.message, /Variant copy job only commercetools support can run/);
+  assert.equal(recorded.embeddedPriceReads, 0);
+});
+
+test('preflight: the embedded-price read happens only when a copy could be needed', async () => {
+  // Classic project, Classic config, products present: nothing to switch.
+  const classic = fakeClients({ counts: { products: 4, embeddedPrices: 4 } });
+  const a = await preflight(classic.clients, config(), undefined);
+  assert.equal(modelFindings(a.diagnostics).length, 0);
+  assert.equal(classic.recorded.embeddedPriceReads, 0);
+
+  // Modular project, Modular config: already switched.
+  const modular = fakeClients({
+    project: { productCatalogModel: 'Modular' },
+    counts: { products: 4, embeddedPrices: 4 },
+  });
+  const b = await preflight(modular.clients, modularConfig(), undefined);
+  assert.equal(modelFindings(b.diagnostics).length, 0);
+  assert.equal(modular.recorded.embeddedPriceReads, 0);
+});
+
+test('preflight: a Modular project against a Classic config keeps its own advice, products or not', async () => {
+  const { clients, recorded } = fakeClients({
+    project: { productCatalogModel: 'Modular' },
+    counts: { products: 4, embeddedPrices: 0 },
+  });
+  const r = await preflight(clients, config(), undefined);
+  const found = modelFindings(r.diagnostics);
+  assert.equal(found.length, 1);
+  assert.equal(found[0]!.code, 'catalog-model-mismatch');
+  assert.match(found[0]!.message, /Set target\.catalogModel to 'Modular'/);
+  assert.equal(recorded.embeddedPriceReads, 0);
+});
+
+test('preflight: a project in InMigration is refused, and not told to set an invalid value', async () => {
+  // The config accepts Classic and Modular only, so the generic advice ("set
+  // target.catalogModel to '<the project's model>'") would name a value the
+  // config refuses. And InMigration is a stage this pipeline cannot write to:
+  // every variant write has to reach both representations.
+  for (const cfg of [config(), modularConfig()]) {
+    const { clients, recorded } = fakeClients({
+      project: { productCatalogModel: 'InMigration' },
+      counts: { products: 4 },
+    });
+    const r = await preflight(clients, cfg, undefined);
+
+    const found = modelFindings(r.diagnostics);
+    assert.equal(found.length, 1);
+    const d = found[0]!;
+    assert.equal(d.code, 'catalog-model-in-migration');
+    assert.equal(d.severity, 'error');
+    assert.match(d.message, /does not load into a project in InMigration/);
+    assert.match(d.message, /Finish the migration first/);
+    assert.match(d.message, /both representations/);
+    assert.doesNotMatch(d.message, /Set target\.catalogModel to 'InMigration'/);
+    assert.equal(recorded.embeddedPriceReads, 0);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// The opt-in switch of the catalog model: a write, behind its own flag, and
+// only for a project that holds no products.
+// ---------------------------------------------------------------------------
+
+const SWITCH = { switchCatalogModel: true };
+
+function setModelActions(updates: ProjectUpdate[]) {
+  return updates.flatMap((u) => u.actions).filter((a) => a.action === 'setProductCatalogModel');
+}
+
+function refusal<T extends { code: string }>(diagnostics: T[]): T | undefined {
+  return diagnostics.find((d) => d.code === 'catalog-model-switch-refused');
+}
+
+test('switch: an empty Classic project is switched to Modular', async () => {
+  const { clients, recorded } = fakeClients({ counts: { products: 0 } });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+
+  assert.equal(recorded.updates.length, 1);
+  const body = recorded.updates[0]!;
+  assert.deepEqual(body.actions, [
+    { action: 'setProductCatalogModel', productCatalogModel: 'Modular' },
+  ]);
+  // The fake raises the version on every re-read, as a project that changed
+  // would. 9 is the read made immediately before the write; 7 would be the
+  // first, minutes-old one.
+  assert.equal(body.version, 9, 'the write carries the version of the re-read just before it');
+
+  assert.deepEqual(r.switched, { from: 'Classic', to: 'Modular' });
+  assert.equal(r.switchable, undefined, 'a switch that was made is not offered again');
+  assert.equal(r.project?.productCatalogModel, 'Modular', 'the result describes the project as it is now');
+  assert.ok(
+    !r.diagnostics.some((d) => d.code === 'catalog-model-mismatch'),
+    'the mismatch the switch fixed is not reported beside the note that it was fixed',
+  );
+  const note = r.diagnostics.find((d) => d.code === 'catalog-model-switched');
+  assert.ok(note, 'the switch is logged');
+  assert.equal(note.severity, 'warning');
+  assert.match(note.message, /from Classic to Modular/);
+  assert.match(note.message, /switch it back while it is still empty/);
+});
+
+test('switch: nothing is written without the flag, and --apply never implies it', async () => {
+  const a = fakeClients({ counts: { products: 0 } });
+  const withoutFlag = await preflight(a.clients, modularConfig(), undefined);
+  assert.deepEqual(a.recorded.updates, []);
+  assert.equal(withoutFlag.switched, undefined);
+  assert.deepEqual(
+    withoutFlag.switchable,
+    { from: 'Classic', to: 'Modular' },
+    'it says what the flag would do, so the CLI can offer it',
+  );
+
+  // A project missing de-DE and EUR gives --apply something to write. It adds
+  // them and leaves the model alone.
+  const b = fakeClients({
+    project: { languages: ['en-GB'], currencies: ['GBP'] },
+    counts: { products: 0 },
+  });
+  const applied = await preflight(b.clients, modularConfig(), undefined, { apply: true });
+  assert.ok(applied.applied, 'the additive apply ran');
+  assert.equal(setModelActions(b.recorded.updates).length, 0);
+  assert.equal(applied.project?.productCatalogModel, 'Classic');
+  assert.ok(applied.diagnostics.some((d) => d.code === 'catalog-model-mismatch'));
+});
+
+test('switch: a project that holds products is refused, and the copy requirement stays', async () => {
+  const { clients, recorded } = fakeClients({ counts: { products: 2, embeddedPrices: 0 } });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+
+  assert.deepEqual(recorded.updates, []);
+  assert.equal(r.switched, undefined);
+  assert.equal(r.switchable, undefined, 'a project with products is never offered the switch');
+  const d = refusal(r.diagnostics);
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /changed nothing/);
+  assert.match(d.message, /holds 2 product\(s\)/);
+  assert.ok(r.diagnostics.some((x) => x.code === 'catalog-model-needs-copy'));
+});
+
+test('switch: a product that appears between the first count and the write stops it', async () => {
+  // The first count says 0, which is why the switch is allowed to try. The
+  // re-count just before the write says 1.
+  const { clients, recorded } = fakeClients({ counts: { products: [0, 1] } });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+
+  assert.deepEqual(recorded.updates, []);
+  assert.equal(r.switched, undefined);
+  const d = refusal(r.diagnostics);
+  assert.ok(d);
+  assert.match(d.message, /a product appeared since preflight first counted: the project now holds 1/);
+});
+
+test('switch: a 409 starts over, and the guard is checked again against the new project', async () => {
+  // Retried and still empty: the second write carries the newer version.
+  const ok = fakeClients({ counts: { products: 0 }, updateError: httpError(409, 'conflict') });
+  const retried = await preflight(ok.clients, modularConfig(), undefined, SWITCH);
+  assert.equal(ok.recorded.updates.length, 2);
+  assert.equal(ok.recorded.updates[0]!.version, 9);
+  assert.equal(ok.recorded.updates[1]!.version, 11, 'the retry re-read the project');
+  assert.deepEqual(retried.switched, { from: 'Classic', to: 'Modular' });
+
+  // Retried after someone added a product meanwhile: not switched.
+  const raced = fakeClients({
+    counts: { products: [0, 0, 1] },
+    updateError: httpError(409, 'conflict'),
+  });
+  const refused = await preflight(raced.clients, modularConfig(), undefined, SWITCH);
+  assert.equal(raced.recorded.updates.length, 1, 'only the first attempt was sent');
+  assert.equal(refused.switched, undefined);
+  assert.match(refusal(refused.diagnostics)!.message, /a product appeared/);
+});
+
+test('switch: a missing scope is reported with the scope that is needed', async () => {
+  const { clients, recorded } = fakeClients({
+    counts: { products: 0 },
+    updateError: httpError(403, 'Insufficient scope'),
+  });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+
+  assert.equal(recorded.updates.length, 1, 'a refused write is not retried');
+  assert.equal(r.switched, undefined);
+  assert.equal(r.project?.productCatalogModel, 'Classic');
+  const d = r.diagnostics.find((x) => x.code === 'project-update-failed');
+  assert.ok(d);
+  assert.match(d.message, /Could not switch the catalog model/);
+  assert.match(d.message, /manage_project_settings/);
+  assert.ok(
+    r.diagnostics.some((x) => x.code === 'catalog-model-mismatch'),
+    'the mismatch is still there, because the project was not switched',
+  );
+});
+
+test('switch: products that cannot be counted are never assumed to be zero', async () => {
+  // Not counted at all.
+  const none = fakeClients({ counts: { products: httpError(403, 'forbidden') } });
+  const a = await preflight(none.clients, modularConfig(), undefined, SWITCH);
+  assert.deepEqual(none.recorded.updates, []);
+  assert.match(refusal(a.diagnostics)!.message, /could not be read/);
+
+  // Counted once, then not readable when it matters.
+  const late = fakeClients({ counts: { products: [0, httpError(500, 'boom')] } });
+  const b = await preflight(late.clients, modularConfig(), undefined, SWITCH);
+  assert.deepEqual(late.recorded.updates, []);
+  assert.match(refusal(b.diagnostics)!.message, /could not be counted again/);
+});
+
+test('switch: a project already on the right model is left alone, and says so', async () => {
+  const { clients, recorded } = fakeClients({
+    project: { productCatalogModel: 'Modular' },
+    counts: { products: 0 },
+  });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+  assert.deepEqual(recorded.updates, []);
+  const d = r.diagnostics.find((x) => x.code === 'catalog-model-switch-unneeded');
+  assert.ok(d, 'the flag is never silent');
+  assert.equal(d.severity, 'warning');
+  assert.equal(refusal(r.diagnostics), undefined);
+});
+
+test('switch: an empty Modular project can be switched back to Classic', async () => {
+  // The pointer is there without the flag...
+  const hint = fakeClients({ project: { productCatalogModel: 'Modular' }, counts: { products: 0 } });
+  const plain = await preflight(hint.clients, config(), undefined);
+  assert.match(
+    plain.diagnostics.find((d) => d.code === 'catalog-model-mismatch')!.message,
+    /preflight can also switch it back/,
+  );
+  assert.deepEqual(hint.recorded.updates, []);
+
+  // ...and the flag does it, with the same guard.
+  const { clients, recorded } = fakeClients({
+    project: { productCatalogModel: 'Modular' },
+    counts: { products: 0 },
+  });
+  const r = await preflight(clients, config(), undefined, SWITCH);
+  assert.deepEqual(setModelActions(recorded.updates), [
+    { action: 'setProductCatalogModel', productCatalogModel: 'Classic' },
+  ]);
+  assert.deepEqual(r.switched, { from: 'Modular', to: 'Classic' });
+
+  const withProducts = fakeClients({
+    project: { productCatalogModel: 'Modular' },
+    counts: { products: 1 },
+  });
+  const refused = await preflight(withProducts.clients, config(), undefined, SWITCH);
+  assert.deepEqual(withProducts.recorded.updates, []);
+  assert.ok(refusal(refused.diagnostics));
+});
+
+test('switch: a project in InMigration is never switched', async () => {
+  const { clients, recorded } = fakeClients({
+    project: { productCatalogModel: 'InMigration' },
+    counts: { products: 0 },
+  });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+  assert.deepEqual(recorded.updates, []);
+  assert.equal(r.switchable, undefined);
+  assert.match(refusal(r.diagnostics)!.message, /only switches between Classic and Modular/);
+  assert.ok(r.diagnostics.some((d) => d.code === 'catalog-model-in-migration'));
+});
+
+test('switch: an accepted update that leaves the old model is an error, not a success', async () => {
+  const { clients } = fakeClients({ counts: { products: 0 }, ignoreModelUpdate: true });
+  const r = await preflight(clients, modularConfig(), undefined, SWITCH);
+  assert.equal(r.switched, undefined);
+  const d = r.diagnostics.find((x) => x.code === 'catalog-model-switch-failed');
+  assert.ok(d);
+  assert.equal(d.severity, 'error');
+  assert.match(d.message, /instead of Modular/);
+  assert.ok(!r.diagnostics.some((x) => x.code === 'catalog-model-switched'));
 });
 
 test('preflight: missing locales and currencies are errors with a pending fix', async () => {
