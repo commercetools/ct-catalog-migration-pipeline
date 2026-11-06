@@ -1,0 +1,12 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.1/schema.json",
+  "changelog": [
+    "@changesets/changelog-github",
+    { "repo": "commercetools/ct-catalog-migration-pipeline" }
+  ],
+  "commit": false,
+  "access": "restricted",
+  "baseBranch": "main",
+  "ignore": [],
+  "privatePackages": { "version": true, "tag": true }
+}

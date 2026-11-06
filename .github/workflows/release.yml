@@ -1,0 +1,78 @@
+name: Release
+
+# Keeps one "Version Packages" PR open while changesets are on main, and tags
+# the commit and publishes a GitHub Release when that PR is merged.
+#
+# A person merges the Version Packages PR, and that merge is the release: the
+# skill fetches the latest GitHub Release, so nothing in this workflow may
+# approve the PR, enable auto-merge on it, or merge it.
+on:
+  push:
+    branches: [main]
+
+# One run at a time, so two pushes cannot version or tag concurrently.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write # the version commit, the tag and the release
+  pull-requests: write # the Version Packages PR
+  actions: write # starts CI on the Version Packages branch
+
+jobs:
+  release:
+    name: Version Packages or release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Tags and history: the dependency changeset diffs the lockfile
+          # against the last release tag.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: "22"
+          cache: npm
+
+      # --ignore-scripts: dependency install scripts have no business running
+      # in a job that holds write permissions.
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
+      # A Dependabot update of a runtime dependency carries no changeset of
+      # its own. This writes one patch changeset (not committed) when the
+      # lockfile's runtime packages differ from the last release, so the
+      # update reaches readers with the next release.
+      - name: Add a patch changeset for changed runtime dependencies
+        run: node .github/scripts/dependency-changeset.mjs
+
+      # With changesets on main this opens or updates the Version Packages PR.
+      # With none (the PR was just merged) it tags the commit and creates the
+      # GitHub Release. The release commit and the tag are pushed through the
+      # GitHub API, which signs them, as the default-branch ruleset requires.
+      # The PR body the action writes says the packages are published to npm;
+      # this package is not published there.
+      - name: Open the Version Packages PR, or release
+        id: changesets
+        uses: changesets/action@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          publish-script: npx --no-install changeset git-tag
+          create-github-releases: true
+          push-git-tags: true
+
+      # A PR opened with the built-in token starts no workflow, so CI would
+      # never report on it and the required "CI result" check would stay
+      # missing. Dispatching a workflow is one of the two things the built-in
+      # token may still start.
+      - name: Start CI on the Version Packages branch
+        if: steps.changesets.outputs.pr-number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ steps.changesets.outputs.pr-number }}
+        run: |
+          branch=$(gh pr view "$PR_NUMBER" --json headRefName --jq .headRefName)
+          gh workflow run ci.yml --ref "$branch"
