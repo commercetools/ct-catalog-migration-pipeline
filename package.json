@@ -1,6 +1,6 @@
 {
   "name": "ct-catalog-migration-pipeline",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Source-agnostic pipeline that loads a canonical catalog feed into a commercetools project.",
   "type": "module",
   "private": true,
