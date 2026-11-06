@@ -8,6 +8,10 @@ on:
     branches: ["**"]
   pull_request:
   merge_group:
+  # release.yml starts CI on the Version Packages branch with this. A PR that a
+  # workflow opens with the built-in token starts no workflow of its own, so
+  # without it the required "CI result" check would never appear on that PR.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -45,6 +49,11 @@ jobs:
       # No network, no credentials: the suite runs against fixtures only.
       - name: Test
         run: npm test
+
+      # The script release.yml runs to turn a runtime dependency update into
+      # a patch changeset. Plain Node, no build step.
+      - name: Test the release scripts
+        run: node --test ".github/scripts/*.test.mjs"
 
   # One stable check name for branch protection, independent of the matrix.
   ci-result:

@@ -27,6 +27,8 @@
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
     "@types/node": "^22.20.5",
     "typescript": "^7.0.2"
   }

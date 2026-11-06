@@ -21,29 +21,32 @@ so the contract is the only thing the pipeline knows about.
 
 ## Install
 
-```bash
-# from the engagement root, BEFORE cloning, if it is a git repository
-echo '/ct-catalog-migration-pipeline/' >> .gitignore
+Fetch the source archive of the latest [release](https://github.com/commercetools/ct-catalog-migration-pipeline/releases)
+into the engagement. It is a copy without git history, not a clone:
 
-git clone https://github.com/commercetools/ct-catalog-migration-pipeline
-cd ct-catalog-migration-pipeline
-npm install
-npm test               # 371 tests, no network, no credentials, ~5 seconds
+```bash
+# from the engagement root
+tag=$(gh release view --repo commercetools/ct-catalog-migration-pipeline --json tagName --jq .tagName)
+echo "$tag"            # look at it before going on
+
+mkdir ct-catalog-migration-pipeline && cd ct-catalog-migration-pipeline
+curl -fsSL "https://github.com/commercetools/ct-catalog-migration-pipeline/archive/refs/tags/$tag.tar.gz" \
+  | tar -xz --strip-components=1
+npm ci
+npm test               # no network, no credentials, a few seconds
 ```
 
-Node 22 or newer. No global install; every command runs through `npm run`.
+Without the GitHub CLI, take the tag from the releases page. Node 22 or newer.
+No global install; every command runs through `npm run`.
 
-**Ignore this checkout before cloning it.** Clone it inside a git repository
-without ignoring it first and `git add -A` records it as a **gitlink** — mode
-`160000`, this repo's commit pinned in the outer index, no `.gitmodules` to
-explain it. It looks tracked and is not: anyone cloning the outer repository
-gets an empty directory. `.gitignore` does not undo that afterwards, because
-ignore rules do not apply to what is already in the index —
-`git rm -r --cached -f ct-catalog-migration-pipeline` does.
+**What you have is plain files.** There is no `origin` to detach and no embedded
+repository to ignore, so commit the directory with the engagement and change it
+where the engagement needs it. Record the release tag in the engagement's
+decision log, and say when the copy was changed, because then the tag is the
+baseline and no longer an exact match.
 
-Pin the version by recording the commit (`git rev-parse --short HEAD`) in the
-engagement's decision log, not with a submodule: the point is a line a human
-can read, without every clone of the engagement fetching a second repository.
+**To upgrade**, fetch the new release into a scratch directory the same way and
+diff it against your copy. Upstream fixes do not arrive by `git pull`.
 
 ## Stages
 
@@ -79,8 +82,7 @@ The engagement lives **beside** this repo, not inside it:
 
 ```
 <engagement-root>/
-  .gitignore                       /ct-catalog-migration-pipeline/ — see above
-  ct-catalog-migration-pipeline/   this repo — the tool, cloned and ignored
+  ct-catalog-migration-pipeline/   this repo — the tool, a fetched release, committed
   source-export/                   what the customer handed over
   migration/                       the engagement
     migration.config.json            written from the step-0 interview
@@ -227,6 +229,30 @@ npm run build         # compile to dist/
 
 `npm run typecheck` does **not** cover `test/`; only `npm test` does. There is
 no linter configured.
+
+### Releases
+
+Versions come from [changesets](https://github.com/changesets/changesets), and a
+reader fetches the latest GitHub Release, so a change reaches readers when its
+release is cut.
+
+- A pull request that changes what the pipeline does adds a changeset
+  (`npx changeset`). Before 1.0, a **minor** bump marks a change to anything the
+  skill that drives this pipeline documents: the feed or config schema, a CLI
+  flag, a diagnostic code, the `plan` or `key-map` format. A **patch** changes
+  none of those. Say in the changeset what changed.
+- A Dependabot update of a runtime dependency needs no changeset: `release.yml`
+  adds a patch changeset when the lockfile's runtime packages differ from the
+  last release. Dev dependencies and Actions updates do not release.
+- On every push to `main`, `release.yml` opens or updates the **Version
+  Packages** pull request. **A person merges it, and that merge is the
+  release**: the workflow then tags the commit (`vX.Y.Z`) and creates the GitHub
+  Release. Nothing approves or merges that pull request automatically. Merge a
+  minor bump only once the skill's pages match it.
+- `release.yml` starts CI on the Version Packages branch itself, because a pull
+  request opened with the built-in token starts no workflow of its own.
+- Protect release tags with a tag ruleset (`v*`: no update, no delete).
+  Readers download and run what a tag points at.
 
 ## Licence
 
