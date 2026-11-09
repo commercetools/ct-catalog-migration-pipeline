@@ -763,7 +763,7 @@ function checkAgainstConfig(
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
   checkCustomers(feed, diagnostics);
-  checkOrders(feed, config, diagnostics);
+  if (config.entities?.orders === true) checkOrders(feed, config, diagnostics);
   checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
   if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
@@ -1271,10 +1271,14 @@ function checkCustomersInScope(
 }
 
 /**
- * Order records are refused unless the config says orders are in scope, for
- * the same reason and in the same shape as customers: an order carries an
- * email and addresses, and a history in the export is not a decision to load
- * it.
+ * Order records need a decision before anything else happens to them.
+ *
+ * - `entities.orders: true` loads them.
+ * - `entities.orders: false` is the decision not to: the records are ignored,
+ *   with one warning giving the count, and `plan` leaves them out. A source
+ *   whose export always carries its order history can then keep emitting it.
+ * - Absent is no decision yet, so it is refused: an order carries an email and
+ *   addresses, and a history in the export is not a decision to load it.
  */
 function checkOrdersInScope(
   feed: CatalogFeed,
@@ -1283,14 +1287,26 @@ function checkOrdersInScope(
 ): void {
   if (feed.orders.size === 0 || config.entities?.orders === true) return;
   const first = feed.orders.keys().next().value as string;
+  if (config.entities?.orders === false) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'orders-ignored',
+      message:
+        `The feed holds ${feed.orders.size} order record(s), and entities.orders is false, ` +
+        'so they are ignored: not checked, not planned, not loaded. Log them in DECISIONS.md ' +
+        'as not migrated, with the count.',
+      ...(feed.origin.get(`order:${first}`) ?? {}),
+    });
+    return;
+  }
   diagnostics.push({
     severity: 'error',
     code: 'orders-not-in-scope',
     message:
-      `The feed holds ${feed.orders.size} order record(s), and entities.orders is not true ` +
+      `The feed holds ${feed.orders.size} order record(s), and entities.orders is not set ` +
       'in the config. Orders carry personal data and are loaded only after the user has ' +
       'signed off. If they have, set entities.orders to true and record the sign-off in ' +
-      'DECISIONS.md; otherwise stop the adapter from emitting them.',
+      'DECISIONS.md; if orders are out of scope, set it to false and they are ignored.',
     ...(feed.origin.get(`order:${first}`) ?? {}),
   });
 }

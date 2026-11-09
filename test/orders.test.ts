@@ -91,11 +91,27 @@ const codes = (d: { code: string }[]) => d.map((x) => x.code);
 // The opt-in and validate
 // ---------------------------------------------------------------------------
 
-test('orders: refused without entities.orders, once for the whole feed', () => {
+test('orders: refused while entities.orders is unset, once for the whole feed', () => {
   const r = validate([...CATALOG, CUSTOMER, ORDER, { ...ORDER, orderNumber: '100046' }], config({ customers: true }));
   const refused = r.diagnostics.filter((d) => d.code === 'orders-not-in-scope');
   assert.equal(refused.length, 1);
+  assert.equal(refused[0].severity, 'error');
+  assert.match(refused[0].message, /set it to false and they are ignored/);
   assert.match(refused[0].message, /2 order record\(s\)/);
+});
+
+test('orders: entities.orders false ignores them with one warning, and plans none', () => {
+  // The source keeps emitting its history; the decision not to load it is the
+  // config's, so nothing fails and nothing about the orders is checked.
+  const cfg = config({ customers: true, orders: false });
+  const r = validate([...CATALOG, CUSTOMER, ORDER, { ...ORDER, orderNumber: '100046', totalPrice: '-1' }], cfg);
+  assert.deepEqual(r.diagnostics.filter((d) => d.severity === 'error'), []);
+  const ignored = r.diagnostics.filter((d) => d.code === 'orders-ignored');
+  assert.equal(ignored.length, 1);
+  assert.equal(ignored[0].severity, 'warning');
+  assert.match(ignored[0].message, /2 order record\(s\)/);
+  assert.ok(!codes(r.diagnostics).some((c) => c.startsWith('order-')), 'ignored orders are not checked');
+  assert.ok(!('orders' in plan([...CATALOG, CUSTOMER, ORDER], cfg).plan));
 });
 
 test('orders: a clean opted-in order validates; the total that includes no shipping line is a warning, once', () => {

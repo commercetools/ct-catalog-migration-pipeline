@@ -149,9 +149,11 @@ project, because the tax mode lives on each cart.
 
 Customers and orders are **opt-in**: `entities.customers: true` and
 `entities.orders: true` record that the user signed off on migrating personal
-data. Without the switch, `validate` refuses every
-record of that entity, so an adapter that emits customers nobody agreed to move stops at the first
-stage. With it, `plan.json` and `out/load-requests.json` hold personal data; keep
+data. Left out, `validate` refuses every record of that entity, because nobody
+has decided yet; `entities.orders: false` is the decision not to migrate orders,
+and `validate` then ignores order records with one warning. The refusal is what
+stops an adapter that emits customers nobody agreed to move at the first stage.
+With the switch on, `plan.json` and `out/load-requests.json` hold personal data; keep
 `out/` out of version control, as the layout above does, and do not share it.
 
 The skill that accompanies this pipeline conducts these as an interview and
