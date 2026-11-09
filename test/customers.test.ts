@@ -93,13 +93,14 @@ const codes = (d: { code: string }[]) => d.map((x) => x.code);
 // The opt-in
 // ---------------------------------------------------------------------------
 
-test('customers: refused without entities.customers, once for the whole feed', () => {
+test('customers: refused while entities.customers is unset, once for the whole feed', () => {
   const r = validate([...CATALOG, GROUP, ADA, { ...ADA, code: 'C-1002', email: 'b@example.com' }], config());
   const refused = r.diagnostics.filter((d) => d.code === 'customers-not-in-scope');
   assert.equal(refused.length, 1, 'one finding, not one per customer');
   assert.equal(refused[0].severity, 'error');
   assert.match(refused[0].message, /2 customer record\(s\)/);
   assert.match(refused[0].message, /DECISIONS\.md/);
+  assert.match(refused[0].message, /set it to false and they are ignored/);
 });
 
 test('customers: the refusal is reported even when another record fails', () => {
@@ -110,9 +111,18 @@ test('customers: the refusal is reported even when another record fails', () => 
   assert.ok(codes(r.diagnostics).includes('customers-not-in-scope'));
 });
 
-test('customers: entities.customers false refuses like absent', () => {
-  const r = validate([...CATALOG, GROUP, ADA], config(false));
-  assert.ok(codes(r.diagnostics).includes('customers-not-in-scope'));
+test('customers: entities.customers false ignores them with one warning, and plans none', () => {
+  const r = validate(
+    [...CATALOG, GROUP, ADA, { ...ADA, code: 'C-1002', stores: ['nowhere'] }],
+    config(false),
+  );
+  assert.deepEqual(r.diagnostics.filter((d) => d.severity === 'error'), []);
+  const ignored = r.diagnostics.filter((d) => d.code === 'customers-ignored');
+  assert.equal(ignored.length, 1);
+  assert.equal(ignored[0].severity, 'warning');
+  assert.match(ignored[0].message, /2 customer record\(s\)/);
+  assert.ok(!codes(r.diagnostics).some((c) => c.startsWith('customer-')), 'ignored customers are not checked');
+  assert.ok(!('customers' in plan([...CATALOG, GROUP, ADA], config(false)).plan));
 });
 
 test('customers: a feed without customers is untouched by the switch', () => {

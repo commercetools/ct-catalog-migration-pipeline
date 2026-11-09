@@ -154,6 +154,14 @@ test('orders: an undeclared customer or group is an error; no customer at all is
   assert.ok(found.includes('order-without-customer'));
 });
 
+test('orders: an order naming a customer who is not being migrated is refused', () => {
+  // Customers ignored, orders loaded: the customer reference could never resolve.
+  const r = validate([...CATALOG, CUSTOMER, ORDER], config({ customers: false, orders: true }));
+  assert.ok(codes(r.diagnostics).includes('order-customer-not-loaded'));
+  const guest = { ...ORDER, customer: undefined, customerEmail: 'ada@example.com' };
+  assert.ok(!codes(validate([...CATALOG, CUSTOMER, guest], config({ customers: false, orders: true })).diagnostics).includes('order-customer-not-loaded'));
+});
+
 test('orders: a duplicate order number and a missing completedAt are reported', () => {
   const { completedAt: _c, ...undated } = ORDER;
   const r = validate([...CATALOG, CUSTOMER, undated, ORDER]);

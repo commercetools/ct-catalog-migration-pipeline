@@ -762,7 +762,7 @@ function checkAgainstConfig(
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
-  checkCustomers(feed, diagnostics);
+  if (config.entities?.customers === true) checkCustomers(feed, diagnostics);
   if (config.entities?.orders === true) checkOrders(feed, config, diagnostics);
   checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
@@ -1244,11 +1244,13 @@ function checkStoresAndSelections(feed: CatalogFeed, diagnostics: Diagnostic[]):
 }
 
 /**
- * Customer records are refused unless the config says customers are in scope.
+ * Customer records need a decision before anything else happens to them,
+ * exactly as orders do: `true` loads them, `false` ignores them with one
+ * warning, and absent — no decision yet — is refused.
  *
- * One error for the whole feed, naming the count and the first record, not one
- * per customer: the fix is a decision and a config line, or an adapter that
- * stops emitting them, however many there are.
+ * One finding for the whole feed, naming the count and the first record, not
+ * one per customer: the fix is a decision and a config line, however many
+ * there are.
  */
 function checkCustomersInScope(
   feed: CatalogFeed,
@@ -1257,15 +1259,27 @@ function checkCustomersInScope(
 ): void {
   if (feed.customers.size === 0 || config.entities?.customers === true) return;
   const first = feed.customers.keys().next().value as string;
+  if (config.entities?.customers === false) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'customers-ignored',
+      message:
+        `The feed holds ${feed.customers.size} customer record(s), and entities.customers is ` +
+        'false, so they are ignored: not checked, not planned, not loaded. Log them in ' +
+        'DECISIONS.md as not migrated, with the count.',
+      ...(feed.origin.get(`customer:${first}`) ?? {}),
+    });
+    return;
+  }
   diagnostics.push({
     severity: 'error',
     code: 'customers-not-in-scope',
     message:
       `The feed holds ${feed.customers.size} customer record(s), and entities.customers is ` +
-      'not true in the config. Customers are personal data, and a source that contains ' +
+      'not set in the config. Customers are personal data, and a source that contains ' +
       'them is not a decision to migrate them. If the user has signed off on migrating ' +
       'customers, set entities.customers to true and record the sign-off in DECISIONS.md; ' +
-      'otherwise stop the adapter from emitting them.',
+      'if customers are out of scope, set it to false and they are ignored.',
     ...(feed.origin.get(`customer:${first}`) ?? {}),
   });
 }
@@ -1394,6 +1408,17 @@ function checkOrders(feed: CatalogFeed, config: PipelineConfig, diagnostics: Dia
           'record declares. The reference would stay unresolved for 48 hours and expire, ' +
           'taking the order with it. Declare the customer, or make it a guest order with ' +
           'customerEmail.',
+        ...at(order.orderNumber),
+      });
+    } else if (order.customer !== undefined && config.entities?.customers !== true) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-customer-not-loaded',
+        message:
+          `Order '${order.orderNumber}' names customer '${order.customer}', but customers are ` +
+          'not being migrated (entities.customers is not true). The reference would stay ' +
+          'unresolved for 48 hours and expire, taking the order with it. Migrate customers, ' +
+          'or emit the order as a guest order with customerEmail.',
         ...at(order.orderNumber),
       });
     }
