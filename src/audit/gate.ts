@@ -67,6 +67,7 @@ export interface AuditResult {
     standalonePrices: number;
     inventory: number;
     customers: number;
+    orders: number;
     attributeValues: number;
   };
 }
@@ -86,6 +87,7 @@ export function auditPlan(
     standalonePrices: plan.standalonePrices.length,
     inventory: (plan.inventory ?? []).length,
     customers: (plan.customers ?? []).length,
+    orders: (plan.orders ?? []).length,
     attributeValues: 0,
   };
 
@@ -144,6 +146,7 @@ export function auditPlan(
   checkStandalonePrices(plan, config, diagnostics);
   checkInventory(plan, diagnostics);
   checkCustomers(plan, config, diagnostics);
+  checkOrders(plan, config, diagnostics);
   checkTaxCategories(plan, diagnostics);
 
   return { diagnostics, checked };
@@ -1382,6 +1385,88 @@ function checkCustomers(
         `Customers ${[...clashing].map((k) => `'${k}'`).join(', ')} share one email address ` +
         '(case-insensitively). The Import API would reject all but one of them.',
     });
+  }
+}
+
+/**
+ * Orders, re-derived from the written plan.
+ *
+ * The platform validates almost nothing on an order import, so this is the
+ * last check before amounts nobody recomputes become permanent records:
+ * every amount in one currency and not negative, quantities positive, custom
+ * line totals equal to price times quantity, and every reference pointing at
+ * something the plan creates — an unresolved customer or product holds the
+ * whole order and expires it. And the two fields that must never be set:
+ * `inventoryMode`, which decrements stock again, and `store`, which silently
+ * filters the order.
+ */
+function checkOrders(plan: MigrationPlan, config: PipelineConfig, diagnostics: Diagnostic[]): void {
+  const orders = plan.orders ?? [];
+  if (orders.length === 0) return;
+
+  if (config.entities?.orders !== true) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'orders-not-in-scope',
+      message:
+        `The plan holds ${orders.length} order(s), and entities.orders is not true in the ` +
+        'config. Orders load only with that sign-off. Re-run plan from a feed and config ' +
+        'that agree.',
+    });
+  }
+
+  const customerKeys = new Set((plan.customers ?? []).map((c) => c.key));
+  const productKeys = new Set(plan.products.map((p) => p.key));
+  const seen = new Set<string>();
+  const fail = (code: string, message: string) =>
+    diagnostics.push({ severity: 'error', code, message });
+
+  for (const order of orders) {
+    const id = `Order '${order.orderNumber}'`;
+    if (seen.has(order.orderNumber)) fail('order-number-duplicate', `${id} appears twice in the plan.`);
+    seen.add(order.orderNumber);
+
+    const raw = order as unknown as Record<string, unknown>;
+    if ('inventoryMode' in raw) {
+      fail('order-inventory-mode', `${id} sets inventoryMode, which decrements stock for an order fulfilled long ago.`);
+    }
+    if ('store' in raw) {
+      fail('order-store-set', `${id} sets a store, which silently drops prices, languages and stock outside its configuration.`);
+    }
+
+    const currency = order.totalPrice.currencyCode;
+    const amounts: [string, { currencyCode: string; centAmount: number }][] = [['totalPrice', order.totalPrice]];
+    for (const [i, line] of (order.lineItems ?? []).entries()) {
+      amounts.push([`line ${i + 1} price`, line.price.value]);
+      if (!Number.isInteger(line.quantity) || line.quantity < 1) {
+        fail('order-quantity', `${id}, line ${i + 1}, has quantity ${line.quantity}. The platform would accept it.`);
+      }
+      const productKey = line.product?.key;
+      if (productKey !== undefined && !productKeys.has(productKey)) {
+        fail('order-product-unplanned', `${id}, line ${i + 1}, references product '${productKey}', which the plan does not create. The order would wait unresolved and expire.`);
+      }
+    }
+    for (const [i, line] of (order.customLineItems ?? []).entries()) {
+      amounts.push([`custom line ${i + 1} price`, line.money], [`custom line ${i + 1} total`, line.totalPrice]);
+      if (line.totalPrice.centAmount !== line.money.centAmount * line.quantity) {
+        fail('order-custom-line-total', `${id}, custom line ${i + 1}: total ${line.totalPrice.centAmount} is not ${line.money.centAmount} × ${line.quantity}.`);
+      }
+    }
+    if (order.taxedPrice) {
+      amounts.push(['taxedPrice.totalNet', order.taxedPrice.totalNet], ['taxedPrice.totalGross', order.taxedPrice.totalGross]);
+      for (const portion of order.taxedPrice.taxPortions) amounts.push(['a tax portion', portion.amount]);
+    }
+    for (const [what, m] of amounts) {
+      if (m.currencyCode !== currency) {
+        fail('order-currency-mixed', `${id}: ${what} is in ${m.currencyCode}, the total in ${currency}. An order has one currency.`);
+      }
+      if (m.centAmount < 0) fail('order-amount-negative', `${id}: ${what} is negative. The platform would accept it without an error.`);
+    }
+
+    const customer = order.customer?.key;
+    if (customer !== undefined && !customerKeys.has(customer)) {
+      fail('order-customer-unplanned', `${id} references customer '${customer}', which the plan does not create. The order would wait unresolved and expire.`);
+    }
   }
 }
 

@@ -462,8 +462,8 @@ test('verify: a catalog-only plan reads no customers, so it needs no customer sc
 // Teardown
 // ---------------------------------------------------------------------------
 
-test('teardown: customers are removed first and checked against the prefix', () => {
-  assert.equal(TEARDOWN_KINDS[0], 'customers');
+test('teardown: customers are removed right after orders and checked against the prefix', () => {
+  assert.deepEqual(TEARDOWN_KINDS.slice(0, 2), ['orders', 'customers']);
   const { plan: p } = customersOnly();
   const outside = { ...p, customers: [{ ...p.customers![0], key: 'other-C-1001' }] };
   assert.deepEqual(

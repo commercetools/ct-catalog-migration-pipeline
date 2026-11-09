@@ -555,7 +555,71 @@ export interface FeedCustomer {
   billingAddresses?: string[];
 }
 
+/** The tax rate that applied to a line when the order was placed. */
+export interface FeedOrderTaxRate {
+  name: string;
+  amount: number;
+  includedInPrice: boolean;
+  country: string;
+  state?: string;
+}
+
+/** One line of a historical order, as it was sold. */
+export interface FeedOrderLine {
+  /**
+   * A SKU the feed declares becomes a line item linked to its product. Any
+   * other SKU, which in a history is usually a discontinued product, becomes a
+   * custom line item: name, price, quantity and tax kept, product link lost.
+   */
+  sku: string;
+  name: LocalizedString;
+  quantity: number;
+  /** Unit price as charged. */
+  price: DecimalAmount;
+  taxRate?: FeedOrderTaxRate;
+}
+
+/**
+ * A historical order — personal data, and **opt-in** like customers
+ * (`entities.orders`).
+ *
+ * A snapshot, not a cart: totals come from the source and are never
+ * recomputed, as the platform does not compute them on import either. The
+ * order number is kept **verbatim**, because customers and support quote it;
+ * that makes orders the one migrated resource outside `keys.prefix`, and why
+ * teardown removes only orders that still match the plan.
+ *
+ * Deliberately absent: `store`, which silently drops prices, languages and
+ * stock outside the store's configuration on import; `inventoryMode`, because
+ * any mode decrements stock for orders long since fulfilled; payments, which
+ * are never migrated.
+ */
+export interface FeedOrder {
+  _type: 'order';
+  orderNumber: string;
+  currency: string;
+  totalPrice: DecimalAmount;
+  taxedPrice?: {
+    totalNet: DecimalAmount;
+    totalGross: DecimalAmount;
+    taxPortions: { name?: string; rate: number; amount: DecimalAmount }[];
+  };
+  /** Code of a declared customer. Absent for a guest order. */
+  customer?: string;
+  customerEmail?: string;
+  customerGroup?: string;
+  country?: string;
+  completedAt?: string;
+  orderState?: 'Open' | 'Confirmed' | 'Complete' | 'Cancelled';
+  shipmentState?: 'Shipped' | 'Ready' | 'Pending' | 'Delayed' | 'Partial' | 'Backorder';
+  paymentState?: 'BalanceDue' | 'Failed' | 'Pending' | 'CreditOwed' | 'Paid';
+  shippingAddress?: Omit<FeedCustomerAddress, 'code'>;
+  billingAddress?: Omit<FeedCustomerAddress, 'code'>;
+  lineItems: FeedOrderLine[];
+}
+
 export type FeedRecord =
+  | FeedOrder
   | FeedCustomer
   | FeedCategory
   | FeedAttributeDefinition
@@ -580,6 +644,7 @@ export const FEED_TYPES = [
   'variant',
   'inventoryEntry',
   'customer',
+  'order',
 ] as const;
 
 /**
@@ -667,6 +732,8 @@ export interface CatalogFeed {
   inventoryEntries: Map<string, FeedInventoryEntry>;
   /** Keyed by code. Empty unless the feed declares customers — see FeedCustomer. */
   customers: Map<string, FeedCustomer>;
+  /** Keyed by order number, verbatim. Empty unless the feed declares orders. */
+  orders: Map<string, FeedOrder>;
   /** Where each record came from, for diagnostics that name a file and line. */
   origin: Map<string, { file: string; line: number }>;
 }
@@ -685,6 +752,7 @@ export function emptyFeed(): CatalogFeed {
     variantsByProduct: new Map(),
     inventoryEntries: new Map(),
     customers: new Map(),
+    orders: new Map(),
     origin: new Map(),
   };
 }

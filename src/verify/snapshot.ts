@@ -17,6 +17,7 @@ import type {
   Customer,
   CustomerGroup,
   InventoryEntry,
+  Order,
   Product,
   ProductSelection,
   ProductType,
@@ -91,7 +92,8 @@ async function fetchByKey<T>(
           `Could not read ${kind} from the project: ${describeError(err)}\n` +
           `      ${keys.length} planned ${kind} could not be checked. Verification needs ` +
           'view_products for the catalog, view_standalone_prices for prices and, when the ' +
-          'plan has customers, view_customers and view_customer_groups — reading is a ' +
+          'plan has customers, view_customers and view_customer_groups (view_orders for ' +
+          'orders) — reading is a ' +
           'different scope set from writing.',
       });
       return { byKey, readable: false };
@@ -263,6 +265,24 @@ export async function fetchSnapshot(
   );
   if (!customerGroups.readable) unreadable.push('customerGroups');
 
+  // Orders have no key: they are found by order number, verbatim. Read only
+  // when the plan has orders. Needs view_orders.
+  const orders = await fetchByKey<Order>(
+    'order(s)',
+    (plan.orders ?? []).map((o) => o.orderNumber),
+    async (where) =>
+      (
+        await clients.platform
+          .orders()
+          .get({ queryArgs: { where: where.replace(/^key in/, 'orderNumber in'), limit: KEYS_PER_QUERY } })
+          .execute()
+      ).body.results,
+    (o) => o.orderNumber,
+    diagnostics,
+    track,
+  );
+  if (!orders.readable) unreadable.push('orders');
+
   // Stores are keyed verbatim, not prefixed, so the predicate is built from
   // the prerequisite list rather than from a prefixed plan collection.
   const stores = await fetchByKey<Store>(
@@ -334,6 +354,7 @@ export async function fetchSnapshot(
       taxCategoryKeyById,
       customers: customers.byKey,
       customerGroupKeyById,
+      orders: orders.byKey,
     },
     diagnostics,
     unreadable,

@@ -53,6 +53,7 @@ export function writePlan(
         inventory: plan.inventory,
         // Only when present: personal data, and absent from a catalog-only plan.
         ...((plan.customers ?? []).length > 0 ? { customers: plan.customers } : {}),
+        ...((plan.orders ?? []).length > 0 ? { orders: plan.orders } : {}),
         prerequisites: plan.prerequisites,
         // Last, so a human skimming the file sees the catalog first — but
         // written unconditionally, because a plan with no provenance is one the
@@ -69,6 +70,7 @@ export function writePlan(
           'product selection(s)': plan.productSelections?.length ?? 0,
           'inventory entry(ies)': plan.inventory?.length ?? 0,
           'customer(s)': plan.customers?.length ?? 0,
+          'order(s)': plan.orders?.length ?? 0,
           'tax category(ies)': plan.prerequisites?.taxCategories?.length ?? 0,
           'product type(s)': plan.productTypes.length,
         },

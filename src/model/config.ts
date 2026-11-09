@@ -161,6 +161,8 @@ export interface PipelineConfig {
   entities?: {
     /** Customer accounts, imported with ExternalAuth and no password. */
     customers?: boolean;
+    /** Historical orders, imported as snapshots with their numbers verbatim. */
+    orders?: boolean;
   };
 
   load: {
@@ -321,10 +323,10 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
   }
 
   for (const [name, value] of Object.entries(config.entities ?? {})) {
-    if (name !== 'customers') {
+    if (name !== 'customers' && name !== 'orders') {
       fail(
         `entities.${name} is not a known entity.`,
-        'The only entity beyond the catalog is customers. A misspelt switch would\n' +
+        'The entities beyond the catalog are customers and orders. A misspelt switch would\n' +
           'otherwise be ignored, and records of that entity refused with a message about\n' +
           'a switch that looks set.',
       );

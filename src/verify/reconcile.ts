@@ -31,6 +31,7 @@ import type {
   AttributeDefinition as ReadAttributeDefinition,
   Category,
   Customer,
+  Order,
   InventoryEntry,
   Product,
   ProductSelection,
@@ -49,6 +50,7 @@ import type {
   Attribute,
   CustomerImport,
   InventoryImport,
+  OrderImport,
   MigrationPlan,
   PlannedTaxCategory,
   PlannedVariant,
@@ -96,6 +98,8 @@ export interface ProjectSnapshot {
   customers?: Map<string, Customer>;
   /** CustomerGroup id → key, for resolving a customer's group reference. */
   customerGroupKeyById?: Map<string, string>;
+  /** By order number, verbatim. Optional: absent reads as empty. */
+  orders?: Map<string, Order>;
 }
 
 export interface VerifyResult {
@@ -111,6 +115,7 @@ export interface VerifyResult {
     stores: number;
     taxCategories: number;
     customers: number;
+    orders: number;
   };
   /** Planned resources found in the project, per kind. */
   found: {
@@ -123,6 +128,7 @@ export interface VerifyResult {
     stores: number;
     taxCategories: number;
     customers: number;
+    orders: number;
   };
 }
 
@@ -142,6 +148,7 @@ export function reconcile(
     stores: 0,
     taxCategories: 0,
     customers: 0,
+    orders: 0,
   };
   // Under Modular the planned variants are a separate collection, so the
   // comparison reads them through the index rather than off the product.
@@ -157,6 +164,7 @@ export function reconcile(
     stores: (plan.prerequisites?.stores ?? []).length,
     taxCategories: (plan.prerequisites?.taxCategories ?? []).length,
     customers: (plan.customers ?? []).length,
+    orders: (plan.orders ?? []).length,
   };
 
   // First, because a missing tax category explains every product that is
@@ -289,7 +297,58 @@ export function reconcile(
     compareCustomer(planned, actual, snapshot, diagnostics);
   }
 
+  // Last: an order references customers and products, so their absence
+  // explains a missing order.
+  for (const planned of plan.orders ?? []) {
+    const actual = snapshot.orders?.get(planned.orderNumber);
+    if (!actual) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-missing',
+        message:
+          `Order '${planned.orderNumber}' is not in the project. Read the order container's ` +
+          'Import Summary: an order number the project already held, a customer or product ' +
+          'that never resolved, and an invalid tax rate are the usual reasons.',
+      });
+      continue;
+    }
+    found.orders++;
+    compareOrder(planned, actual, diagnostics);
+  }
+
   return { diagnostics, checked, found };
+}
+
+/**
+ * An order as loaded against the plan: what was paid, how far it got, and
+ * whether every line arrived.
+ */
+function compareOrder(planned: OrderImport, actual: Order, diagnostics: Diagnostic[]): void {
+  const differs = (what: string, detail: string) =>
+    diagnostics.push({
+      severity: 'error',
+      code: 'order-differs',
+      message: `Order '${planned.orderNumber}': ${what} differs from the plan. ${detail}`,
+    });
+  const want = planned.totalPrice;
+  const have = actual.totalPrice;
+  if (have.centAmount !== want.centAmount || have.currencyCode !== want.currencyCode) {
+    differs('the total', `Planned ${want.centAmount} ${want.currencyCode}, found ${have.centAmount} ${have.currencyCode}.`);
+  }
+  const lines = (planned.lineItems ?? []).length;
+  const customLines = (planned.customLineItems ?? []).length;
+  if (actual.lineItems.length !== lines || actual.customLineItems.length !== customLines) {
+    differs(
+      'the lines',
+      `Planned ${lines} line item(s) and ${customLines} custom line item(s), found ` +
+        `${actual.lineItems.length} and ${actual.customLineItems.length}.`,
+    );
+  }
+  for (const field of ['orderState', 'shipmentState', 'paymentState'] as const) {
+    if (planned[field] !== undefined && actual[field] !== planned[field]) {
+      differs(field, `Planned ${planned[field]}, found ${actual[field] ?? 'none'}.`);
+    }
+  }
 }
 
 /**

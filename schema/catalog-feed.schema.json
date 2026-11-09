@@ -40,6 +40,9 @@
     },
     {
       "$ref": "#/$defs/customer"
+    },
+    {
+      "$ref": "#/$defs/order"
     }
   ],
   "$defs": {
@@ -1112,6 +1115,307 @@
           "uniqueItems": true,
           "items": {
             "$ref": "#/$defs/code"
+          }
+        }
+      }
+    },
+    "orderAddress": {
+      "type": "object",
+      "required": [
+        "country"
+      ],
+      "additionalProperties": false,
+      "description": "An address as it was on the order: a snapshot, not a reference to the customer's address book.",
+      "properties": {
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$",
+          "description": "ISO 3166-1 alpha-2."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "salutation": {
+          "type": "string",
+          "minLength": 1
+        },
+        "firstName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "lastName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streetName": {
+          "type": "string",
+          "minLength": 1
+        },
+        "streetNumber": {
+          "type": "string",
+          "minLength": 1
+        },
+        "additionalStreetInfo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "postalCode": {
+          "type": "string",
+          "minLength": 1
+        },
+        "city": {
+          "type": "string",
+          "minLength": 1
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1
+        },
+        "company": {
+          "type": "string",
+          "minLength": 1
+        },
+        "department": {
+          "type": "string",
+          "minLength": 1
+        },
+        "building": {
+          "type": "string",
+          "minLength": 1
+        },
+        "apartment": {
+          "type": "string",
+          "minLength": 1
+        },
+        "pOBox": {
+          "type": "string",
+          "minLength": 1
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 1
+        },
+        "mobile": {
+          "type": "string",
+          "minLength": 1
+        },
+        "email": {
+          "type": "string",
+          "minLength": 1
+        },
+        "fax": {
+          "type": "string",
+          "minLength": 1
+        },
+        "additionalAddressInfo": {
+          "type": "string",
+          "minLength": 1
+        },
+        "externalId": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "orderTaxRate": {
+      "type": "object",
+      "required": [
+        "name",
+        "amount",
+        "includedInPrice",
+        "country"
+      ],
+      "additionalProperties": false,
+      "description": "The tax rate that applied when the order was placed. Copied onto the order as-is; it does not reference a tax category, so a rate the project no longer has is still recorded correctly.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Printed on the order as the tax portion."
+        },
+        "amount": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "includedInPrice": {
+          "type": "boolean"
+        },
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "state": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "order": {
+      "type": "object",
+      "required": [
+        "_type",
+        "orderNumber",
+        "currency",
+        "totalPrice",
+        "lineItems"
+      ],
+      "additionalProperties": false,
+      "description": "A historical order, imported as a snapshot. Loaded only when the config sets entities.orders to true; otherwise `validate` refuses the record. The order number is used verbatim: customers and support quote it. Totals are taken from the source and never recomputed, because the platform does not calculate them on import either. There is no store field, because a store on an imported order silently drops prices, languages and stock outside its configuration, and no payment, because payment data and PSP references are never migrated.",
+      "properties": {
+        "_type": {
+          "const": "order"
+        },
+        "orderNumber": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "description": "Verbatim from the source, unique across the Project. An import of a number the project already holds is rejected; orders are create-only."
+        },
+        "currency": {
+          "type": "string",
+          "pattern": "^[A-Z]{3}$",
+          "description": "One currency per order; every amount on it is in this currency."
+        },
+        "totalPrice": {
+          "$ref": "#/$defs/decimalAmount",
+          "description": "What the customer paid, as a decimal string. Not recomputed from the lines: shipping, discounts and fees the core record does not carry make the difference."
+        },
+        "taxedPrice": {
+          "type": "object",
+          "required": [
+            "totalNet",
+            "totalGross",
+            "taxPortions"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "totalNet": {
+              "$ref": "#/$defs/decimalAmount"
+            },
+            "totalGross": {
+              "$ref": "#/$defs/decimalAmount"
+            },
+            "taxPortions": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": [
+                  "rate",
+                  "amount"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "rate": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1
+                  },
+                  "amount": {
+                    "$ref": "#/$defs/decimalAmount"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "customer": {
+          "$ref": "#/$defs/code",
+          "description": "Code of a declared customer record. Leave it out for a guest order and give customerEmail."
+        },
+        "customerEmail": {
+          "type": "string",
+          "minLength": 3,
+          "pattern": "^[^@\\s]+@[^@\\s]+$"
+        },
+        "customerGroup": {
+          "$ref": "#/$defs/code",
+          "description": "Code of a declared customerGroup record."
+        },
+        "country": {
+          "type": "string",
+          "pattern": "^[A-Z]{2}$"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "When the order was placed, as an ISO-8601 instant. Without it the order looks as if it was placed on the day of the load."
+        },
+        "orderState": {
+          "enum": [
+            "Open",
+            "Confirmed",
+            "Complete",
+            "Cancelled"
+          ]
+        },
+        "shipmentState": {
+          "enum": [
+            "Shipped",
+            "Ready",
+            "Pending",
+            "Delayed",
+            "Partial",
+            "Backorder"
+          ]
+        },
+        "paymentState": {
+          "enum": [
+            "BalanceDue",
+            "Failed",
+            "Pending",
+            "CreditOwed",
+            "Paid"
+          ]
+        },
+        "shippingAddress": {
+          "$ref": "#/$defs/orderAddress"
+        },
+        "billingAddress": {
+          "$ref": "#/$defs/orderAddress"
+        },
+        "lineItems": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": [
+              "sku",
+              "name",
+              "quantity",
+              "price"
+            ],
+            "additionalProperties": false,
+            "description": "One line as it was sold. A SKU the feed declares becomes a line item linked to its product; any other SKU becomes a custom line item, which keeps the name, price, quantity and tax but no product link.",
+            "properties": {
+              "sku": {
+                "type": "string",
+                "minLength": 1
+              },
+              "name": {
+                "$ref": "#/$defs/localizedString"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "price": {
+                "$ref": "#/$defs/decimalAmount",
+                "description": "Unit price as charged, as a decimal string."
+              },
+              "taxRate": {
+                "$ref": "#/$defs/orderTaxRate"
+              }
+            }
           }
         }
       }

@@ -25,6 +25,8 @@ import type {
   ImportResourceType,
   InventoryImport,
   InventoryImportRequest,
+  OrderImport,
+  OrderImportRequest,
   ProductDraftImport,
   ProductDraftImportRequest,
   ProductSelectionImport,
@@ -55,7 +57,8 @@ export type ImportRequestBody =
   | StandalonePriceImportRequest
   | ProductSelectionImportRequest
   | InventoryImportRequest
-  | CustomerImportRequest;
+  | CustomerImportRequest
+  | OrderImportRequest;
 
 /**
  * The `resourceType` a container is restricted to, per Import API stage.
@@ -78,6 +81,7 @@ const RESOURCE_TYPE: Record<ImportStage, ImportResourceType> = {
   inventory: 'inventory',
   'product-selection': 'product-selection',
   customer: 'customer',
+  order: 'order',
 };
 
 export interface Batch {
@@ -141,6 +145,8 @@ function bodyFor(stage: ImportStage, resources: unknown[]): ImportRequestBody {
       return { type: 'inventory', resources: resources as InventoryImport[] };
     case 'customer':
       return { type: 'customer', resources: resources as CustomerImport[] };
+    case 'order':
+      return { type: 'order', resources: resources as OrderImport[] };
   }
 }
 
@@ -175,6 +181,8 @@ export function planBatches(plan: MigrationPlan, config: PipelineConfig): LoadBa
     inventory: (plan.inventory ?? []).map((r) => ({ key: r.key, resource: r })),
     // Empty unless the config opts in to customers.
     customer: (plan.customers ?? []).map((r) => ({ key: r.key, resource: r })),
+    // Orders have no key; the order number is their identity, verbatim.
+    order: (plan.orders ?? []).map((r) => ({ key: r.orderNumber, resource: r })),
   };
 
   const containers: ContainerPlan[] = [];

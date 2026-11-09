@@ -51,6 +51,7 @@ import {
   type FeedCategory,
   type FeedChannel,
   type FeedCustomer,
+  type FeedOrder,
   type FeedCustomerGroup,
   type FeedInventoryEntry,
   type FeedProduct,
@@ -61,6 +62,7 @@ import {
   type FeedVariant,
 } from '../model/feed.js';
 import type { PipelineConfig } from '../model/config.js';
+import { toTypedMoney } from '../map/money.js';
 import {
   MAX_VARIANTS_CLASSIC,
   MAX_VARIANTS_MODULAR,
@@ -269,6 +271,7 @@ export function validateFeed(
   // migrated at all is not a consequence of some other record failing, and the
   // adapter author should learn it on the first run, not after fixing the rest.
   checkCustomersInScope(feed, config, diagnostics);
+  checkOrdersInScope(feed, config, diagnostics);
   if (rejected === 0) {
     checkIntegrity(feed, diagnostics);
     checkAgainstConfig(feed, config, diagnostics);
@@ -388,6 +391,13 @@ function index(
       if (feed.customers.has(r.code)) return duplicate('customer', r.code);
       feed.customers.set(r.code, r);
       feed.origin.set(`customer:${r.code}`, { file, line });
+      return;
+    }
+    case 'order': {
+      const r = record as FeedOrder;
+      if (feed.orders.has(r.orderNumber)) return duplicate('order', r.orderNumber);
+      feed.orders.set(r.orderNumber, r);
+      feed.origin.set(`order:${r.orderNumber}`, { file, line });
       return;
     }
   }
@@ -753,6 +763,7 @@ function checkAgainstConfig(
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
   checkCustomers(feed, diagnostics);
+  checkOrders(feed, config, diagnostics);
   checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
   if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
@@ -1257,6 +1268,166 @@ function checkCustomersInScope(
       'otherwise stop the adapter from emitting them.',
     ...(feed.origin.get(`customer:${first}`) ?? {}),
   });
+}
+
+/**
+ * Order records are refused unless the config says orders are in scope, for
+ * the same reason and in the same shape as customers: an order carries an
+ * email and addresses, and a history in the export is not a decision to load
+ * it.
+ */
+function checkOrdersInScope(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  if (feed.orders.size === 0 || config.entities?.orders === true) return;
+  const first = feed.orders.keys().next().value as string;
+  diagnostics.push({
+    severity: 'error',
+    code: 'orders-not-in-scope',
+    message:
+      `The feed holds ${feed.orders.size} order record(s), and entities.orders is not true ` +
+      'in the config. Orders carry personal data and are loaded only after the user has ' +
+      'signed off. If they have, set entities.orders to true and record the sign-off in ' +
+      'DECISIONS.md; otherwise stop the adapter from emitting them.',
+    ...(feed.origin.get(`order:${first}`) ?? {}),
+  });
+}
+
+/**
+ * Orders against the config and against what they reference.
+ *
+ * The platform checks almost nothing on an order import: it accepts negative
+ * prices and quantities, and it stores `totalPrice` as given rather than
+ * computing it. So the checks that would be the API's anywhere else are made
+ * here, before the plan exists.
+ *
+ * A difference between the total and the sum of the lines is a warning, once,
+ * with a count: shipping, discounts and fees are not lines in the core record,
+ * so most real orders differ. It is reported so nobody reads it as a defect
+ * later, and so a total that is off for another reason has a place to show.
+ */
+function checkOrders(feed: CatalogFeed, config: PipelineConfig, diagnostics: Diagnostic[]): void {
+  if (feed.orders.size === 0) return;
+  const at = (n: string) => feed.origin.get(`order:${n}`) ?? {};
+  const differing: string[] = [];
+  const withoutCompletedAt: string[] = [];
+
+  for (const order of feed.orders.values()) {
+    const digits = config.market.currencyFractionDigits[order.currency];
+    if (digits === undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-currency-not-configured',
+        message:
+          `Order '${order.orderNumber}' is in ${order.currency}, which has no entry in ` +
+          'market.currencyFractionDigits. Without the digit count its amounts cannot be ' +
+          'converted to minor units, and assuming 2 is wrong for JPY or BHD by a factor of ' +
+          '100 or 10.',
+        ...at(order.orderNumber),
+      });
+      continue;
+    }
+
+    const minor = (amount: string, what: string): number | undefined => {
+      const r = toTypedMoney(amount, order.currency, digits);
+      if (!r.ok) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'order-amount-invalid',
+          message: `Order '${order.orderNumber}', ${what}: ${r.reason}`,
+          ...at(order.orderNumber),
+        });
+        return undefined;
+      }
+      if (r.money.centAmount < 0) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'order-amount-negative',
+          message:
+            `Order '${order.orderNumber}', ${what}, is negative. The platform accepts a ` +
+            'negative price or total on an import without an error, so this is the only ' +
+            'place it is caught. A refund or credit is not an order: leave it out and log it.',
+          ...at(order.orderNumber),
+        });
+      }
+      return r.money.centAmount;
+    };
+
+    const total = minor(order.totalPrice, 'totalPrice');
+    let lines = 0;
+    for (const [i, line] of order.lineItems.entries()) {
+      const price = minor(line.price, `line ${i + 1} (${line.sku}) price`);
+      if (price !== undefined) lines += price * line.quantity;
+    }
+    if (order.taxedPrice) {
+      minor(order.taxedPrice.totalNet, 'taxedPrice.totalNet');
+      minor(order.taxedPrice.totalGross, 'taxedPrice.totalGross');
+      for (const portion of order.taxedPrice.taxPortions) minor(portion.amount, 'a tax portion');
+    }
+    if (total !== undefined && total !== lines) differing.push(order.orderNumber);
+    if (order.completedAt === undefined) withoutCompletedAt.push(order.orderNumber);
+
+    if (order.customer !== undefined && !feed.customers.has(order.customer)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-customer-not-declared',
+        message:
+          `Order '${order.orderNumber}' names customer '${order.customer}', which no customer ` +
+          'record declares. The reference would stay unresolved for 48 hours and expire, ' +
+          'taking the order with it. Declare the customer, or make it a guest order with ' +
+          'customerEmail.',
+        ...at(order.orderNumber),
+      });
+    }
+    if (order.customer === undefined && order.customerEmail === undefined) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'order-without-customer',
+        message:
+          `Order '${order.orderNumber}' has neither a customer nor a customerEmail, so no ` +
+          'customer will ever see it in an order history. Correct for an anonymous order; ' +
+          'otherwise give it one.',
+        ...at(order.orderNumber),
+      });
+    }
+    if (order.customerGroup !== undefined && !feed.customerGroups.has(order.customerGroup)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-customer-group-not-declared',
+        message:
+          `Order '${order.orderNumber}' is in customer group '${order.customerGroup}', which no ` +
+          'customerGroup record declares. The reference would stay unresolved and expire, ' +
+          'taking the order with it.',
+        ...at(order.orderNumber),
+      });
+    }
+  }
+
+  if (differing.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'order-total-differs-from-lines',
+      message:
+        `${differing.length} of ${feed.orders.size} order(s) have a totalPrice that is not the ` +
+        `sum of their lines (first: '${differing[0]}'). Expected where shipping, discounts or ` +
+        'fees were charged, which the core order record does not carry as lines; the total is ' +
+        'imported as given either way. Check a few against the source before accepting it.',
+      ...at(differing[0]),
+    });
+  }
+  if (withoutCompletedAt.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'order-without-completed-at',
+      message:
+        `${withoutCompletedAt.length} order(s) have no completedAt (first: ` +
+        `'${withoutCompletedAt[0]}'). They will look as if they were placed on the day of the ` +
+        'load, in every order history and every report sorted by date.',
+      ...at(withoutCompletedAt[0]),
+    });
+  }
 }
 
 /**

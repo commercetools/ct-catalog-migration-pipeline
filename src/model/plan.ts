@@ -33,6 +33,7 @@ import type {
   CategoryKeyReference,
   CustomerImport,
   Image,
+  OrderImport,
   InventoryImport,
   LocalizedString,
   Money,
@@ -66,6 +67,7 @@ export type {
   CategoryKeyReference,
   CustomerImport,
   Image,
+  OrderImport,
   InventoryImport,
   LocalizedString,
   Money,
@@ -198,6 +200,10 @@ export const LOAD_ORDER = [
   // `--wait` settles on `processing`, not `unresolved`, so it does not wait
   // for the store that only it can make.
   'customer',
+  // Opt-in like customers, and after them: an order references its customer
+  // by key, and its line items reference products and SKUs loaded above.
+  // Create-only: an order number the project already holds is rejected.
+  'order',
   // Last, and after the Import stages rather than with the other platform
   // prerequisites. A store's `productSelections` reference selections by key,
   // and a store cannot be created pointing at one that does not exist yet —
@@ -234,6 +240,7 @@ export const IMPORT_RESOURCE_TYPE: Record<LoadStage, string | undefined> = {
   inventory: 'inventory',
   'product-selection': 'product-selection',
   customer: 'customer',
+  order: 'order',
   store: undefined,
 };
 
@@ -390,6 +397,14 @@ export interface MigrationPlan {
    * `load-requests.json` hold it whenever it is non-empty.
    */
   customers?: CustomerImport[];
+  /**
+   * Historical orders, as `OrderImport` resources, keyed by their order
+   * number **verbatim** — the one collection outside `keys.prefix`.
+   *
+   * Empty unless the config sets `entities.orders`. Optional like customers.
+   * Personal data: emails and addresses.
+   */
+  orders?: OrderImport[];
   decisions: MappingDecision[];
   /**
    * What this plan was built from.
