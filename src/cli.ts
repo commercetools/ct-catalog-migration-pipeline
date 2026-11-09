@@ -416,6 +416,7 @@ function runPlan(opts: Opts): number {
     if (stage === 'standalone-price') return plan.standalonePrices.length > 0;
     if (stage === 'variant') return plan.variants.length > 0;
     if (stage === 'inventory') return (plan.inventory ?? []).length > 0;
+    if (stage === 'customer') return (plan.customers ?? []).length > 0;
     if (stage === 'tax-category') return (plan.prerequisites?.taxCategories ?? []).length > 0;
     return true;
   });
@@ -431,6 +432,9 @@ function runPlan(opts: Opts): number {
   );
   if ((plan.inventory ?? []).length > 0) {
     console.log(`  ${plan.inventory.length} inventory entry(ies)`);
+  }
+  if ((plan.customers ?? []).length > 0) {
+    console.log(`  ${plan.customers!.length} customer(s), ExternalAuth (plan.json holds personal data)`);
   }
   const taxCategories = plan.prerequisites?.taxCategories ?? [];
   if (taxCategories.length > 0) {
@@ -516,6 +520,7 @@ function runAudit(opts: Opts): number {
       `${checked.products} product(s), ${checked.variants} variant(s), ` +
       `${checked.prices} embedded price(s), ${checked.standalonePrices} standalone price(s), ` +
       (checked.inventory > 0 ? `${checked.inventory} inventory entry(ies), ` : '') +
+      (checked.customers > 0 ? `${checked.customers} customer(s), ` : '') +
       `${checked.attributeValues} attribute value(s).`,
   );
   console.log('');
@@ -988,6 +993,9 @@ async function runVerify(opts: Opts): Promise<number> {
       (result.checked.taxCategories > 0
         ? `, ${result.found.taxCategories}/${result.checked.taxCategories} tax category(ies)`
         : '') +
+      (result.checked.customers > 0
+        ? `, ${result.found.customers}/${result.checked.customers} customer(s)`
+        : '') +
       '.',
   );
   console.log('');
@@ -1033,6 +1041,7 @@ function counts(feed: ReturnType<typeof validateFeed>['feed']) {
     variants: feed.variants.size,
     inventoryEntries: feed.inventoryEntries.size,
     taxCategories: feed.taxCategories.size,
+    customers: feed.customers.size,
   };
 }
 
@@ -1060,6 +1069,12 @@ function report(
       `  ${c.inventoryEntries} inventory entries (${scoped} channel-scoped, ` +
         `${c.inventoryEntries - scoped} project-wide)`,
     );
+  }
+  // Only when there are customers: most feeds have none, and those that do
+  // are refused unless the config opts in, which the diagnostics report.
+  if (c.customers > 0) {
+    const scoped = [...result.feed.customers.values()].filter((x) => x.stores !== undefined).length;
+    console.log(`  ${c.customers} customers (${scoped} Store-specific, ${c.customers - scoped} global)`);
   }
   // Only when declared, for the same reason as stock. The products that have
   // none are reported as a warning, which is where that belongs.

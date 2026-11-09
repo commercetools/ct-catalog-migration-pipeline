@@ -31,6 +31,7 @@ import type {
   AttributeType,
   CategoryImport,
   CategoryKeyReference,
+  CustomerImport,
   Image,
   InventoryImport,
   LocalizedString,
@@ -63,6 +64,7 @@ export type {
   AttributeType,
   CategoryImport,
   CategoryKeyReference,
+  CustomerImport,
   Image,
   InventoryImport,
   LocalizedString,
@@ -188,6 +190,14 @@ export const LOAD_ORDER = [
   // sits unresolved for 48 hours and then expires, taking the stock with it.
   'inventory',
   'product-selection',
+  // Personal data, and only present when the config opts in. After the
+  // catalog because nothing in it depends on a customer. A customer naming a
+  // Store references one that is created in the next stage, after the import
+  // stages: its operation waits `unresolved` and resolves when the store
+  // appears, which is minutes, against the 48 hours an operation is kept.
+  // `--wait` settles on `processing`, not `unresolved`, so it does not wait
+  // for the store that only it can make.
+  'customer',
   // Last, and after the Import stages rather than with the other platform
   // prerequisites. A store's `productSelections` reference selections by key,
   // and a store cannot be created pointing at one that does not exist yet —
@@ -223,6 +233,7 @@ export const IMPORT_RESOURCE_TYPE: Record<LoadStage, string | undefined> = {
   'standalone-price': 'standalone-price',
   inventory: 'inventory',
   'product-selection': 'product-selection',
+  customer: 'customer',
   store: undefined,
 };
 
@@ -369,6 +380,16 @@ export interface MigrationPlan {
    * creating a parallel set.
    */
   inventory: InventoryImport[];
+  /**
+   * Customer accounts, as `CustomerImport` resources, imported with
+   * `authenticationMode: 'ExternalAuth'` and no password.
+   *
+   * Empty unless the config sets `entities.customers`. Optional so a plan
+   * written before customers existed still loads; every reader treats absent
+   * as empty. This collection is personal data: `plan.json` and
+   * `load-requests.json` hold it whenever it is non-empty.
+   */
+  customers?: CustomerImport[];
   decisions: MappingDecision[];
   /**
    * What this plan was built from.

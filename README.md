@@ -147,6 +147,12 @@ or a country with no rate, for the same reason. Left out, it means `Platform`, t
 default, and the warnings stay. It records an answer; it is not read from the
 project, because the tax mode lives on each cart.
 
+Customers are **opt-in**: `entities.customers: true` records that the user signed
+off on migrating personal data. Without it, `validate` refuses every `customer`
+record, so an adapter that emits customers nobody agreed to move stops at the first
+stage. With it, `plan.json` and `out/load-requests.json` hold personal data; keep
+`out/` out of version control, as the layout above does, and do not share it.
+
 The skill that accompanies this pipeline conducts these as an interview and
 writes the config from the answers, which is the intended path. The template
 exists as a reference and a fallback.
@@ -180,6 +186,7 @@ with a `_type`:
 | `attributeDefinition` | declared attribute types — the alternative is inference, which needs review |
 | `product`, `variant` | the catalog itself, with prices and assets |
 | `inventoryEntry` | stock per `(sku, supplyChannel)`; a record of its own, so stock can be regenerated without rebuilding the catalog |
+| `customer` | opt-in (`entities.customers`); keyed on a source code, never the email; imported with `authenticationMode: ExternalAuth` and **no password field**, because no source hash can be imported; addresses named by code, Store-specific when `stores` is set |
 
 `fixtures/` doubles as documentation: each directory is a runnable example of
 one behaviour, including the deliberately broken ones.
@@ -197,9 +204,12 @@ one behaviour, including the deliberately broken ones.
 - **Claim zero information loss.** Every approximation is recorded as a
   decision, and `out/MODEL-REVIEW.md` is meant to be read before loading.
 - **Sync after cutover.** This is a one-time migration tool.
-- **Migrate customers, orders, carts or promotions.** Catalog and its stock
-  only. Stock is a one-time load to open on, not a sync: whatever owns
-  inventory afterwards will move these numbers within the hour.
+- **Migrate orders, carts or promotions.** Catalog, its stock and, when the
+  config opts in, customers. Stock is a one-time load to open on, not a sync:
+  whatever owns inventory afterwards will move these numbers within the hour.
+- **Migrate a password.** No source hash can be imported, so customers arrive
+  under ExternalAuth, and how they sign in afterwards is the implementation's
+  decision. `teardown` deletes customers with `dataErasure`.
 
 ## Scale
 

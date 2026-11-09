@@ -66,6 +66,7 @@ export interface AuditResult {
     prices: number;
     standalonePrices: number;
     inventory: number;
+    customers: number;
     attributeValues: number;
   };
 }
@@ -84,6 +85,7 @@ export function auditPlan(
     prices: 0,
     standalonePrices: plan.standalonePrices.length,
     inventory: (plan.inventory ?? []).length,
+    customers: (plan.customers ?? []).length,
     attributeValues: 0,
   };
 
@@ -141,6 +143,7 @@ export function auditPlan(
   checkPriceModeConsistency(plan, config, diagnostics);
   checkStandalonePrices(plan, config, diagnostics);
   checkInventory(plan, diagnostics);
+  checkCustomers(plan, config, diagnostics);
   checkTaxCategories(plan, diagnostics);
 
   return { diagnostics, checked };
@@ -1268,6 +1271,120 @@ function checkStandalonePrices(
  * nothing. That is the failure this pipeline exists to make impossible: silent,
  * accepted by the API, and invisible in every report.
  */
+/**
+ * Customers, re-derived from the written plan.
+ *
+ * The same questions `validate` asked of the feed, asked again of what will be
+ * sent, on a separate code path: the opt-in, the authentication mode, the
+ * address positions the mapper computed, and email uniqueness. Two are new
+ * here because only the plan can show them: that no password reached a
+ * resource, and that each address position points inside the address list.
+ *
+ * Diagnostics name keys, never emails.
+ */
+function checkCustomers(
+  plan: MigrationPlan,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  const customers = plan.customers ?? [];
+  if (customers.length === 0) return;
+
+  if (config.entities?.customers !== true) {
+    diagnostics.push({
+      severity: 'error',
+      code: 'customers-not-in-scope',
+      message:
+        `The plan holds ${customers.length} customer(s), and entities.customers is not true ` +
+        'in the config. Customers are personal data and load only with that sign-off. ' +
+        'Re-run plan from a feed and config that agree.',
+    });
+  }
+
+  const byEmail = new Map<string, { key: string; stores?: string[] }[]>();
+  for (const customer of customers) {
+    const raw = customer as unknown as Record<string, unknown>;
+    if ('password' in raw) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-password-present',
+        message:
+          `Customer '${customer.key}' carries a password. The pipeline never sends one: no ` +
+          'source hash can be imported, and a password in the plan is a credential in a ' +
+          'file. Re-run plan; if it persists, the plan was edited by hand.',
+      });
+    }
+    if (customer.authenticationMode !== 'ExternalAuth') {
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-authentication-mode',
+        message:
+          `Customer '${customer.key}' has authenticationMode ` +
+          `${JSON.stringify(customer.authenticationMode)}. Without a password the API accepts ` +
+          'a customer only under ExternalAuth, so this one would be rejected.',
+      });
+    }
+
+    const addresses = customer.addresses ?? [];
+    const keys = new Set<string>();
+    for (const address of addresses) {
+      if (keys.has(address.key)) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'customer-address-duplicate',
+          message: `Customer '${customer.key}' has two addresses keyed '${address.key}'.`,
+        });
+      }
+      keys.add(address.key);
+    }
+    const positions: [string, number | undefined][] = [
+      ['defaultShippingAddress', customer.defaultShippingAddress],
+      ['defaultBillingAddress', customer.defaultBillingAddress],
+      ...(customer.shippingAddresses ?? []).map((i) => ['shippingAddresses', i] as [string, number]),
+      ...(customer.billingAddresses ?? []).map((i) => ['billingAddresses', i] as [string, number]),
+    ];
+    for (const [field, position] of positions) {
+      if (position === undefined) continue;
+      if (!Number.isInteger(position) || position < 0 || position >= addresses.length) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'customer-address-position',
+          message:
+            `Customer '${customer.key}' points ${field} at position ${position}, and it has ` +
+            `${addresses.length} address(es). The API would reject the customer.`,
+        });
+      }
+    }
+
+    const email = customer.email.toLowerCase();
+    const stores = customer.stores?.map((s) => s.key);
+    byEmail.set(email, [...(byEmail.get(email) ?? []), { key: customer.key, stores }]);
+  }
+
+  for (const holders of byEmail.values()) {
+    if (holders.length < 2) continue;
+    const clashing = new Set<string>();
+    for (let i = 0; i < holders.length; i++) {
+      for (let j = i + 1; j < holders.length; j++) {
+        const a = holders[i].stores;
+        const b = holders[j].stores;
+        if (a === undefined || b === undefined || a.some((s) => b.includes(s))) {
+          clashing.add(holders[i].key);
+          clashing.add(holders[j].key);
+        }
+      }
+    }
+    if (clashing.size === 0) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'customer-email-duplicate',
+      message:
+        `Customers ${[...clashing].map((k) => `'${k}'`).join(', ')} share one email address ` +
+        '(case-insensitively). The Import API would reject all but one of them.',
+    });
+  }
+}
+
 function checkInventory(plan: MigrationPlan, diagnostics: Diagnostic[]): void {
   const entries = plan.inventory ?? [];
   if (entries.length === 0) return;

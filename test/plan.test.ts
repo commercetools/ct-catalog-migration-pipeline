@@ -259,6 +259,8 @@ test('plan: the declared fixture maps cleanly', () => {
     'standalone-price',
     'inventory',
     'product-selection',
+    // Opt-in personal data; empty unless the config sets entities.customers.
+    'customer',
     // Also a platform stage, but *last*: a store references product
     // selections, which the Import API creates asynchronously, so it cannot
     // be created alongside the channels.

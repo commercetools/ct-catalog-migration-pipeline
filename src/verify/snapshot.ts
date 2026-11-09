@@ -14,6 +14,8 @@
 
 import type {
   Category,
+  Customer,
+  CustomerGroup,
   InventoryEntry,
   Product,
   ProductSelection,
@@ -88,8 +90,9 @@ async function fetchByKey<T>(
         message:
           `Could not read ${kind} from the project: ${describeError(err)}\n` +
           `      ${keys.length} planned ${kind} could not be checked. Verification needs ` +
-          'view_products for the catalog and view_standalone_prices for prices — reading ' +
-          'is a different scope set from writing.',
+          'view_products for the catalog, view_standalone_prices for prices and, when the ' +
+          'plan has customers, view_customers and view_customer_groups — reading is a ' +
+          'different scope set from writing.',
       });
       return { byKey, readable: false };
     }
@@ -228,6 +231,38 @@ export async function fetchSnapshot(
   );
   if (!inventory.readable) unreadable.push('inventory');
 
+  // Personal data: read only when the plan has customers, so a catalog-only
+  // verify asks for no customer scope. Needs view_customers.
+  const plannedCustomers = plan.customers ?? [];
+  const customers = await fetchByKey<Customer>(
+    'customer(s)',
+    plannedCustomers.map((c) => c.key),
+    async (where) =>
+      (await clients.platform.customers().get({ queryArgs: { where, limit: KEYS_PER_QUERY } }).execute())
+        .body.results,
+    (c) => c.key,
+    diagnostics,
+    track,
+  );
+  if (!customers.readable) unreadable.push('customers');
+
+  // A customer's group comes back as an id. Verbatim keys, from the
+  // prerequisites; read only for the groups a planned customer names.
+  const groupKeys = [
+    ...new Set(plannedCustomers.flatMap((c) => (c.customerGroup ? [c.customerGroup.key] : []))),
+  ];
+  const customerGroups = await fetchByKey<CustomerGroup>(
+    'customer group(s)',
+    groupKeys,
+    async (where) =>
+      (await clients.platform.customerGroups().get({ queryArgs: { where, limit: KEYS_PER_QUERY } }).execute())
+        .body.results,
+    (g) => g.key,
+    diagnostics,
+    track,
+  );
+  if (!customerGroups.readable) unreadable.push('customerGroups');
+
   // Stores are keyed verbatim, not prefixed, so the predicate is built from
   // the prerequisite list rather than from a prefixed plan collection.
   const stores = await fetchByKey<Store>(
@@ -277,6 +312,9 @@ export async function fetchSnapshot(
   const taxCategoryKeyById = new Map<string, string>();
   for (const [key, category] of taxCategories.byKey) taxCategoryKeyById.set(category.id, key);
 
+  const customerGroupKeyById = new Map<string, string>();
+  for (const [key, group] of customerGroups.byKey) customerGroupKeyById.set(group.id, key);
+
   activity.done();
 
   return {
@@ -294,6 +332,8 @@ export async function fetchSnapshot(
       productTypeKeyById,
       productSelectionKeyById,
       taxCategoryKeyById,
+      customers: customers.byKey,
+      customerGroupKeyById,
     },
     diagnostics,
     unreadable,

@@ -17,7 +17,7 @@ import type {
   FeedPrice,
   FeedVariant,
 } from '../model/feed.js';
-import { taxRateScope } from '../model/feed.js';
+import { taxRateScope, type FeedCustomer } from '../model/feed.js';
 import {
   attributeDefinitionsOf,
   LOAD_ORDER,
@@ -29,6 +29,7 @@ import {
   type AttributeType,
   type CategoryImport,
   type CategoryKeyReference,
+  type CustomerImport,
   type DerivedModel,
   type Image,
   type InventoryImport,
@@ -236,6 +237,7 @@ export function buildPlan(
 
   const productSelections = buildProductSelections(feed, config, decisions);
   const inventory = buildInventory(feed, config, decisions);
+  const customers = buildCustomers(feed, config, decisions);
 
   for (const group of feed.customerGroups.values()) {
     if (group.name === undefined) {
@@ -260,6 +262,7 @@ export function buildPlan(
       standalonePrices,
       productSelections,
       inventory,
+      ...(customers.length > 0 ? { customers } : {}),
       prerequisites,
       decisions: [...model.decisions, ...decisions],
       keyMap,
@@ -352,6 +355,89 @@ function buildTaxCategories(
   }
 
   return out;
+}
+
+/**
+ * Feed customers into `CustomerImport` resources.
+ *
+ * Empty unless the config opts in; `validate` has already refused customer
+ * records without it, so the check here only guards a plan built by other
+ * means.
+ *
+ * Every customer is imported with `authenticationMode: 'ExternalAuth'`, which
+ * is what lets the API take a customer with no password. The feed has no
+ * password field, so there is nothing else to send, and a random password
+ * generated here would sit in `plan.json` and `load-requests.json`.
+ *
+ * The feed names addresses by code; the Import API takes positions in the
+ * address array. The positions are computed here from the order the addresses
+ * are written in, so the code-to-index mapping lives in one place.
+ *
+ * The decision recorded for review carries counts only. `MODEL-REVIEW.md` is
+ * read, shared and committed by people who should not receive a customer list.
+ */
+function buildCustomers(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  decisions: MappingDecision[],
+): CustomerImport[] {
+  if (feed.customers.size === 0 || config.entities?.customers !== true) return [];
+
+  const out: CustomerImport[] = [];
+  let storeScoped = 0;
+  let withAddresses = 0;
+  for (const customer of feed.customers.values()) {
+    out.push(customerImport(customer, config.keys.prefix));
+    if (customer.stores !== undefined) storeScoped++;
+    if ((customer.addresses ?? []).length > 0) withAddresses++;
+  }
+
+  decisions.push({
+    subject: 'customers',
+    outcome:
+      `${out.length} customer(s), ${storeScoped} Store-specific, ${withAddresses} with ` +
+      'addresses; authenticationMode ExternalAuth, no passwords',
+    rationale:
+      'No source password hash can be imported, so customers are created without a ' +
+      'password, under ExternalAuth. Signing in afterwards is up to the implementation: ' +
+      'an external identity provider, or a password reset the implementation sends. ' +
+      'Every customer is keyed on its source code, never its email. plan.json and ' +
+      'load-requests.json now hold personal data.',
+    review: true,
+  });
+
+  return out;
+}
+
+function customerImport(customer: FeedCustomer, prefix: string): CustomerImport {
+  const addresses = customer.addresses ?? [];
+  const index = new Map(addresses.map((a, i) => [a.code, i]));
+  const at = (code: string) => index.get(code)!;
+  const { code, _type, addresses: _a, stores, customerGroup, defaultShippingAddress,
+    defaultBillingAddress, shippingAddresses, billingAddresses, ...fields } = customer;
+
+  return {
+    key: resourceKey(prefix, code),
+    ...fields,
+    authenticationMode: 'ExternalAuth',
+    ...(customerGroup !== undefined
+      ? { customerGroup: { typeId: 'customer-group' as const, key: customerGroup } }
+      : {}),
+    ...(stores !== undefined
+      ? { stores: stores.map((key) => ({ typeId: 'store' as const, key })) }
+      : {}),
+    ...(addresses.length > 0
+      ? { addresses: addresses.map(({ code: addressCode, ...rest }) => ({ key: addressCode, ...rest })) }
+      : {}),
+    ...(defaultShippingAddress !== undefined
+      ? { defaultShippingAddress: at(defaultShippingAddress) }
+      : {}),
+    ...(defaultBillingAddress !== undefined
+      ? { defaultBillingAddress: at(defaultBillingAddress) }
+      : {}),
+    ...(shippingAddresses !== undefined ? { shippingAddresses: shippingAddresses.map(at) } : {}),
+    ...(billingAddresses !== undefined ? { billingAddresses: billingAddresses.map(at) } : {}),
+  };
 }
 
 /** 0.2 → "20%", 0.075 → "7.5%" — without the float noise 0.07 * 100 carries. */

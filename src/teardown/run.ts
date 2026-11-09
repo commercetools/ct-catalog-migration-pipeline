@@ -43,6 +43,7 @@ import type { ProjectSnapshot } from '../verify/reconcile.js';
 import { noProgress, type Progress } from '../progress/progress.js';
 
 const PROGRESS_LABELS: Record<TeardownKind, string> = {
+  customers: 'customers',
   standalonePrices: 'standalone prices',
   inventory: 'inventory entries',
   variants: 'variants',
@@ -55,6 +56,9 @@ const PROGRESS_LABELS: Record<TeardownKind, string> = {
 
 /** In deletion order. */
 export const TEARDOWN_KINDS = [
+  // First: nothing the pipeline creates references a customer, and a customer
+  // is the one kind whose removal is about personal data rather than tidiness.
+  'customers',
   'standalonePrices',
   'inventory',
   'productSelections',
@@ -181,6 +185,7 @@ export function keysOutsidePrefix(
   const check = (kind: TeardownKind, keys: string[]) => {
     for (const key of keys) if (!key.startsWith(prefix)) bad.push({ kind, key });
   };
+  check('customers', (plan.customers ?? []).map((x) => x.key));
   check('standalonePrices', plan.standalonePrices.map((x) => x.key));
   check('inventory', (plan.inventory ?? []).map((x) => x.key));
   check('variants', plan.variants.map((x) => x.key));
@@ -319,6 +324,14 @@ function removers(clients: Clients): Record<Exclude<TeardownKind, 'containers'>,
     }
   };
   return {
+    // `dataErasure` asks the platform to erase the personal data the customer
+    // held, not only the resource: this is a trial load being undone, and the
+    // data was never the project's to keep.
+    customers: {
+      fresh: (key) => read(() => p.customers().withKey({ key }).get().execute()),
+      remove: (key, version) =>
+        p.customers().withKey({ key }).delete({ queryArgs: { version, dataErasure: true } }).execute(),
+    },
     standalonePrices: {
       fresh: (key) => read(() => p.standalonePrices().withKey({ key }).get().execute()),
       remove: (key, version) => p.standalonePrices().withKey({ key }).delete({ queryArgs: { version } }).execute(),
@@ -436,6 +449,7 @@ async function readAllStores(clients: Clients) {
 
 function presentKeys(plan: MigrationPlan, snapshot: ProjectSnapshot): Record<Exclude<TeardownKind, 'containers'>, string[]> {
   return {
+    customers: (plan.customers ?? []).map((x) => x.key).filter((k) => snapshot.customers?.has(k) ?? false),
     standalonePrices: plan.standalonePrices.map((x) => x.key).filter((k) => snapshot.standalonePrices.has(k)),
     inventory: (plan.inventory ?? []).map((x) => x.key).filter((k) => snapshot.inventory.has(k)),
     variants: plan.variants.map((x) => x.key).filter((k) => snapshot.variants.has(k)),
@@ -448,6 +462,7 @@ function presentKeys(plan: MigrationPlan, snapshot: ProjectSnapshot): Record<Exc
 
 function versionOf(kind: Exclude<TeardownKind, 'containers'>, snapshot: ProjectSnapshot, key: string): number | undefined {
   const map = {
+    customers: snapshot.customers ?? new Map(),
     standalonePrices: snapshot.standalonePrices,
     inventory: snapshot.inventory,
     variants: snapshot.variants,
@@ -524,6 +539,7 @@ export async function runTeardown(
 
   const containerKeys = planBatches(plan, config).containers.map((c) => c.key);
   result.planned = {
+    customers: (plan.customers ?? []).length,
     standalonePrices: plan.standalonePrices.length,
     inventory: (plan.inventory ?? []).length,
     variants: plan.variants.length,
@@ -716,6 +732,7 @@ export async function runTeardown(
     });
   };
 
+  await deleteKeys('customers', present.customers);
   await deleteKeys('standalonePrices', present.standalonePrices);
   await deleteKeys('inventory', present.inventory);
 
@@ -823,6 +840,7 @@ export async function runTeardown(
 /** One screen of text: what was found, what was done, what was left alone. */
 export function renderTeardown(result: TeardownResult): string {
   const labels: Record<TeardownKind, string> = {
+    customers: 'customers',
     standalonePrices: 'standalone prices',
     inventory: 'inventory entries',
     variants: 'variants (Modular)',

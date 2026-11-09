@@ -30,6 +30,7 @@ import type {
   Attribute as ReadAttribute,
   AttributeDefinition as ReadAttributeDefinition,
   Category,
+  Customer,
   InventoryEntry,
   Product,
   ProductSelection,
@@ -46,6 +47,7 @@ import type { PipelineConfig } from '../model/config.js';
 import type {
   Asset,
   Attribute,
+  CustomerImport,
   InventoryImport,
   MigrationPlan,
   PlannedTaxCategory,
@@ -90,6 +92,10 @@ export interface ProjectSnapshot {
   taxCategories?: Map<string, TaxCategory>;
   /** TaxCategory id → key, for resolving a product's taxCategory reference. */
   taxCategoryKeyById?: Map<string, string>;
+  /** By the plan's key. Optional like taxCategories: absent reads as empty. */
+  customers?: Map<string, Customer>;
+  /** CustomerGroup id → key, for resolving a customer's group reference. */
+  customerGroupKeyById?: Map<string, string>;
 }
 
 export interface VerifyResult {
@@ -104,6 +110,7 @@ export interface VerifyResult {
     inventory: number;
     stores: number;
     taxCategories: number;
+    customers: number;
   };
   /** Planned resources found in the project, per kind. */
   found: {
@@ -115,6 +122,7 @@ export interface VerifyResult {
     inventory: number;
     stores: number;
     taxCategories: number;
+    customers: number;
   };
 }
 
@@ -133,6 +141,7 @@ export function reconcile(
     inventory: 0,
     stores: 0,
     taxCategories: 0,
+    customers: 0,
   };
   // Under Modular the planned variants are a separate collection, so the
   // comparison reads them through the index rather than off the product.
@@ -147,6 +156,7 @@ export function reconcile(
     inventory: (plan.inventory ?? []).length,
     stores: (plan.prerequisites?.stores ?? []).length,
     taxCategories: (plan.prerequisites?.taxCategories ?? []).length,
+    customers: (plan.customers ?? []).length,
   };
 
   // First, because a missing tax category explains every product that is
@@ -260,7 +270,97 @@ export function reconcile(
     compareStore(planned, actual, snapshot, diagnostics);
   }
 
+  // After the stores, because a Store-specific customer's operation resolves
+  // only once its store exists: a missing store explains a missing customer.
+  for (const planned of plan.customers ?? []) {
+    const actual = snapshot.customers?.get(planned.key);
+    if (!actual) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-missing',
+        message:
+          `Customer '${planned.key}' is not in the project. Read the customer container's ` +
+          'Import Summary for the reason; a duplicate email is the usual one, and the ' +
+          'request was accepted either way.',
+      });
+      continue;
+    }
+    found.customers++;
+    compareCustomer(planned, actual, snapshot, diagnostics);
+  }
+
   return { diagnostics, checked, found };
+}
+
+/**
+ * A customer as loaded against the plan.
+ *
+ * Compares what decides whether the account works: the email, the
+ * authentication mode, the group and Stores, and the addresses with their
+ * defaults. Every message names the key, not the email.
+ */
+function compareCustomer(
+  planned: CustomerImport,
+  actual: Customer,
+  snapshot: ProjectSnapshot,
+  diagnostics: Diagnostic[],
+): void {
+  const differs = (what: string, detail: string) =>
+    diagnostics.push({
+      severity: 'error',
+      code: 'customer-differs',
+      message: `Customer '${planned.key}': ${what} differs from the plan. ${detail}`,
+    });
+
+  if (actual.email.toLowerCase() !== planned.email.toLowerCase()) {
+    differs('the email', 'Something else wrote this customer, or the key is reused.');
+  }
+  if ((actual.authenticationMode ?? 'Password') !== planned.authenticationMode) {
+    differs(
+      'authenticationMode',
+      `It is ${actual.authenticationMode ?? 'Password'} in the project; the plan sends ExternalAuth.`,
+    );
+  }
+
+  const wantGroup = planned.customerGroup?.key;
+  const haveGroup = actual.customerGroup
+    ? (snapshot.customerGroupKeyById?.get(actual.customerGroup.id) ?? `id ${actual.customerGroup.id}`)
+    : undefined;
+  if (wantGroup !== haveGroup) {
+    differs(
+      'the customer group',
+      `Planned ${wantGroup ?? 'none'}, found ${haveGroup ?? 'none'}. The group decides which prices the customer sees.`,
+    );
+  }
+
+  const wantStores = (planned.stores ?? []).map((s) => s.key).sort();
+  const haveStores = (actual.stores ?? []).map((s) => s.key).sort();
+  if (wantStores.join(',') !== haveStores.join(',')) {
+    differs(
+      'the Stores',
+      `Planned [${wantStores.join(', ') || 'global'}], found [${haveStores.join(', ') || 'global'}]. ` +
+        'Which Stores a customer belongs to decides where they can sign in.',
+    );
+  }
+
+  const wantAddresses = (planned.addresses ?? []).map((a) => a.key);
+  const keyById = new Map(actual.addresses.map((a) => [a.id, a.key]));
+  const haveAddresses = actual.addresses.map((a) => a.key);
+  if (wantAddresses.slice().sort().join(',') !== haveAddresses.slice().sort().join(',')) {
+    differs(
+      'the address list',
+      `Planned keys [${wantAddresses.join(', ')}], found [${haveAddresses.join(', ')}].`,
+    );
+    return;
+  }
+  const keyAt = (i: number | undefined) => (i === undefined ? undefined : wantAddresses[i]);
+  const keyOf = (id: string | undefined) => (id === undefined ? undefined : keyById.get(id));
+  if (keyAt(planned.defaultShippingAddress) !== keyOf(actual.defaultShippingAddressId)) {
+    differs('the default shipping address', 'Checkout preselects it.');
+  }
+  if (keyAt(planned.defaultBillingAddress) !== keyOf(actual.defaultBillingAddressId)) {
+    differs('the default billing address', 'Checkout preselects it.');
+  }
 }
 
 function missing(kind: string, key: string): Diagnostic {

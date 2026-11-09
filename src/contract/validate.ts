@@ -50,6 +50,7 @@ import {
   type FeedAttributeDefinition,
   type FeedCategory,
   type FeedChannel,
+  type FeedCustomer,
   type FeedCustomerGroup,
   type FeedInventoryEntry,
   type FeedProduct,
@@ -264,6 +265,10 @@ export function validateFeed(
   // just consequences of the earlier failure — chasing those wastes the
   // adapter author's time.
   activity.status(() => `checking ${records.toLocaleString('en-US')} record(s) against each other`);
+  // Not behind the `rejected === 0` gate below: whether personal data may be
+  // migrated at all is not a consequence of some other record failing, and the
+  // adapter author should learn it on the first run, not after fixing the rest.
+  checkCustomersInScope(feed, config, diagnostics);
   if (rejected === 0) {
     checkIntegrity(feed, diagnostics);
     checkAgainstConfig(feed, config, diagnostics);
@@ -376,6 +381,13 @@ function index(
       if (feed.inventoryEntries.has(id)) return duplicate('inventoryEntry', id);
       feed.inventoryEntries.set(id, r);
       feed.origin.set(`inventoryEntry:${id}`, { file, line });
+      return;
+    }
+    case 'customer': {
+      const r = record as FeedCustomer;
+      if (feed.customers.has(r.code)) return duplicate('customer', r.code);
+      feed.customers.set(r.code, r);
+      feed.origin.set(`customer:${r.code}`, { file, line });
       return;
     }
   }
@@ -740,6 +752,7 @@ function checkAgainstConfig(
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
+  checkCustomers(feed, diagnostics);
   checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
   if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
@@ -1217,6 +1230,183 @@ function checkStoresAndSelections(feed: CatalogFeed, diagnostics: Diagnostic[]):
       ...(feed.origin.get(`productSelection:${code}`) ?? {}),
     });
   }
+}
+
+/**
+ * Customer records are refused unless the config says customers are in scope.
+ *
+ * One error for the whole feed, naming the count and the first record, not one
+ * per customer: the fix is a decision and a config line, or an adapter that
+ * stops emitting them, however many there are.
+ */
+function checkCustomersInScope(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  if (feed.customers.size === 0 || config.entities?.customers === true) return;
+  const first = feed.customers.keys().next().value as string;
+  diagnostics.push({
+    severity: 'error',
+    code: 'customers-not-in-scope',
+    message:
+      `The feed holds ${feed.customers.size} customer record(s), and entities.customers is ` +
+      'not true in the config. Customers are personal data, and a source that contains ' +
+      'them is not a decision to migrate them. If the user has signed off on migrating ' +
+      'customers, set entities.customers to true and record the sign-off in DECISIONS.md; ' +
+      'otherwise stop the adapter from emitting them.',
+    ...(feed.origin.get(`customer:${first}`) ?? {}),
+  });
+}
+
+/**
+ * Customer records against each other and against what they reference.
+ *
+ * Every diagnostic names the customer **code**, never the email, even where the
+ * email is the problem: these messages are printed, logged and pasted into
+ * tickets, and the code is enough to find the record.
+ *
+ * Email uniqueness is checked case-insensitively, as the API compares emails
+ * on sign-up and sign-in. Two Store-specific customers conflict only when they
+ * share a Store; a global customer conflicts with any other customer holding
+ * the same email, because a global customer can sign in through every Store.
+ * The Import API would reject the second of a pair, but asynchronously and one
+ * operation at a time, long after the adapter could have been fixed.
+ */
+function checkCustomers(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
+  if (feed.customers.size === 0) return;
+  const at = (code: string) => feed.origin.get(`customer:${code}`) ?? {};
+
+  /** lowercased email → codes holding it, in feed order. */
+  const byEmail = new Map<string, string[]>();
+  /** customerNumber → codes holding it. */
+  const byNumber = new Map<string, string[]>();
+
+  for (const customer of feed.customers.values()) {
+    const email = customer.email.toLowerCase();
+    byEmail.set(email, [...(byEmail.get(email) ?? []), customer.code]);
+    if (customer.customerNumber !== undefined) {
+      byNumber.set(customer.customerNumber, [
+        ...(byNumber.get(customer.customerNumber) ?? []),
+        customer.code,
+      ]);
+    }
+
+    if (customer.customerGroup !== undefined && !feed.customerGroups.has(customer.customerGroup)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-group-not-declared',
+        message:
+          `Customer '${customer.code}' is in customer group '${customer.customerGroup}', which ` +
+          'no customerGroup record declares. The reference would stay unresolved for 48 hours ' +
+          'and then expire, taking the customer with it.\n' +
+          `      Declare it: {"_type":"customerGroup","code":"${customer.customerGroup}"}.`,
+        ...at(customer.code),
+      });
+    }
+
+    for (const store of customer.stores ?? []) {
+      if (feed.stores.has(store)) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-store-not-declared',
+        message:
+          `Customer '${customer.code}' belongs to store '${store}', which no store record ` +
+          'declares. The reference would stay unresolved for 48 hours and then expire, ' +
+          'taking the customer with it.\n' +
+          `      Declare it: {"_type":"store","code":"${store}"}.`,
+        ...at(customer.code),
+      });
+    }
+
+    const addressCodes = new Set<string>();
+    for (const address of customer.addresses ?? []) {
+      if (addressCodes.has(address.code)) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'customer-address-duplicate',
+          message:
+            `Customer '${customer.code}' has two addresses with code '${address.code}'. The ` +
+            'code becomes the address key, which is unique within a customer.',
+          ...at(customer.code),
+        });
+      }
+      addressCodes.add(address.code);
+    }
+
+    const refs: [string, string | undefined][] = [
+      ['defaultShippingAddress', customer.defaultShippingAddress],
+      ['defaultBillingAddress', customer.defaultBillingAddress],
+      ...(customer.shippingAddresses ?? []).map((c) => ['shippingAddresses', c] as [string, string]),
+      ...(customer.billingAddresses ?? []).map((c) => ['billingAddresses', c] as [string, string]),
+    ];
+    for (const [field, code] of refs) {
+      if (code === undefined || addressCodes.has(code)) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-address-unknown',
+        message:
+          `Customer '${customer.code}' names address '${code}' in ${field}, and none of its ` +
+          'addresses has that code. The API takes these as positions in the address list, ' +
+          'so the reference cannot be guessed.',
+        ...at(customer.code),
+      });
+    }
+  }
+
+  for (const codes of byEmail.values()) {
+    if (codes.length < 2) continue;
+    const clashing = emailClashes(codes.map((c) => feed.customers.get(c)!));
+    if (clashing.length === 0) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'customer-email-duplicate',
+      message:
+        `Customers ${clashing.map((c) => `'${c}'`).join(', ')} share one email address ` +
+        '(compared case-insensitively, as the API does). An email is unique across the ' +
+        'Project, or within each Store for Store-specific customers, so the Import API ' +
+        'would reject all but one of them. Merge them in the adapter, or decide which ' +
+        'account survives and log the others as not migrated.',
+      ...at(clashing[0]),
+    });
+  }
+
+  for (const [number, codes] of byNumber) {
+    if (codes.length < 2) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'customer-number-duplicate',
+      message:
+        `Customers ${codes.map((c) => `'${c}'`).join(', ')} share customerNumber '${number}', ` +
+        'which is unique across the Project and cannot be changed once set.',
+      ...at(codes[0]),
+    });
+  }
+}
+
+/**
+ * Of customers sharing one email, the codes that actually conflict.
+ *
+ * Global customers conflict with everyone; Store-specific ones only with
+ * customers in a common Store.
+ */
+function emailClashes(customers: FeedCustomer[]): string[] {
+  const clashing = new Set<string>();
+  for (let i = 0; i < customers.length; i++) {
+    for (let j = i + 1; j < customers.length; j++) {
+      const a = customers[i];
+      const b = customers[j];
+      const conflict =
+        a.stores === undefined ||
+        b.stores === undefined ||
+        a.stores.some((store) => b.stores!.includes(store));
+      if (conflict) {
+        clashing.add(a.code);
+        clashing.add(b.code);
+      }
+    }
+  }
+  return customers.map((c) => c.code).filter((code) => clashing.has(code));
 }
 
 /**
