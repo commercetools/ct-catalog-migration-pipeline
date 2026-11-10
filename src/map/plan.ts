@@ -545,7 +545,12 @@ function orderImport(order: FeedOrder, feed: CatalogFeed, config: PipelineConfig
       lineItems.push({
         product: { typeId: 'product', key: resourceKey(config.keys.prefix, variant.product) },
         name: line.name,
-        variant: { sku: line.sku },
+        // The SKU alone is refused ("invalid product variant identification information");
+        // the key reference names the same variant the plan creates under variantKey().
+        variant: {
+          sku: line.sku,
+          productVariant: { typeId: 'product-variant', key: variantKey(config.keys.prefix, line.sku) },
+        },
         price: { value: unit },
         quantity: line.quantity,
         ...(taxRate ? { taxRate } : {}),
@@ -1393,7 +1398,7 @@ function mapVariant(
 
   return {
     draft: {
-      key: resourceKey(config.keys.prefix, slugSafeSku(variant.sku)),
+      key: variantKey(config.keys.prefix, variant.sku),
       sku: variant.sku,
       attributes,
       images,
@@ -1553,6 +1558,14 @@ function resolveMediaUrl(
  */
 function slugSafeSku(sku: string): string {
   return sku.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * The key of a variant draft. Everything that refers to a variant by key (an order
+ * line, today) has to call this, so the reference and the variant cannot drift apart.
+ */
+function variantKey(prefix: string, sku: string): string {
+  return resourceKey(prefix, slugSafeSku(sku));
 }
 
 /**

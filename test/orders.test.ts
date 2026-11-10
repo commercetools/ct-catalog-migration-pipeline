@@ -23,7 +23,7 @@ import { auditPlan } from '../src/audit/gate.js';
 import { planBatches } from '../src/load/batches.js';
 import { reconcile, type ProjectSnapshot } from '../src/verify/reconcile.js';
 import { keysOutsidePrefix, renderTeardown, runTeardown } from '../src/teardown/run.js';
-import { LOAD_ORDER, type MigrationPlan, type OrderImport } from '../src/model/plan.js';
+import { LOAD_ORDER, variantsOf, type MigrationPlan, type OrderImport } from '../src/model/plan.js';
 import type { Clients } from '../src/client/factory.js';
 
 function packageRoot(): string {
@@ -180,6 +180,31 @@ test('orders: no diagnostic prints an email', () => {
 // Plan
 // ---------------------------------------------------------------------------
 
+test('plan: an order line names its variant by the key the plan gives that variant, also for a SKU that needs sanitising', () => {
+  // The Import API refuses a line item identified by the SKU alone, so the key reference
+  // has to resolve to a variant the plan creates. A SKU with '/' is keyed after sanitising.
+  const catalog = [
+    ...CATALOG,
+    {
+      _type: 'variant', sku: 'TEE/M', product: 'TEE', axisValues: { sz: 'M' },
+      prices: [{ currency: 'GBP', amount: '12.00' }],
+    },
+  ];
+  const order = {
+    ...ORDER,
+    totalPrice: '22.00',
+    lineItems: [
+      { sku: 'TEE-S', name: { 'en-GB': 'Tee' }, quantity: 1, price: '10.00' },
+      { sku: 'TEE/M', name: { 'en-GB': 'Tee' }, quantity: 1, price: '12.00' },
+    ],
+  };
+  const r = plan([...catalog, CUSTOMER, order]);
+  const draftKeys = new Set(r.plan.products.flatMap((p) => variantsOf(p).map((v) => v.key)));
+  const refs = r.plan.orders![0].lineItems!.map((l) => l.variant.productVariant?.key);
+  assert.deepEqual(refs, ['mig-TEE-S', 'mig-TEE-M']);
+  for (const key of refs) assert.ok(draftKeys.has(key!), `no variant draft is keyed ${key}`);
+});
+
 test('plan: an order keeps its number, links known SKUs, and turns unknown ones into custom lines', () => {
   const r = plan([...CATALOG, CUSTOMER, ORDER]);
   const [o] = r.plan.orders!;
@@ -188,7 +213,10 @@ test('plan: an order keeps its number, links known SKUs, and turns unknown ones 
   assert.deepEqual(o.customer, { typeId: 'customer', key: 'mig-C-1' });
   assert.equal(o.lineItems!.length, 1);
   assert.deepEqual(o.lineItems![0].product, { typeId: 'product', key: 'mig-TEE' });
-  assert.deepEqual(o.lineItems![0].variant, { sku: 'TEE-S' });
+  assert.deepEqual(o.lineItems![0].variant, {
+    sku: 'TEE-S',
+    productVariant: { typeId: 'product-variant', key: 'mig-TEE-S' },
+  });
   assert.equal(o.lineItems![0].price.value.centAmount, 1000);
   assert.deepEqual(o.lineItems![0].taxRate, VAT);
   const [c] = o.customLineItems!;
