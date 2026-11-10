@@ -147,6 +147,16 @@ or a country with no rate, for the same reason. Left out, it means `Platform`, t
 default, and the warnings stay. It records an answer; it is not read from the
 project, because the tax mode lives on each cart.
 
+Customers and orders are **opt-in**: `entities.customers: true` and
+`entities.orders: true` record that the user signed off on migrating personal
+data. Left out, `validate` refuses every record of that entity, because nobody
+has decided yet; `false` is the decision not to migrate that entity, and
+`validate` then ignores its records with one warning. An order naming a customer
+who is not migrated is refused: make it a guest order instead. The refusal is what
+stops an adapter that emits customers nobody agreed to move at the first stage.
+With the switch on, `plan.json` and `out/load-requests.json` hold personal data; keep
+`out/` out of version control, as the layout above does, and do not share it.
+
 The skill that accompanies this pipeline conducts these as an interview and
 writes the config from the answers, which is the intended path. The template
 exists as a reference and a fallback.
@@ -180,6 +190,8 @@ with a `_type`:
 | `attributeDefinition` | declared attribute types — the alternative is inference, which needs review |
 | `product`, `variant` | the catalog itself, with prices and assets |
 | `inventoryEntry` | stock per `(sku, supplyChannel)`; a record of its own, so stock can be regenerated without rebuilding the catalog |
+| `order` | opt-in (`entities.orders`); a snapshot: totals as given, never recomputed; order number **verbatim**, so outside `keys.prefix`; a SKU the feed does not declare becomes a custom line item; never sets `store` or `inventoryMode`; no payments |
+| `customer` | opt-in (`entities.customers`); keyed on a source code, never the email; imported with `authenticationMode: ExternalAuth` and **no password field**, because no source hash can be imported; addresses named by code, Store-specific when `stores` is set |
 
 `fixtures/` doubles as documentation: each directory is a runnable example of
 one behaviour, including the deliberately broken ones.
@@ -197,9 +209,20 @@ one behaviour, including the deliberately broken ones.
 - **Claim zero information loss.** Every approximation is recorded as a
   decision, and `out/MODEL-REVIEW.md` is meant to be read before loading.
 - **Sync after cutover.** This is a one-time migration tool.
-- **Migrate customers, orders, carts or promotions.** Catalog and its stock
-  only. Stock is a one-time load to open on, not a sync: whatever owns
-  inventory afterwards will move these numbers within the hour.
+- **Migrate carts, payments or promotions,** or an order's shipping info,
+  deliveries and returns. Catalog, its stock and, when the config opts in,
+  customers and the core of each order. Stock is a one-time load to open on, not a sync:
+  whatever owns inventory afterwards will move these numbers within the hour.
+- **Migrate a password.** No source hash can be imported, so customers arrive
+  under ExternalAuth, and how they sign in afterwards is the implementation's
+  decision. `teardown` deletes customers and orders with `dataErasure`.
+- **Delete an order it cannot vouch for.** Order numbers are verbatim, so a
+  prefix cannot scope them: `teardown` deletes a planned order number only
+  while its total and line counts still match the plan, and names the rest.
+- **Keep old orders quiet.** Importing an order emits `OrderImported`, which
+  every subscription listening for it receives: an order-confirmation email or
+  an ERP export for a years-old order. Ask whoever owns the subscriptions before
+  `load --execute`.
 
 ## Scale
 

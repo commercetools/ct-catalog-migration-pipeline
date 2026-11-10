@@ -50,6 +50,8 @@ import {
   type FeedAttributeDefinition,
   type FeedCategory,
   type FeedChannel,
+  type FeedCustomer,
+  type FeedOrder,
   type FeedCustomerGroup,
   type FeedInventoryEntry,
   type FeedProduct,
@@ -60,6 +62,7 @@ import {
   type FeedVariant,
 } from '../model/feed.js';
 import type { PipelineConfig } from '../model/config.js';
+import { toTypedMoney } from '../map/money.js';
 import {
   MAX_VARIANTS_CLASSIC,
   MAX_VARIANTS_MODULAR,
@@ -264,6 +267,11 @@ export function validateFeed(
   // just consequences of the earlier failure — chasing those wastes the
   // adapter author's time.
   activity.status(() => `checking ${records.toLocaleString('en-US')} record(s) against each other`);
+  // Not behind the `rejected === 0` gate below: whether personal data may be
+  // migrated at all is not a consequence of some other record failing, and the
+  // adapter author should learn it on the first run, not after fixing the rest.
+  checkCustomersInScope(feed, config, diagnostics);
+  checkOrdersInScope(feed, config, diagnostics);
   if (rejected === 0) {
     checkIntegrity(feed, diagnostics);
     checkAgainstConfig(feed, config, diagnostics);
@@ -376,6 +384,20 @@ function index(
       if (feed.inventoryEntries.has(id)) return duplicate('inventoryEntry', id);
       feed.inventoryEntries.set(id, r);
       feed.origin.set(`inventoryEntry:${id}`, { file, line });
+      return;
+    }
+    case 'customer': {
+      const r = record as FeedCustomer;
+      if (feed.customers.has(r.code)) return duplicate('customer', r.code);
+      feed.customers.set(r.code, r);
+      feed.origin.set(`customer:${r.code}`, { file, line });
+      return;
+    }
+    case 'order': {
+      const r = record as FeedOrder;
+      if (feed.orders.has(r.orderNumber)) return duplicate('order', r.orderNumber);
+      feed.orders.set(r.orderNumber, r);
+      feed.origin.set(`order:${r.orderNumber}`, { file, line });
       return;
     }
   }
@@ -740,6 +762,8 @@ function checkAgainstConfig(
   checkPriceReferences(feed, config, diagnostics);
   checkStoresAndSelections(feed, diagnostics);
   checkInventory(feed, diagnostics);
+  if (config.entities?.customers === true) checkCustomers(feed, diagnostics);
+  if (config.entities?.orders === true) checkOrders(feed, config, diagnostics);
   checkTaxCategories(feed, config, diagnostics);
   checkPrefixNotDoubled(config, diagnostics);
   if (config.feed.subset === true) rollUpUnreferencedOnSubset(diagnostics);
@@ -1217,6 +1241,384 @@ function checkStoresAndSelections(feed: CatalogFeed, diagnostics: Diagnostic[]):
       ...(feed.origin.get(`productSelection:${code}`) ?? {}),
     });
   }
+}
+
+/**
+ * Customer records need a decision before anything else happens to them,
+ * exactly as orders do: `true` loads them, `false` ignores them with one
+ * warning, and absent — no decision yet — is refused.
+ *
+ * One finding for the whole feed, naming the count and the first record, not
+ * one per customer: the fix is a decision and a config line, however many
+ * there are.
+ */
+function checkCustomersInScope(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  if (feed.customers.size === 0 || config.entities?.customers === true) return;
+  const first = feed.customers.keys().next().value as string;
+  if (config.entities?.customers === false) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'customers-ignored',
+      message:
+        `The feed holds ${feed.customers.size} customer record(s), and entities.customers is ` +
+        'false, so they are ignored: not checked, not planned, not loaded. Log them in ' +
+        'DECISIONS.md as not migrated, with the count.',
+      ...(feed.origin.get(`customer:${first}`) ?? {}),
+    });
+    return;
+  }
+  diagnostics.push({
+    severity: 'error',
+    code: 'customers-not-in-scope',
+    message:
+      `The feed holds ${feed.customers.size} customer record(s), and entities.customers is ` +
+      'not set in the config. Customers are personal data, and a source that contains ' +
+      'them is not a decision to migrate them. If the user has signed off on migrating ' +
+      'customers, set entities.customers to true and record the sign-off in DECISIONS.md; ' +
+      'if customers are out of scope, set it to false and they are ignored.',
+    ...(feed.origin.get(`customer:${first}`) ?? {}),
+  });
+}
+
+/**
+ * Order records need a decision before anything else happens to them.
+ *
+ * - `entities.orders: true` loads them.
+ * - `entities.orders: false` is the decision not to: the records are ignored,
+ *   with one warning giving the count, and `plan` leaves them out. A source
+ *   whose export always carries its order history can then keep emitting it.
+ * - Absent is no decision yet, so it is refused: an order carries an email and
+ *   addresses, and a history in the export is not a decision to load it.
+ */
+function checkOrdersInScope(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  diagnostics: Diagnostic[],
+): void {
+  if (feed.orders.size === 0 || config.entities?.orders === true) return;
+  const first = feed.orders.keys().next().value as string;
+  if (config.entities?.orders === false) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'orders-ignored',
+      message:
+        `The feed holds ${feed.orders.size} order record(s), and entities.orders is false, ` +
+        'so they are ignored: not checked, not planned, not loaded. Log them in DECISIONS.md ' +
+        'as not migrated, with the count.',
+      ...(feed.origin.get(`order:${first}`) ?? {}),
+    });
+    return;
+  }
+  diagnostics.push({
+    severity: 'error',
+    code: 'orders-not-in-scope',
+    message:
+      `The feed holds ${feed.orders.size} order record(s), and entities.orders is not set ` +
+      'in the config. Orders carry personal data and are loaded only after the user has ' +
+      'signed off. If they have, set entities.orders to true and record the sign-off in ' +
+      'DECISIONS.md; if orders are out of scope, set it to false and they are ignored.',
+    ...(feed.origin.get(`order:${first}`) ?? {}),
+  });
+}
+
+/**
+ * Orders against the config and against what they reference.
+ *
+ * The platform checks almost nothing on an order import: it accepts negative
+ * prices and quantities, and it stores `totalPrice` as given rather than
+ * computing it. So the checks that would be the API's anywhere else are made
+ * here, before the plan exists.
+ *
+ * A difference between the total and the sum of the lines is a warning, once,
+ * with a count: shipping, discounts and fees are not lines in the core record,
+ * so most real orders differ. It is reported so nobody reads it as a defect
+ * later, and so a total that is off for another reason has a place to show.
+ */
+function checkOrders(feed: CatalogFeed, config: PipelineConfig, diagnostics: Diagnostic[]): void {
+  if (feed.orders.size === 0) return;
+  const at = (n: string) => feed.origin.get(`order:${n}`) ?? {};
+  const differing: string[] = [];
+  const withoutCompletedAt: string[] = [];
+
+  for (const order of feed.orders.values()) {
+    const digits = config.market.currencyFractionDigits[order.currency];
+    if (digits === undefined) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-currency-not-configured',
+        message:
+          `Order '${order.orderNumber}' is in ${order.currency}, which has no entry in ` +
+          'market.currencyFractionDigits. Without the digit count its amounts cannot be ' +
+          'converted to minor units, and assuming 2 is wrong for JPY or BHD by a factor of ' +
+          '100 or 10.',
+        ...at(order.orderNumber),
+      });
+      continue;
+    }
+
+    const minor = (amount: string, what: string): number | undefined => {
+      const r = toTypedMoney(amount, order.currency, digits);
+      if (!r.ok) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'order-amount-invalid',
+          message: `Order '${order.orderNumber}', ${what}: ${r.reason}`,
+          ...at(order.orderNumber),
+        });
+        return undefined;
+      }
+      if (r.money.centAmount < 0) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'order-amount-negative',
+          message:
+            `Order '${order.orderNumber}', ${what}, is negative. The platform accepts a ` +
+            'negative price or total on an import without an error, so this is the only ' +
+            'place it is caught. A refund or credit is not an order: leave it out and log it.',
+          ...at(order.orderNumber),
+        });
+      }
+      return r.money.centAmount;
+    };
+
+    const total = minor(order.totalPrice, 'totalPrice');
+    let lines = 0;
+    for (const [i, line] of order.lineItems.entries()) {
+      const price = minor(line.price, `line ${i + 1} (${line.sku}) price`);
+      if (price !== undefined) lines += price * line.quantity;
+    }
+    if (order.taxedPrice) {
+      minor(order.taxedPrice.totalNet, 'taxedPrice.totalNet');
+      minor(order.taxedPrice.totalGross, 'taxedPrice.totalGross');
+      for (const portion of order.taxedPrice.taxPortions) minor(portion.amount, 'a tax portion');
+    }
+    if (total !== undefined && total !== lines) differing.push(order.orderNumber);
+    if (order.completedAt === undefined) withoutCompletedAt.push(order.orderNumber);
+
+    if (order.customer !== undefined && !feed.customers.has(order.customer)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-customer-not-declared',
+        message:
+          `Order '${order.orderNumber}' names customer '${order.customer}', which no customer ` +
+          'record declares. The reference would stay unresolved for 48 hours and expire, ' +
+          'taking the order with it. Declare the customer, or make it a guest order with ' +
+          'customerEmail.',
+        ...at(order.orderNumber),
+      });
+    } else if (order.customer !== undefined && config.entities?.customers !== true) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-customer-not-loaded',
+        message:
+          `Order '${order.orderNumber}' names customer '${order.customer}', but customers are ` +
+          'not being migrated (entities.customers is not true). The reference would stay ' +
+          'unresolved for 48 hours and expire, taking the order with it. Migrate customers, ' +
+          'or emit the order as a guest order with customerEmail.',
+        ...at(order.orderNumber),
+      });
+    }
+    if (order.customer === undefined && order.customerEmail === undefined) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'order-without-customer',
+        message:
+          `Order '${order.orderNumber}' has neither a customer nor a customerEmail, so no ` +
+          'customer will ever see it in an order history. Correct for an anonymous order; ' +
+          'otherwise give it one.',
+        ...at(order.orderNumber),
+      });
+    }
+    if (order.customerGroup !== undefined && !feed.customerGroups.has(order.customerGroup)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'order-customer-group-not-declared',
+        message:
+          `Order '${order.orderNumber}' is in customer group '${order.customerGroup}', which no ` +
+          'customerGroup record declares. The reference would stay unresolved and expire, ' +
+          'taking the order with it.',
+        ...at(order.orderNumber),
+      });
+    }
+  }
+
+  if (differing.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'order-total-differs-from-lines',
+      message:
+        `${differing.length} of ${feed.orders.size} order(s) have a totalPrice that is not the ` +
+        `sum of their lines (first: '${differing[0]}'). Expected where shipping, discounts or ` +
+        'fees were charged, which the core order record does not carry as lines; the total is ' +
+        'imported as given either way. Check a few against the source before accepting it.',
+      ...at(differing[0]),
+    });
+  }
+  if (withoutCompletedAt.length > 0) {
+    diagnostics.push({
+      severity: 'warning',
+      code: 'order-without-completed-at',
+      message:
+        `${withoutCompletedAt.length} order(s) have no completedAt (first: ` +
+        `'${withoutCompletedAt[0]}'). They will look as if they were placed on the day of the ` +
+        'load, in every order history and every report sorted by date.',
+      ...at(withoutCompletedAt[0]),
+    });
+  }
+}
+
+/**
+ * Customer records against each other and against what they reference.
+ *
+ * Every diagnostic names the customer **code**, never the email, even where the
+ * email is the problem: these messages are printed, logged and pasted into
+ * tickets, and the code is enough to find the record.
+ *
+ * Email uniqueness is checked case-insensitively, as the API compares emails
+ * on sign-up and sign-in. Two Store-specific customers conflict only when they
+ * share a Store; a global customer conflicts with any other customer holding
+ * the same email, because a global customer can sign in through every Store.
+ * The Import API would reject the second of a pair, but asynchronously and one
+ * operation at a time, long after the adapter could have been fixed.
+ */
+function checkCustomers(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
+  if (feed.customers.size === 0) return;
+  const at = (code: string) => feed.origin.get(`customer:${code}`) ?? {};
+
+  /** lowercased email → codes holding it, in feed order. */
+  const byEmail = new Map<string, string[]>();
+  /** customerNumber → codes holding it. */
+  const byNumber = new Map<string, string[]>();
+
+  for (const customer of feed.customers.values()) {
+    const email = customer.email.toLowerCase();
+    byEmail.set(email, [...(byEmail.get(email) ?? []), customer.code]);
+    if (customer.customerNumber !== undefined) {
+      byNumber.set(customer.customerNumber, [
+        ...(byNumber.get(customer.customerNumber) ?? []),
+        customer.code,
+      ]);
+    }
+
+    if (customer.customerGroup !== undefined && !feed.customerGroups.has(customer.customerGroup)) {
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-group-not-declared',
+        message:
+          `Customer '${customer.code}' is in customer group '${customer.customerGroup}', which ` +
+          'no customerGroup record declares. The reference would stay unresolved for 48 hours ' +
+          'and then expire, taking the customer with it.\n' +
+          `      Declare it: {"_type":"customerGroup","code":"${customer.customerGroup}"}.`,
+        ...at(customer.code),
+      });
+    }
+
+    for (const store of customer.stores ?? []) {
+      if (feed.stores.has(store)) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-store-not-declared',
+        message:
+          `Customer '${customer.code}' belongs to store '${store}', which no store record ` +
+          'declares. The reference would stay unresolved for 48 hours and then expire, ' +
+          'taking the customer with it.\n' +
+          `      Declare it: {"_type":"store","code":"${store}"}.`,
+        ...at(customer.code),
+      });
+    }
+
+    const addressCodes = new Set<string>();
+    for (const address of customer.addresses ?? []) {
+      if (addressCodes.has(address.code)) {
+        diagnostics.push({
+          severity: 'error',
+          code: 'customer-address-duplicate',
+          message:
+            `Customer '${customer.code}' has two addresses with code '${address.code}'. The ` +
+            'code becomes the address key, which is unique within a customer.',
+          ...at(customer.code),
+        });
+      }
+      addressCodes.add(address.code);
+    }
+
+    const refs: [string, string | undefined][] = [
+      ['defaultShippingAddress', customer.defaultShippingAddress],
+      ['defaultBillingAddress', customer.defaultBillingAddress],
+      ...(customer.shippingAddresses ?? []).map((c) => ['shippingAddresses', c] as [string, string]),
+      ...(customer.billingAddresses ?? []).map((c) => ['billingAddresses', c] as [string, string]),
+    ];
+    for (const [field, code] of refs) {
+      if (code === undefined || addressCodes.has(code)) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-address-unknown',
+        message:
+          `Customer '${customer.code}' names address '${code}' in ${field}, and none of its ` +
+          'addresses has that code. The API takes these as positions in the address list, ' +
+          'so the reference cannot be guessed.',
+        ...at(customer.code),
+      });
+    }
+  }
+
+  for (const codes of byEmail.values()) {
+    if (codes.length < 2) continue;
+    const clashing = emailClashes(codes.map((c) => feed.customers.get(c)!));
+    if (clashing.length === 0) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'customer-email-duplicate',
+      message:
+        `Customers ${clashing.map((c) => `'${c}'`).join(', ')} share one email address ` +
+        '(compared case-insensitively, as the API does). An email is unique across the ' +
+        'Project, or within each Store for Store-specific customers, so the Import API ' +
+        'would reject all but one of them. Merge them in the adapter, or decide which ' +
+        'account survives and log the others as not migrated.',
+      ...at(clashing[0]),
+    });
+  }
+
+  for (const [number, codes] of byNumber) {
+    if (codes.length < 2) continue;
+    diagnostics.push({
+      severity: 'error',
+      code: 'customer-number-duplicate',
+      message:
+        `Customers ${codes.map((c) => `'${c}'`).join(', ')} share customerNumber '${number}', ` +
+        'which is unique across the Project and cannot be changed once set.',
+      ...at(codes[0]),
+    });
+  }
+}
+
+/**
+ * Of customers sharing one email, the codes that actually conflict.
+ *
+ * Global customers conflict with everyone; Store-specific ones only with
+ * customers in a common Store.
+ */
+function emailClashes(customers: FeedCustomer[]): string[] {
+  const clashing = new Set<string>();
+  for (let i = 0; i < customers.length; i++) {
+    for (let j = i + 1; j < customers.length; j++) {
+      const a = customers[i];
+      const b = customers[j];
+      const conflict =
+        a.stores === undefined ||
+        b.stores === undefined ||
+        a.stores.some((store) => b.stores!.includes(store));
+      if (conflict) {
+        clashing.add(a.code);
+        clashing.add(b.code);
+      }
+    }
+  }
+  return customers.map((c) => c.code).filter((code) => clashing.has(code));
 }
 
 /**

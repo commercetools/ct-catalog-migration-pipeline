@@ -148,6 +148,23 @@ export interface PipelineConfig {
     searchableByDefault: boolean;
   };
 
+  /**
+   * Entities beyond the catalog, each off unless set to `true`.
+   *
+   * A switch per entity rather than a feed-only signal, because each one is a
+   * decision someone has to take: customers are personal data, and a source
+   * that contains them is not consent to move them. `validate` refuses a
+   * record of an entity whose switch is off, so an adapter that emits
+   * customers nobody agreed to migrate stops at the first stage, before any of
+   * that data reaches a plan or a project.
+   */
+  entities?: {
+    /** Customer accounts, imported with ExternalAuth and no password. */
+    customers?: boolean;
+    /** Historical orders, imported as snapshots with their numbers verbatim. */
+    orders?: boolean;
+  };
+
   load: {
     /** Import API hard limit is 20 resources per request. */
     batchSize: number;
@@ -303,6 +320,24 @@ function checkDecisions(config: PipelineConfig, configPath: string): void {
       'It must be true or false. A string such as "false" is not a boolean and is\n' +
         'truthy in most readers, so it is refused rather than guessed at.',
     );
+  }
+
+  for (const [name, value] of Object.entries(config.entities ?? {})) {
+    if (name !== 'customers' && name !== 'orders') {
+      fail(
+        `entities.${name} is not a known entity.`,
+        'The entities beyond the catalog are customers and orders. A misspelt switch would\n' +
+          'otherwise be ignored, and records of that entity refused with a message about\n' +
+          'a switch that looks set.',
+      );
+    }
+    if (typeof value !== 'boolean') {
+      fail(
+        `entities.${name} is ${JSON.stringify(value)}.`,
+        'It must be true or false. It records that someone signed off on migrating this\n' +
+          'entity, so a string such as "yes" is refused rather than read as consent.',
+      );
+    }
   }
 
   if (config.keys.prefix === PREFIX_PLACEHOLDER) {

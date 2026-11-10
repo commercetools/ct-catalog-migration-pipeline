@@ -43,6 +43,8 @@ import type { ProjectSnapshot } from '../verify/reconcile.js';
 import { noProgress, type Progress } from '../progress/progress.js';
 
 const PROGRESS_LABELS: Record<TeardownKind, string> = {
+  orders: 'orders',
+  customers: 'customers',
   standalonePrices: 'standalone prices',
   inventory: 'inventory entries',
   variants: 'variants',
@@ -55,6 +57,12 @@ const PROGRESS_LABELS: Record<TeardownKind, string> = {
 
 /** In deletion order. */
 export const TEARDOWN_KINDS = [
+  // First: an order references a customer and products, and nothing
+  // references an order.
+  'orders',
+  // Next: nothing else the pipeline creates references a customer, and a
+  // customer's removal is about personal data rather than tidiness.
+  'customers',
   'standalonePrices',
   'inventory',
   'productSelections',
@@ -91,6 +99,12 @@ export interface TeardownResult {
    * the plan does not name: someone else's, created below it. `below` names them.
    */
   blockedCategories: { category: string; below: string[] }[];
+  /**
+   * Planned order numbers the project holds but that no longer match the plan
+   * (total or line counts). Order numbers are verbatim, outside the prefix, so
+   * an order that does not match may be someone else's and is left alone.
+   */
+  heldBackOrders: { orderNumber: string; reason: string }[];
   /** Left alone on purpose: verbatim-keyed, and the project's. */
   untouched: {
     channels: string[];
@@ -181,6 +195,7 @@ export function keysOutsidePrefix(
   const check = (kind: TeardownKind, keys: string[]) => {
     for (const key of keys) if (!key.startsWith(prefix)) bad.push({ kind, key });
   };
+  check('customers', (plan.customers ?? []).map((x) => x.key));
   check('standalonePrices', plan.standalonePrices.map((x) => x.key));
   check('inventory', (plan.inventory ?? []).map((x) => x.key));
   check('variants', plan.variants.map((x) => x.key));
@@ -189,6 +204,39 @@ export function keysOutsidePrefix(
   check('categories', plan.categories.map((x) => x.key));
   check('productTypes', plan.productTypes.map((x) => x.key));
   return bad;
+}
+
+/**
+ * Which planned order numbers the project holds that still look like this
+ * plan's: same total, same currency, same number of line and custom line
+ * items. Order numbers are verbatim, so `keys.prefix` cannot bound them; this
+ * comparison is what stands in for it. An order that differs is held back,
+ * never deleted.
+ */
+function matchingOrders(
+  plan: MigrationPlan,
+  snapshot: ProjectSnapshot,
+): { matching: string[]; heldBack: { orderNumber: string; reason: string }[] } {
+  const matching: string[] = [];
+  const heldBack: { orderNumber: string; reason: string }[] = [];
+  for (const planned of plan.orders ?? []) {
+    const actual = snapshot.orders?.get(planned.orderNumber);
+    if (!actual) continue;
+    const sameTotal =
+      actual.totalPrice.centAmount === planned.totalPrice.centAmount &&
+      actual.totalPrice.currencyCode === planned.totalPrice.currencyCode;
+    const sameLines =
+      actual.lineItems.length === (planned.lineItems ?? []).length &&
+      actual.customLineItems.length === (planned.customLineItems ?? []).length;
+    if (sameTotal && sameLines) matching.push(planned.orderNumber);
+    else {
+      heldBack.push({
+        orderNumber: planned.orderNumber,
+        reason: sameTotal ? 'has different lines from the plan.' : 'has a different total from the plan.',
+      });
+    }
+  }
+  return { matching, heldBack };
 }
 
 /** A planned category's planned parent, if it has one: the parent key of a root is not in the plan. */
@@ -319,6 +367,19 @@ function removers(clients: Clients): Record<Exclude<TeardownKind, 'containers'>,
     }
   };
   return {
+    orders: {
+      fresh: (key) => read(() => p.orders().withOrderNumber({ orderNumber: key }).get().execute()),
+      remove: (key, version) =>
+        p.orders().withOrderNumber({ orderNumber: key }).delete({ queryArgs: { version, dataErasure: true } }).execute(),
+    },
+    // `dataErasure` asks the platform to erase the personal data the customer
+    // held, not only the resource: this is a trial load being undone, and the
+    // data was never the project's to keep.
+    customers: {
+      fresh: (key) => read(() => p.customers().withKey({ key }).get().execute()),
+      remove: (key, version) =>
+        p.customers().withKey({ key }).delete({ queryArgs: { version, dataErasure: true } }).execute(),
+    },
     standalonePrices: {
       fresh: (key) => read(() => p.standalonePrices().withKey({ key }).get().execute()),
       remove: (key, version) => p.standalonePrices().withKey({ key }).delete({ queryArgs: { version } }).execute(),
@@ -436,6 +497,8 @@ async function readAllStores(clients: Clients) {
 
 function presentKeys(plan: MigrationPlan, snapshot: ProjectSnapshot): Record<Exclude<TeardownKind, 'containers'>, string[]> {
   return {
+    orders: matchingOrders(plan, snapshot).matching,
+    customers: (plan.customers ?? []).map((x) => x.key).filter((k) => snapshot.customers?.has(k) ?? false),
     standalonePrices: plan.standalonePrices.map((x) => x.key).filter((k) => snapshot.standalonePrices.has(k)),
     inventory: (plan.inventory ?? []).map((x) => x.key).filter((k) => snapshot.inventory.has(k)),
     variants: plan.variants.map((x) => x.key).filter((k) => snapshot.variants.has(k)),
@@ -448,6 +511,8 @@ function presentKeys(plan: MigrationPlan, snapshot: ProjectSnapshot): Record<Exc
 
 function versionOf(kind: Exclude<TeardownKind, 'containers'>, snapshot: ProjectSnapshot, key: string): number | undefined {
   const map = {
+    orders: snapshot.orders ?? new Map(),
+    customers: snapshot.customers ?? new Map(),
     standalonePrices: snapshot.standalonePrices,
     inventory: snapshot.inventory,
     variants: snapshot.variants,
@@ -492,6 +557,7 @@ export async function runTeardown(
     storesChanged: [],
     blocked: [],
     blockedCategories: [],
+    heldBackOrders: [],
     taxCategories: {
       createdByLoad: [],
       present: [],
@@ -524,6 +590,8 @@ export async function runTeardown(
 
   const containerKeys = planBatches(plan, config).containers.map((c) => c.key);
   result.planned = {
+    orders: (plan.orders ?? []).length,
+    customers: (plan.customers ?? []).length,
     standalonePrices: plan.standalonePrices.length,
     inventory: (plan.inventory ?? []).length,
     variants: plan.variants.length,
@@ -716,6 +784,9 @@ export async function runTeardown(
     });
   };
 
+  result.heldBackOrders = matchingOrders(plan, snapshot).heldBack;
+  await deleteKeys('orders', present.orders);
+  await deleteKeys('customers', present.customers);
   await deleteKeys('standalonePrices', present.standalonePrices);
   await deleteKeys('inventory', present.inventory);
 
@@ -823,6 +894,8 @@ export async function runTeardown(
 /** One screen of text: what was found, what was done, what was left alone. */
 export function renderTeardown(result: TeardownResult): string {
   const labels: Record<TeardownKind, string> = {
+    orders: 'orders',
+    customers: 'customers',
     standalonePrices: 'standalone prices',
     inventory: 'inventory entries',
     variants: 'variants (Modular)',
@@ -858,6 +931,14 @@ export function renderTeardown(result: TeardownResult): string {
     lines.push(
       `NOT deleted: product selection '${b.selection}' is still used by store(s) ${b.stores.join(', ')}, ` +
         'which this plan does not list. Take it off the store(s) and run teardown again.',
+    );
+  }
+  for (const o of result.heldBackOrders) {
+    lines.push('');
+    lines.push(
+      `NOT deleted: order '${o.orderNumber}' ${o.reason} Order numbers are kept verbatim, so ` +
+        'a prefix cannot vouch for it; it may not be this migration\'s. Check it and delete it ' +
+        'by hand if it is.',
     );
   }
   for (const b of result.blockedCategories) {
@@ -907,7 +988,14 @@ export function renderTeardown(result: TeardownResult): string {
 export function teardownComplete(result: TeardownResult): boolean {
   if (result.diagnostics.some((d) => d.severity === 'error')) return false;
   if (!result.executed) return true;
-  if (result.failed.length > 0 || result.blocked.length > 0 || result.blockedCategories.length > 0) return false;
+  if (
+    result.failed.length > 0 ||
+    result.blocked.length > 0 ||
+    result.blockedCategories.length > 0 ||
+    (result.heldBackOrders ?? []).length > 0
+  ) {
+    return false;
+  }
   if (!result.remaining) return false;
   return TEARDOWN_KINDS.every((k) => (result.remaining![k] ?? 0) === 0);
 }

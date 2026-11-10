@@ -17,7 +17,7 @@ import type {
   FeedPrice,
   FeedVariant,
 } from '../model/feed.js';
-import { taxRateScope } from '../model/feed.js';
+import { taxRateScope, type FeedCustomer, type FeedOrder } from '../model/feed.js';
 import {
   attributeDefinitionsOf,
   LOAD_ORDER,
@@ -29,7 +29,9 @@ import {
   type AttributeType,
   type CategoryImport,
   type CategoryKeyReference,
+  type CustomerImport,
   type DerivedModel,
+  type OrderImport,
   type Image,
   type InventoryImport,
   type MappingDecision,
@@ -236,6 +238,8 @@ export function buildPlan(
 
   const productSelections = buildProductSelections(feed, config, decisions);
   const inventory = buildInventory(feed, config, decisions);
+  const customers = buildCustomers(feed, config, decisions);
+  const orders = buildOrders(feed, config, decisions, diagnostics);
 
   for (const group of feed.customerGroups.values()) {
     if (group.name === undefined) {
@@ -260,6 +264,8 @@ export function buildPlan(
       standalonePrices,
       productSelections,
       inventory,
+      ...(customers.length > 0 ? { customers } : {}),
+      ...(orders.length > 0 ? { orders } : {}),
       prerequisites,
       decisions: [...model.decisions, ...decisions],
       keyMap,
@@ -352,6 +358,252 @@ function buildTaxCategories(
   }
 
   return out;
+}
+
+/**
+ * Feed customers into `CustomerImport` resources.
+ *
+ * Empty unless the config opts in; `validate` has already refused customer
+ * records without it, so the check here only guards a plan built by other
+ * means.
+ *
+ * Every customer is imported with `authenticationMode: 'ExternalAuth'`, which
+ * is what lets the API take a customer with no password. The feed has no
+ * password field, so there is nothing else to send, and a random password
+ * generated here would sit in `plan.json` and `load-requests.json`.
+ *
+ * The feed names addresses by code; the Import API takes positions in the
+ * address array. The positions are computed here from the order the addresses
+ * are written in, so the code-to-index mapping lives in one place.
+ *
+ * The decision recorded for review carries counts only. `MODEL-REVIEW.md` is
+ * read, shared and committed by people who should not receive a customer list.
+ */
+function buildCustomers(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  decisions: MappingDecision[],
+): CustomerImport[] {
+  if (feed.customers.size === 0 || config.entities?.customers !== true) return [];
+
+  const out: CustomerImport[] = [];
+  let storeScoped = 0;
+  let withAddresses = 0;
+  for (const customer of feed.customers.values()) {
+    out.push(customerImport(customer, config.keys.prefix));
+    if (customer.stores !== undefined) storeScoped++;
+    if ((customer.addresses ?? []).length > 0) withAddresses++;
+  }
+
+  decisions.push({
+    subject: 'customers',
+    outcome:
+      `${out.length} customer(s), ${storeScoped} Store-specific, ${withAddresses} with ` +
+      'addresses; authenticationMode ExternalAuth, no passwords',
+    rationale:
+      'No source password hash can be imported, so customers are created without a ' +
+      'password, under ExternalAuth. Signing in afterwards is up to the implementation: ' +
+      'an external identity provider, or a password reset the implementation sends. ' +
+      'Every customer is keyed on its source code, never its email. plan.json and ' +
+      'load-requests.json now hold personal data.',
+    review: true,
+  });
+
+  return out;
+}
+
+function customerImport(customer: FeedCustomer, prefix: string): CustomerImport {
+  const addresses = customer.addresses ?? [];
+  const index = new Map(addresses.map((a, i) => [a.code, i]));
+  const at = (code: string) => index.get(code)!;
+  const { code, _type, addresses: _a, stores, customerGroup, defaultShippingAddress,
+    defaultBillingAddress, shippingAddresses, billingAddresses, ...fields } = customer;
+
+  return {
+    key: resourceKey(prefix, code),
+    ...fields,
+    authenticationMode: 'ExternalAuth',
+    ...(customerGroup !== undefined
+      ? { customerGroup: { typeId: 'customer-group' as const, key: customerGroup } }
+      : {}),
+    ...(stores !== undefined
+      ? { stores: stores.map((key) => ({ typeId: 'store' as const, key })) }
+      : {}),
+    ...(addresses.length > 0
+      ? { addresses: addresses.map(({ code: addressCode, ...rest }) => ({ key: addressCode, ...rest })) }
+      : {}),
+    ...(defaultShippingAddress !== undefined
+      ? { defaultShippingAddress: at(defaultShippingAddress) }
+      : {}),
+    ...(defaultBillingAddress !== undefined
+      ? { defaultBillingAddress: at(defaultBillingAddress) }
+      : {}),
+    ...(shippingAddresses !== undefined ? { shippingAddresses: shippingAddresses.map(at) } : {}),
+    ...(billingAddresses !== undefined ? { billingAddresses: billingAddresses.map(at) } : {}),
+  };
+}
+
+/**
+ * Feed orders into `OrderImport` resources.
+ *
+ * Empty unless the config opts in. Three choices are made here and recorded:
+ *
+ * - **The order number is kept verbatim** and is the resource's identity,
+ *   because customers and support quote it. Orders are therefore outside
+ *   `keys.prefix`.
+ * - **A SKU the feed does not declare becomes a custom line item.** History
+ *   names products that no longer exist; a line item would resolve against no
+ *   variant and fail the whole order. A custom line item keeps name, price,
+ *   quantity and tax, and loses only the product link — counted as lossy.
+ * - **`inventoryMode` and `store` are never set.** Any inventory mode
+ *   decrements stock for orders fulfilled long ago, and a store silently drops
+ *   prices, languages and stock outside its configuration.
+ *
+ * Amounts are converted on the digit string as everywhere else; an amount
+ * `validate` would have refused is skipped here with an error rather than
+ * guessed at, in case the plan is built without it.
+ */
+function buildOrders(
+  feed: CatalogFeed,
+  config: PipelineConfig,
+  decisions: MappingDecision[],
+  diagnostics: Diagnostic[],
+): OrderImport[] {
+  if (feed.orders.size === 0 || config.entities?.orders !== true) return [];
+
+  const out: OrderImport[] = [];
+  let customLines = 0;
+  let guest = 0;
+  const unknownSkus = new Set<string>();
+
+  for (const order of feed.orders.values()) {
+    const built = orderImport(order, feed, config);
+    if (!built.ok) {
+      diagnostics.push({ severity: 'error', code: 'order-not-planned', message: built.reason });
+      continue;
+    }
+    out.push(built.order);
+    customLines += built.customLines.length;
+    for (const sku of built.customLines) unknownSkus.add(sku);
+    if (order.customer === undefined) guest++;
+  }
+
+  decisions.push({
+    subject: 'orders',
+    outcome:
+      `${out.length} order(s), ${guest} without a customer account; order numbers verbatim; ` +
+      'inventoryMode and store not set',
+    rationale:
+      'Imported as snapshots: totals as given, never recomputed. The order number is kept ' +
+      'because customers and support quote it, so orders are the one collection outside ' +
+      'keys.prefix. Importing emits OrderImported for every order, which any subscription ' +
+      'listening for it receives. plan.json and load-requests.json now hold personal data.',
+    review: true,
+  });
+  if (customLines > 0) {
+    decisions.push({
+      subject: 'orders:custom-line-items',
+      outcome: `${customLines} line(s) for ${unknownSkus.size} SKU(s) the feed does not declare became custom line items`,
+      rationale:
+        'Their SKUs match no variant in the feed, usually discontinued products, and a line ' +
+        'item for a variant that does not exist fails the whole order. As custom line items ' +
+        'they keep name, unit price, quantity and tax rate, and lose the link to a product.',
+      lossy: true,
+    });
+  }
+  return out;
+}
+
+type BuiltOrder =
+  | { ok: true; order: OrderImport; customLines: string[] }
+  | { ok: false; reason: string };
+
+function orderImport(order: FeedOrder, feed: CatalogFeed, config: PipelineConfig): BuiltOrder {
+  const digits = config.market.currencyFractionDigits[order.currency];
+  if (digits === undefined) {
+    return { ok: false, reason: `Order '${order.orderNumber}': ${order.currency} has no fractionDigits.` };
+  }
+  let failure: string | undefined;
+  const money = (amount: string): Money => {
+    const r = toTypedMoney(amount, order.currency, digits);
+    if (!r.ok) {
+      failure ??= `Order '${order.orderNumber}': ${r.reason}`;
+      return { type: 'centPrecision', currencyCode: order.currency, centAmount: 0, fractionDigits: digits };
+    }
+    return r.money;
+  };
+  const times = (m: Money, n: number): Money => ({ ...m, centAmount: m.centAmount * n });
+
+  const lineItems: NonNullable<OrderImport['lineItems']>[number][] = [];
+  const customLineItems: NonNullable<OrderImport['customLineItems']>[number][] = [];
+  const customLines: string[] = [];
+  order.lineItems.forEach((line, i) => {
+    const unit = money(line.price);
+    const taxRate = line.taxRate ? { ...line.taxRate } : undefined;
+    const variant = feed.variants.get(line.sku);
+    if (variant) {
+      lineItems.push({
+        product: { typeId: 'product', key: resourceKey(config.keys.prefix, variant.product) },
+        name: line.name,
+        // The SKU alone is refused ("invalid product variant identification information");
+        // the key reference names the same variant the plan creates under variantKey().
+        variant: {
+          sku: line.sku,
+          productVariant: { typeId: 'product-variant', key: variantKey(config.keys.prefix, line.sku) },
+        },
+        price: { value: unit },
+        quantity: line.quantity,
+        ...(taxRate ? { taxRate } : {}),
+      });
+    } else {
+      customLines.push(line.sku);
+      customLineItems.push({
+        name: line.name,
+        money: unit,
+        totalPrice: times(unit, line.quantity),
+        quantity: line.quantity,
+        // Unique within the order: two lines may carry the same old SKU.
+        slug: `${slugSafeSku(line.sku) || 'line'}-${i + 1}`,
+        ...(taxRate ? { taxRate } : {}),
+      });
+    }
+  });
+
+  const built: OrderImport = {
+    orderNumber: order.orderNumber,
+    totalPrice: money(order.totalPrice),
+    ...(lineItems.length > 0 ? { lineItems } : {}),
+    ...(customLineItems.length > 0 ? { customLineItems } : {}),
+    ...(order.customer !== undefined
+      ? { customer: { typeId: 'customer' as const, key: resourceKey(config.keys.prefix, order.customer) } }
+      : {}),
+    ...(order.customerEmail !== undefined ? { customerEmail: order.customerEmail } : {}),
+    ...(order.customerGroup !== undefined
+      ? { customerGroup: { typeId: 'customer-group' as const, key: order.customerGroup } }
+      : {}),
+    ...(order.country !== undefined ? { country: order.country } : {}),
+    ...(order.completedAt !== undefined ? { completedAt: order.completedAt } : {}),
+    ...(order.orderState !== undefined ? { orderState: order.orderState } : {}),
+    ...(order.shipmentState !== undefined ? { shipmentState: order.shipmentState } : {}),
+    ...(order.paymentState !== undefined ? { paymentState: order.paymentState } : {}),
+    ...(order.shippingAddress !== undefined ? { shippingAddress: { ...order.shippingAddress } } : {}),
+    ...(order.billingAddress !== undefined ? { billingAddress: { ...order.billingAddress } } : {}),
+    ...(order.taxedPrice !== undefined
+      ? {
+          taxedPrice: {
+            totalNet: money(order.taxedPrice.totalNet),
+            totalGross: money(order.taxedPrice.totalGross),
+            taxPortions: order.taxedPrice.taxPortions.map((p) => ({
+              ...(p.name !== undefined ? { name: p.name } : {}),
+              rate: p.rate,
+              amount: money(p.amount),
+            })),
+          },
+        }
+      : {}),
+  } as OrderImport;
+
+  return failure ? { ok: false, reason: failure } : { ok: true, order: built, customLines };
 }
 
 /** 0.2 → "20%", 0.075 → "7.5%" — without the float noise 0.07 * 100 carries. */
@@ -1146,7 +1398,7 @@ function mapVariant(
 
   return {
     draft: {
-      key: resourceKey(config.keys.prefix, slugSafeSku(variant.sku)),
+      key: variantKey(config.keys.prefix, variant.sku),
       sku: variant.sku,
       attributes,
       images,
@@ -1306,6 +1558,14 @@ function resolveMediaUrl(
  */
 function slugSafeSku(sku: string): string {
   return sku.replace(/[^A-Za-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+}
+
+/**
+ * The key of a variant draft. Everything that refers to a variant by key (an order
+ * line, today) has to call this, so the reference and the variant cannot drift apart.
+ */
+function variantKey(prefix: string, sku: string): string {
+  return resourceKey(prefix, slugSafeSku(sku));
 }
 
 /**

@@ -1019,6 +1019,18 @@ function poster(clients: Clients, batch: Batch) {
         .importContainers()
         .withImportContainerKeyValue({ importContainerKey: containerKey })
         .post({ body: batch.body as never });
+    case 'order':
+      return clients.importApi
+        .orders()
+        .importContainers()
+        .withImportContainerKeyValue({ importContainerKey: containerKey })
+        .post({ body: batch.body as never });
+    case 'customer':
+      return clients.importApi
+        .customers()
+        .importContainers()
+        .withImportContainerKeyValue({ importContainerKey: containerKey })
+        .post({ body: batch.body as never });
     case 'channel':
     case 'customer-group':
     case 'tax-category':

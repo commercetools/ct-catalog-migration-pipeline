@@ -100,6 +100,8 @@ export function loadPlan(outDir: string): MigrationPlan {
     standalonePrices: plan.standalonePrices ?? [],
     productSelections: plan.productSelections ?? [],
     inventory: plan.inventory ?? [],
+    customers: plan.customers ?? [],
+    orders: plan.orders ?? [],
     prerequisites: plan.prerequisites ?? { channels: [], customerGroups: [], stores: [] },
     decisions: plan.decisions ?? [],
     keyMap,

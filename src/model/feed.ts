@@ -471,7 +471,156 @@ export interface FeedInventoryEntry {
   expectedDelivery?: string;
 }
 
+/**
+ * One address of a customer.
+ *
+ * `code` identifies it within its customer and becomes the address key. The
+ * default and shipping/billing lists name addresses by code, not by position:
+ * the Import API takes indexes into the address array, and an index derived
+ * from source order moves a customer's default the day the source sorts its
+ * addresses differently. The code makes the mapping explicit, and `plan`
+ * turns it into the index.
+ */
+export interface FeedCustomerAddress {
+  code: string;
+  /** ISO 3166-1 alpha-2. */
+  country: string;
+  title?: string;
+  salutation?: string;
+  firstName?: string;
+  lastName?: string;
+  streetName?: string;
+  streetNumber?: string;
+  additionalStreetInfo?: string;
+  postalCode?: string;
+  city?: string;
+  region?: string;
+  state?: string;
+  company?: string;
+  department?: string;
+  building?: string;
+  apartment?: string;
+  pOBox?: string;
+  phone?: string;
+  mobile?: string;
+  email?: string;
+  fax?: string;
+  additionalAddressInfo?: string;
+  externalId?: string;
+}
+
+/**
+ * A customer account — personal data, and **opt-in**.
+ *
+ * `validate` refuses these records unless `entities.customers` is `true` in
+ * the config, which records that the user signed off on migrating personal
+ * data. A source that happens to contain customers is not a decision to move
+ * them.
+ *
+ * **There is no password field, on purpose.** No source password hash can be
+ * imported, and a feed carrying passwords would put credentials into a file
+ * that sits in the engagement directory. Customers are imported with
+ * `authenticationMode: 'ExternalAuth'`, which the API accepts without a
+ * password; how they sign in afterwards is the implementation's decision.
+ *
+ * Identity is `code`, never the email: an email changes, and anything keyed
+ * on it puts personal data into keys, logs and reports.
+ */
+export interface FeedCustomer {
+  _type: 'customer';
+  code: string;
+  /** Unique across the Project, case-insensitively, or within its Stores. */
+  email: string;
+  customerNumber?: string;
+  externalId?: string;
+  firstName?: string;
+  middleName?: string;
+  lastName?: string;
+  title?: string;
+  salutation?: string;
+  companyName?: string;
+  vatId?: string;
+  /** YYYY-MM-DD. */
+  dateOfBirth?: string;
+  locale?: string;
+  isEmailVerified?: boolean;
+  /** Code of a declared customerGroup record. */
+  customerGroup?: string;
+  /** Codes of declared stores. Absent means a global customer. */
+  stores?: string[];
+  addresses?: FeedCustomerAddress[];
+  defaultShippingAddress?: string;
+  defaultBillingAddress?: string;
+  shippingAddresses?: string[];
+  billingAddresses?: string[];
+}
+
+/** The tax rate that applied to a line when the order was placed. */
+export interface FeedOrderTaxRate {
+  name: string;
+  amount: number;
+  includedInPrice: boolean;
+  country: string;
+  state?: string;
+}
+
+/** One line of a historical order, as it was sold. */
+export interface FeedOrderLine {
+  /**
+   * A SKU the feed declares becomes a line item linked to its product. Any
+   * other SKU, which in a history is usually a discontinued product, becomes a
+   * custom line item: name, price, quantity and tax kept, product link lost.
+   */
+  sku: string;
+  name: LocalizedString;
+  quantity: number;
+  /** Unit price as charged. */
+  price: DecimalAmount;
+  taxRate?: FeedOrderTaxRate;
+}
+
+/**
+ * A historical order — personal data, and **opt-in** like customers
+ * (`entities.orders`).
+ *
+ * A snapshot, not a cart: totals come from the source and are never
+ * recomputed, as the platform does not compute them on import either. The
+ * order number is kept **verbatim**, because customers and support quote it;
+ * that makes orders the one migrated resource outside `keys.prefix`, and why
+ * teardown removes only orders that still match the plan.
+ *
+ * Deliberately absent: `store`, which silently drops prices, languages and
+ * stock outside the store's configuration on import; `inventoryMode`, because
+ * any mode decrements stock for orders long since fulfilled; payments, which
+ * are never migrated.
+ */
+export interface FeedOrder {
+  _type: 'order';
+  orderNumber: string;
+  currency: string;
+  totalPrice: DecimalAmount;
+  taxedPrice?: {
+    totalNet: DecimalAmount;
+    totalGross: DecimalAmount;
+    taxPortions: { name?: string; rate: number; amount: DecimalAmount }[];
+  };
+  /** Code of a declared customer. Absent for a guest order. */
+  customer?: string;
+  customerEmail?: string;
+  customerGroup?: string;
+  country?: string;
+  completedAt?: string;
+  orderState?: 'Open' | 'Confirmed' | 'Complete' | 'Cancelled';
+  shipmentState?: 'Shipped' | 'Ready' | 'Pending' | 'Delayed' | 'Partial' | 'Backorder';
+  paymentState?: 'BalanceDue' | 'Failed' | 'Pending' | 'CreditOwed' | 'Paid';
+  shippingAddress?: Omit<FeedCustomerAddress, 'code'>;
+  billingAddress?: Omit<FeedCustomerAddress, 'code'>;
+  lineItems: FeedOrderLine[];
+}
+
 export type FeedRecord =
+  | FeedOrder
+  | FeedCustomer
   | FeedCategory
   | FeedAttributeDefinition
   | FeedProduct
@@ -494,6 +643,8 @@ export const FEED_TYPES = [
   'product',
   'variant',
   'inventoryEntry',
+  'customer',
+  'order',
 ] as const;
 
 /**
@@ -579,6 +730,10 @@ export interface CatalogFeed {
   variantsByProduct: Map<string, string[]>;
   /** Keyed by `inventoryIdentity`, i.e. SKU plus supply channel where present. */
   inventoryEntries: Map<string, FeedInventoryEntry>;
+  /** Keyed by code. Empty unless the feed declares customers — see FeedCustomer. */
+  customers: Map<string, FeedCustomer>;
+  /** Keyed by order number, verbatim. Empty unless the feed declares orders. */
+  orders: Map<string, FeedOrder>;
   /** Where each record came from, for diagnostics that name a file and line. */
   origin: Map<string, { file: string; line: number }>;
 }
@@ -596,6 +751,8 @@ export function emptyFeed(): CatalogFeed {
     variants: new Map(),
     variantsByProduct: new Map(),
     inventoryEntries: new Map(),
+    customers: new Map(),
+    orders: new Map(),
     origin: new Map(),
   };
 }
