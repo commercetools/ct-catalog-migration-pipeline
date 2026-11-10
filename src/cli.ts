@@ -21,7 +21,14 @@ import { writePlan } from './map/report.js';
 import { auditPlan } from './audit/gate.js';
 import { loadPlan } from './audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from './contract/digest.js';
-import { attributeDefinitionsOf, indexVariants, pricesOf, variantsOf } from './model/plan.js';
+import {
+  attributeDefinitionsOf,
+  indexVariants,
+  LOAD_ORDER,
+  pricesOf,
+  variantsOf,
+  type LoadStage,
+} from './model/plan.js';
 import { MAX_VARIANTS_CLASSIC, requiredCatalogModel } from './model/limits.js';
 import { describeCredentials, loadCredentials, MissingCredentialsError } from './client/credentials.js';
 import { createClients } from './client/factory.js';
@@ -73,6 +80,9 @@ Options:
   --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
   --include-created-tax-categories  teardown only: also delete the tax categories this plan's load created
   --concurrency <n> load only: in-flight Import Requests (default 4)
+  --only <stage>[,<stage>]  load only: run just these stages, e.g. --only order to resend the orders
+                    after a failure. The other stages are not touched, and orders the project
+                    already holds are skipped (they are create-only)
   --progress-interval <seconds>  Seconds between progress lines on stderr (default 30, 0 = none);
                     a command shorter than that prints only 'done in <time>'
   --json            Emit diagnostics as JSON
@@ -104,6 +114,7 @@ async function main(): Promise<number> {
         execute: { type: 'boolean', default: false },
         wait: { type: 'boolean', default: false },
         concurrency: { type: 'string', default: '4' },
+        only: { type: 'string', default: '' },
         'confirm-project': { type: 'string', default: '' },
         'include-created-tax-categories': { type: 'boolean', default: false },
         'progress-interval': { type: 'string', default: '30' },
@@ -121,6 +132,25 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  let only: LoadStage[] | undefined;
+  const onlyValue = (values.only as string).trim();
+  if (onlyValue !== '') {
+    if (command !== 'load') {
+      console.error(`--only is for \`load\` only.\n\n${USAGE}`);
+      return 1;
+    }
+    const named = onlyValue.split(',').map((x) => x.trim()).filter((x) => x !== '');
+    const unknown = named.filter((x) => !(LOAD_ORDER as readonly string[]).includes(x));
+    if (named.length === 0 || unknown.length > 0) {
+      console.error(
+        `--only names ${unknown.length > 0 ? `unknown stage(s) ${unknown.join(', ')}` : 'no stage'}. ` +
+          `The stages are: ${LOAD_ORDER.join(', ')}.`,
+      );
+      return 1;
+    }
+    only = [...new Set(named)] as LoadStage[];
+  }
+
   const base = {
     config: values.config as string,
     json: values.json as boolean,
@@ -133,6 +163,7 @@ async function main(): Promise<number> {
     execute: values.execute as boolean,
     wait: values.wait as boolean,
     concurrency: Number(values.concurrency),
+    only,
     confirmProject: values['confirm-project'] as string,
     includeCreatedTaxCategories: values['include-created-tax-categories'] as boolean,
   };
@@ -234,6 +265,7 @@ interface Opts {
   execute: boolean;
   wait: boolean;
   concurrency: number;
+  only?: LoadStage[];
   confirmProject: string;
   includeCreatedTaxCategories: boolean;
   progress: Progress;
@@ -751,6 +783,7 @@ async function runLoadCommand(opts: Opts): Promise<number> {
     execute: opts.execute,
     wait: opts.wait,
     concurrency: opts.concurrency,
+    ...(opts.only ? { only: opts.only } : {}),
     progress: opts.progress,
   });
 

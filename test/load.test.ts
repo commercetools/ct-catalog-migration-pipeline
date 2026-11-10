@@ -32,7 +32,7 @@ import {
 import { runLoad } from '../src/load/run.js';
 import { createProgress } from '../src/progress/progress.js';
 import { renderLoad, writeLoadArtefacts } from '../src/load/report.js';
-import type { MigrationPlan, ProductDraftImport } from '../src/model/plan.js';
+import type { MigrationPlan, OrderImport, ProductDraftImport } from '../src/model/plan.js';
 
 function packageRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -268,6 +268,8 @@ test('summarise: totals match the batches', () => {
 interface Recorded {
   /** Keyed reads of prerequisites, to prove nothing is posted blindly. */
   prerequisiteReads: { kind: string; where: string }[];
+  /** `where` predicates of the reads for orders the project already holds. */
+  orderReads: string[];
   created: { kind: string; body: Record<string, unknown> }[];
   containerCreates: string[];
   /** Container reads, which only happen when a create failed. */
@@ -281,6 +283,8 @@ interface Recorded {
 }
 
 interface FakeOptions {
+  /** Order numbers the project already holds, or the error the read fails with. */
+  existingOrders?: string[] | Error;
   /** What the project already holds, per kind. */
   existing?: {
     stores?: { key: string; productSelections?: unknown[] }[] | Error;
@@ -333,6 +337,7 @@ function states(overrides: Partial<OperationStates> = {}): OperationStates {
 function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: Recorded } {
   const recorded: Recorded = {
     prerequisiteReads: [],
+    orderReads: [],
     created: [],
     containerCreates: [],
     containerReads: [],
@@ -430,6 +435,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     standalonePrices: stagePoster('standalone-price'),
     productSelections: stagePoster('product-selection'),
     variants: stagePoster('variant'),
+    orders: stagePoster('order'),
   };
 
   const platformStage = (kind: 'channels' | 'customerGroups' | 'taxCategories' | 'stores') => () => ({
@@ -459,6 +465,20 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
       customerGroups: platformStage('customerGroups'),
       taxCategories: platformStage('taxCategories'),
       stores: platformStage('stores'),
+      orders: () => ({
+        get: ({ queryArgs }: { queryArgs: { where: string } }) => ({
+          execute: async () => {
+            recorded.orderReads.push(queryArgs.where);
+            recorded.sequence.push('read:orders');
+            if (options.existingOrders instanceof Error) throw options.existingOrders;
+            const held = new Set(options.existingOrders ?? []);
+            const asked = [...queryArgs.where.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+            return {
+              body: { results: asked.filter((n) => held.has(n)).map((orderNumber) => ({ orderNumber })) },
+            };
+          },
+        }),
+      }),
     },
     {
       // Stubbed properties fall through to the target; anything else throws, so
@@ -1726,4 +1746,142 @@ test('progress: without a reporter the load behaves as before', async () => {
   const { clients } = fakeClients();
   const result = await runLoad(clients, basePlan(), config(), { execute: true, sleep: noSleep });
   assert.equal(result.executed, true);
+});
+
+// ---------------------------------------------------------------------------
+// --only, and orders the project already holds
+//
+// After a partial failure the only recoveries used to be a full re-run, which
+// resends every product draft with publish:false, or posting the saved bodies by
+// hand. `only` runs the named stages and nothing else; orders are create-only,
+// so the ones the project holds are read first and left out of the sends.
+// ---------------------------------------------------------------------------
+
+function planWithOrders(numbers: string[]): MigrationPlan {
+  const orders = numbers.map(
+    (orderNumber) =>
+      ({
+        orderNumber,
+        totalPrice: { type: 'centPrecision', currencyCode: 'EUR', centAmount: 100, fractionDigits: 2 },
+      }) as OrderImport,
+  );
+  return { ...basePlan(), orders };
+}
+
+const sentTo = (recorded: Recorded, stage: string) =>
+  recorded.posts.filter((p) => p.stage === stage).reduce((n, p) => n + p.resources, 0);
+
+test('only: runs the named stage and touches nothing else in the project', async () => {
+  const { clients, recorded } = fakeClients();
+  const plan = planWithOrders(['A-1', 'A-2', 'A-3']);
+  const r = await runLoad(clients, plan, config(), { execute: true, only: ['order'], sleep: noSleep });
+
+  assert.deepEqual(r.only, ['order']);
+  assert.deepEqual(r.stages.map((s) => s.stage), ['order']);
+  assert.equal(sentTo(recorded, 'order'), 3);
+  assert.deepEqual([...new Set(recorded.posts.map((p) => p.stage))], ['order']);
+  assert.deepEqual(recorded.created, [], 'no channel, group, tax category or store may be created');
+  assert.deepEqual(recorded.prerequisiteReads, [], 'the platform stages were not even read');
+  assert.deepEqual(r.prerequisites, []);
+  assert.ok(codes(r.diagnostics).includes('only-stages'), 'the run says what it did not run');
+});
+
+test('only: a platform stage runs when it is named', async () => {
+  const { clients, recorded } = fakeClients({ existing: { channels: [], customerGroups: [] } });
+  const r = await runLoad(clients, planNeedingPrerequisites(), config(), {
+    execute: true,
+    only: ['channel'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(recorded.created.map((c) => c.kind), ['channels']);
+  assert.deepEqual(r.prerequisites.map((p) => p.stage), ['channel']);
+});
+
+test('only: a dry run is restricted too', async () => {
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1']), config(), { only: ['order'], sleep: noSleep });
+  assert.equal(r.executed, false);
+  assert.deepEqual(r.stages.map((s) => s.stage), ['order']);
+  assert.deepEqual(recorded.prerequisiteReads, []);
+  assert.deepEqual(recorded.posts, []);
+});
+
+test('orders: those the project already holds are not sent again', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-2'] });
+  const plan = planWithOrders(['A-1', 'A-2', 'A-3']);
+  const r = await runLoad(clients, plan, config(), { execute: true, only: ['order'], sleep: noSleep });
+
+  assert.equal(sentTo(recorded, 'order'), 2, 'only the missing numbers are posted');
+  assert.deepEqual(r.skippedOrders, ['A-2']);
+  assert.ok(codes(r.diagnostics).includes('orders-already-in-project'));
+  assert.equal(plan.orders!.length, 3, 'the caller\'s plan is not modified');
+});
+
+test('orders: a full load skips what the project holds, too, so a re-run is not a wall of rejections', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-1', 'A-2', 'A-3'] });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 0);
+  assert.ok(sentTo(recorded, 'product-draft') > 0, 'the rest of the load still runs');
+  assert.deepEqual(r.skippedOrders, ['A-1', 'A-2', 'A-3']);
+});
+
+test('orders: when every order is already there nothing is sent and the report says so', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-1', 'A-2'] });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(recorded.posts, []);
+  const out = renderLoad(r).join('\n');
+  assert.match(out, /nothing to send/);
+  assert.doesNotMatch(out, /LOAD STOPPED/);
+});
+
+test('orders: an unreadable project stops an execute before anything is created', async () => {
+  const { clients, recorded } = fakeClients({
+    existingOrders: httpError(403, 'insufficient scope'),
+    existing: { channels: [], customerGroups: [] },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, sleep: noSleep });
+  assert.ok(codes(r.diagnostics).includes('orders-unreadable'));
+  assert.deepEqual(recorded.created, []);
+  assert.deepEqual(recorded.posts, []);
+  assert.deepEqual(recorded.containerCreates, []);
+});
+
+test('orders: an unreadable project only warns on a dry run, which lists every order as new', async () => {
+  const { clients } = fakeClients({ existingOrders: httpError(403, 'insufficient scope') });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), { sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'orders-unreadable');
+  assert.equal(d?.severity, 'warning');
+  assert.equal(r.stages.find((s) => s.stage === 'order')?.resources, 2);
+});
+
+test('orders: the read is chunked, so a long history does not build one huge predicate', async () => {
+  const numbers = Array.from({ length: 250 }, (_, i) => `N-${String(i).padStart(4, '0')}`);
+  const { clients, recorded } = fakeClients();
+  await runLoad(clients, planWithOrders(numbers), config(), { only: ['order'], sleep: noSleep });
+  assert.equal(recorded.orderReads.length, 3);
+  assert.ok(recorded.orderReads.every((w) => w.length < 3000));
+});
+
+test('artefact: a restricted run writes beside the full run\'s record, not over it', async () => {
+  const { clients } = fakeClients();
+  const dir = mkdtempSync(resolve(tmpdir(), 'load-artefact-'));
+  const full = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, sleep: noSleep });
+  const fullPath = writeLoadArtefacts(dir, full);
+  const part = await runLoad(clients, planWithOrders(['A-1']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  const partPath = writeLoadArtefacts(dir, part);
+  assert.match(fullPath, /load-result\.json$/);
+  assert.match(partPath, /load-result-only-order\.json$/);
+  assert.deepEqual(JSON.parse(readFileSync(partPath, 'utf8')).only, ['order']);
+  assert.equal(JSON.parse(readFileSync(fullPath, 'utf8')).only, undefined, 'the full record is untouched');
 });

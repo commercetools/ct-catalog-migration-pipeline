@@ -43,6 +43,12 @@ export interface LoadOptions {
   wait?: boolean;
   /** In-flight Import Requests. */
   concurrency?: number;
+  /**
+   * Run only these stages, in plan order, and touch nothing else: the platform
+   * stages are skipped unless named, so a resend of one stage cannot create,
+   * update or unpublish what an earlier stage left in the project.
+   */
+  only?: LoadStage[];
   /** Ceiling on --wait, in milliseconds. */
   waitTimeoutMs?: number;
   /** Reports on ticks where the load is, including what `--wait` is waiting for. */
@@ -95,6 +101,10 @@ export interface LoadResult {
   summaries: { containerKey: string; summary: ImportSummary }[];
   diagnostics: Diagnostic[];
   waited: boolean;
+  /** Set when `--only` restricted the run: the stages it was allowed to run. */
+  only?: LoadStage[];
+  /** Order numbers the project already held, so they were not sent again. */
+  skippedOrders?: string[];
 }
 
 const DEFAULT_CONCURRENCY = 4;
@@ -107,7 +117,20 @@ export async function runLoad(
   options: LoadOptions = {},
 ): Promise<LoadResult> {
   const diagnostics: Diagnostic[] = [];
-  const batches = planBatches(plan, config);
+  const only = options.only;
+  // Every stage decision below reads `scoped.loadOrder`, so `--only` narrows the
+  // import stages and the platform stages with one filter.
+  let scoped: MigrationPlan = only
+    ? { ...plan, loadOrder: plan.loadOrder.filter((s) => only.includes(s)) }
+    : plan;
+  let batches = planBatches(scoped, config);
+  const skippedOrders: string[] = [];
+  // Marks what restricted or shortened the run on every result it returns.
+  const tag = (r: LoadResult): LoadResult => ({
+    ...r,
+    ...(only ? { only } : {}),
+    ...(skippedOrders.length > 0 ? { skippedOrders } : {}),
+  });
   const progress = options.progress ?? noProgress;
   const activity = progress.activity('load');
   // Counters move as often as the work does; a tick prints them (see progress.ts).
@@ -122,8 +145,15 @@ export async function runLoad(
         : 'checking and creating channels, customer groups and tax categories',
   );
 
-  for (const warning of batches.warnings) {
-    diagnostics.push({ severity: 'warning', code: 'batching', message: warning });
+  if (only) {
+    const left = plan.loadOrder.filter((s) => !only.includes(s));
+    diagnostics.push({
+      severity: 'warning',
+      code: 'only-stages',
+      message:
+        `--only ${only.join(',')}: ${left.length} stage(s) not run (${left.join(', ')}). ` +
+        'This run assumes the project already holds what they create; read it back with `verify`.',
+    });
   }
 
   // A store referencing product selections cannot be created until those
@@ -132,7 +162,10 @@ export async function runLoad(
   // Refusing up front rather than half-loading: this is the last cheap place
   // to say so.
   const storesNeedingSelections = (plan.prerequisites?.stores ?? []).filter(
-    (st) => st.productSelections.length > 0,
+    (st) =>
+      st.productSelections.length > 0 &&
+      scoped.loadOrder.includes('store') &&
+      scoped.loadOrder.includes('product-selection'),
   );
   // Only when executing: a dry run writes nothing, so there is no selection
   // that could fail to resolve and nothing to protect.
@@ -149,7 +182,7 @@ export async function runLoad(
         '      Re-run with --wait. Nothing was created and nothing was imported — this ' +
         'check needs only the plan, so it runs before the first write.',
     });
-    return {
+    return tag({
       executed: true,
       prerequisites: [],
       batches,
@@ -157,13 +190,65 @@ export async function runLoad(
       summaries: [],
       diagnostics,
       waited: false,
-    };
+    });
   }
 
 
+  // Orders are create-only: a number the project holds is rejected, never
+  // updated. Read which ones it holds before any write, so a resend sends only
+  // what is missing and an unreadable project stops an `--execute` while
+  // nothing has been created yet.
+  const plannedOrders = scoped.loadOrder.includes('order') ? (plan.orders ?? []) : [];
+  if (plannedOrders.length > 0) {
+    const read = await readExistingOrderNumbers(
+      clients,
+      plannedOrders.map((o) => o.orderNumber),
+    );
+    if (read.found === undefined) {
+      diagnostics.push({
+        severity: options.execute ? 'error' : 'warning',
+        code: 'orders-unreadable',
+        message:
+          `The orders the project already holds could not be read (${prerequisiteError(read.error)}). ` +
+          (options.execute
+            ? 'Nothing was created and nothing was imported: without that read, orders already ' +
+              'there would be sent again and rejected. Fix the cause (the credentials need ' +
+              'view_orders or manage_orders) and re-run.'
+            : 'This dry run lists every planned order as new.'),
+      });
+      if (options.execute) {
+        return tag({
+          executed: true,
+          prerequisites: [],
+          batches,
+          stages: [],
+          summaries: [],
+          diagnostics,
+          waited: false,
+        });
+      }
+    } else if (read.found.size > 0) {
+      skippedOrders.push(...plannedOrders.map((o) => o.orderNumber).filter((n) => read.found!.has(n)));
+      scoped = { ...scoped, orders: plannedOrders.filter((o) => !read.found!.has(o.orderNumber)) };
+      batches = planBatches(scoped, config);
+      diagnostics.push({
+        severity: 'warning',
+        code: 'orders-already-in-project',
+        message:
+          `${skippedOrders.length} of ${plannedOrders.length} order number(s) are already in the ` +
+          'project and are not sent again (orders are create-only; a number the project holds ' +
+          'is rejected). `verify` compares them with the plan.',
+      });
+    }
+  }
+
+  for (const warning of batches.warnings) {
+    diagnostics.push({ severity: 'warning', code: 'batching', message: warning });
+  }
+
   // Platform stages first, on both paths: a dry run has to say what it would
   // create, and reading the project to find out costs only GETs.
-  const prerequisites = await runPrerequisites(clients, plan, options, diagnostics);
+  const prerequisites = await runPrerequisites(clients, scoped, options, diagnostics);
 
   if (!options.execute) {
     // Stores are created last on the executed path, so the dry run has to ask
@@ -171,7 +256,7 @@ export async function runLoad(
     // `load-requests.json` is documented as what the run will do. Reading
     // costs GETs; the `--wait` requirement does not apply, because a dry run
     // creates nothing that could point at a missing selection.
-    if (platformStages(plan.loadOrder, 'after').includes('store')) {
+    if (platformStages(scoped.loadOrder, 'after').includes('store')) {
       const wantedStores = plan.prerequisites?.stores ?? [];
       if (wantedStores.length > 0) {
         prerequisites.push(await ensureStores(clients, wantedStores, options, diagnostics));
@@ -180,7 +265,7 @@ export async function runLoad(
 
     // The dry run still reports per-stage totals, because the useful question
     // before a load is "how many requests, into which containers".
-    return {
+    return tag({
       executed: false,
       prerequisites,
       batches,
@@ -188,7 +273,7 @@ export async function runLoad(
       summaries: [],
       diagnostics,
       waited: false,
-    };
+    });
   }
 
   // A prerequisite that is missing, unusable or unreadable stops the import
@@ -229,7 +314,7 @@ export async function runLoad(
         'hours, so the import is not worth starting. Resolve the above and re-run — keys are deterministic, so a re-run ' +
         'updates rather than duplicates.',
     });
-    return {
+    return tag({
       executed: true,
       prerequisites,
       batches,
@@ -237,15 +322,15 @@ export async function runLoad(
       summaries: [],
       diagnostics,
       waited: false,
-    };
+    });
   }
 
   const stages: StageOutcome[] = [];
   const waited = options.wait === true;
   const expected = new Map<string, ExpectedOperations>();
-  const stagesWithRequests = plan.loadOrder.filter((s) => batches.batches.some((b) => b.stage === s));
+  const stagesWithRequests = scoped.loadOrder.filter((s) => batches.batches.some((b) => b.stage === s));
 
-  for (const stage of plan.loadOrder) {
+  for (const stage of scoped.loadOrder) {
     const stageBatches = batches.batches.filter((b) => b.stage === stage);
     if (stageBatches.length === 0) continue;
     live = { stage, number: stagesWithRequests.indexOf(stage) + 1, of: stagesWithRequests.length };
@@ -312,7 +397,7 @@ export async function runLoad(
 
   // Last, and only now: every selection a store points at has either resolved
   // or been reported above.
-  if (platformStages(plan.loadOrder, 'after').includes('store')) {
+  if (platformStages(scoped.loadOrder, 'after').includes('store')) {
     const wanted = plan.prerequisites?.stores ?? [];
     if (wanted.length > 0) {
       activity.status(() => 'creating the stores');
@@ -320,7 +405,7 @@ export async function runLoad(
     }
   }
 
-  return { executed: true, prerequisites, batches, stages, summaries, diagnostics, waited };
+  return tag({ executed: true, prerequisites, batches, stages, summaries, diagnostics, waited });
 }
 
 /**
@@ -464,6 +549,41 @@ async function readTaxCategories(
           .map((t) => [t.key as string, t as unknown]),
       ),
     };
+  } catch (err) {
+    return { error: err };
+  }
+}
+
+/** Order numbers per read: keeps the `where` predicate well under URL limits. */
+const ORDER_READ_CHUNK = 100;
+
+/**
+ * Which of these order numbers the project already holds. Orders are
+ * create-only and have no key, so the number is the only way to ask.
+ */
+async function readExistingOrderNumbers(
+  clients: Clients,
+  numbers: string[],
+): Promise<{ found?: Set<string>; error?: unknown }> {
+  const found = new Set<string>();
+  try {
+    for (let i = 0; i < numbers.length; i += ORDER_READ_CHUNK) {
+      const slice = numbers.slice(i, i + ORDER_READ_CHUNK);
+      const res = await clients.platform
+        .orders()
+        .get({
+          queryArgs: {
+            where: `orderNumber in (${slice.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(',')})`,
+            limit: slice.length,
+            withTotal: false,
+          },
+        })
+        .execute();
+      for (const order of res.body.results) {
+        if (order.orderNumber !== undefined) found.add(order.orderNumber);
+      }
+    }
+    return { found };
   } catch (err) {
     return { error: err };
   }
