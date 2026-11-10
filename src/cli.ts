@@ -33,7 +33,7 @@ import { MAX_VARIANTS_CLASSIC, requiredCatalogModel } from './model/limits.js';
 import { describeCredentials, loadCredentials, MissingCredentialsError } from './client/credentials.js';
 import { createClients } from './client/factory.js';
 import { effectiveCatalogModel, preflight } from './preflight/check.js';
-import { readCreatedPrerequisites } from './load/created.js';
+import { readCreatedPrerequisites, type CreatedPrerequisites } from './load/created.js';
 import { createProgress, type Progress } from './progress/progress.js';
 import { runLoad } from './load/run.js';
 import { countInFlight, describeInFlight, fetchSnapshot } from './verify/snapshot.js';
@@ -79,6 +79,9 @@ Options:
   --wait            load only: poll Import Summaries until nothing is processing
   --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
   --include-created-tax-categories  teardown only: also delete the tax categories this plan's load created
+  --include-created-prerequisites  teardown only: also delete everything this plan's load created beyond the
+                    catalog: stores, channels, customer groups and tax categories, never one the project held
+                    before (the API refuses while something still uses one)
   --concurrency <n> load only: in-flight Import Requests (default 4)
   --only <stage>[,<stage>]  load only: run just these stages, e.g. --only order to resend the orders
                     after a failure. The other stages are not touched, and orders the project
@@ -117,6 +120,7 @@ async function main(): Promise<number> {
         only: { type: 'string', default: '' },
         'confirm-project': { type: 'string', default: '' },
         'include-created-tax-categories': { type: 'boolean', default: false },
+        'include-created-prerequisites': { type: 'boolean', default: false },
         'progress-interval': { type: 'string', default: '30' },
       },
       allowPositionals: false,
@@ -166,6 +170,7 @@ async function main(): Promise<number> {
     only,
     confirmProject: values['confirm-project'] as string,
     includeCreatedTaxCategories: values['include-created-tax-categories'] as boolean,
+    includeCreatedPrerequisites: values['include-created-prerequisites'] as boolean,
   };
 
   // Written beside the other artefacts, so a caller that pipes the command
@@ -189,6 +194,13 @@ async function main(): Promise<number> {
     progress.finish(code);
   }
 }
+
+const readNothingCreated = (): CreatedPrerequisites => ({
+  taxCategories: [],
+  channels: [],
+  customerGroups: [],
+  stores: [],
+});
 
 async function runCommand(command: string, opts: Opts): Promise<number> {
   switch (command) {
@@ -268,6 +280,7 @@ interface Opts {
   only?: LoadStage[];
   confirmProject: string;
   includeCreatedTaxCategories: boolean;
+  includeCreatedPrerequisites: boolean;
   progress: Progress;
 }
 
@@ -891,15 +904,15 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
 
   // What `load` recorded as created. A damaged file only matters if the delete
   // of those categories was asked for; otherwise teardown goes on without the hint.
-  let createdTaxCategories: string[] = [];
+  let created = readNothingCreated();
   try {
-    createdTaxCategories = readCreatedPrerequisites(outDirFor(opts)).taxCategories;
+    created = readCreatedPrerequisites(outDirFor(opts));
   } catch (err) {
-    if (opts.includeCreatedTaxCategories) {
+    if (opts.includeCreatedTaxCategories || opts.includeCreatedPrerequisites) {
       console.error(`${(err as Error).message} Nothing was deleted.`);
       return 1;
     }
-    console.error(`warn  ${(err as Error).message} Ignored: no tax category will be offered for removal.`);
+    console.error(`warn  ${(err as Error).message} Ignored: nothing a load created will be offered for removal.`);
   }
 
   const clients = createClients(credentials);
@@ -909,8 +922,15 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
   const result = await runTeardown(clients, plan, config, {
     execute: opts.execute,
     concurrency: opts.concurrency,
-    createdTaxCategories,
-    removeCreatedTaxCategories: opts.includeCreatedTaxCategories,
+    createdTaxCategories: created.taxCategories,
+    // The wider flag covers tax categories too: it means "everything load created".
+    removeCreatedTaxCategories: opts.includeCreatedTaxCategories || opts.includeCreatedPrerequisites,
+    createdPrerequisites: {
+      stores: created.stores,
+      channels: created.channels,
+      customerGroups: created.customerGroups,
+    },
+    removeCreatedPrerequisites: opts.includeCreatedPrerequisites,
     progress: opts.progress,
   });
 
