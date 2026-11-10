@@ -22,7 +22,12 @@
  *    every key is deterministic, resubmitting is just running `load` again.
  */
 
-import type { ImportSummary, OperationStates } from '@commercetools/importapi-sdk';
+import type {
+  ImportOperation,
+  ImportOperationStatus,
+  ImportSummary,
+  OperationStates,
+} from '@commercetools/importapi-sdk';
 
 import type { Clients } from '../client/factory.js';
 import type { PipelineConfig } from '../model/config.js';
@@ -51,6 +56,8 @@ export interface LoadOptions {
   only?: LoadStage[];
   /** Ceiling on --wait, in milliseconds. */
   waitTimeoutMs?: number;
+  /** How long the first record of a customer or order stage may stay `processing`. */
+  canaryTimeoutMs?: number;
   /** Reports on ticks where the load is, including what `--wait` is waiting for. */
   progress?: Progress;
   sleep?: (ms: number) => Promise<void>;
@@ -105,9 +112,23 @@ export interface LoadResult {
   only?: LoadStage[];
   /** Order numbers the project already held, so they were not sent again. */
   skippedOrders?: string[];
+  /** Set when the first record of a stage was refused, unresolved or unreadable. */
+  canary?: CanaryOutcome;
+}
+
+/** What the one-record first request of a stage came back as. */
+export interface CanaryOutcome {
+  stage: LoadStage;
+  resourceKey: string;
+  /** The operation's state, or why it could not be read. */
+  state: string;
+  /** Whether the rest of the stage was sent. */
+  proceeded: boolean;
+  errors?: string[];
 }
 
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_CANARY_TIMEOUT_MS = 2 * 60_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60_000;
 
 export async function runLoad(
@@ -326,6 +347,7 @@ export async function runLoad(
   }
 
   const stages: StageOutcome[] = [];
+  let canary: CanaryOutcome | undefined;
   const waited = options.wait === true;
   const expected = new Map<string, ExpectedOperations>();
   const stagesWithRequests = scoped.loadOrder.filter((s) => batches.batches.some((b) => b.stage === s));
@@ -346,21 +368,51 @@ export async function runLoad(
       }
     }
 
-    const outcome = await pushStage(
-      clients,
-      stage,
-      stageBatches,
-      options.concurrency ?? DEFAULT_CONCURRENCY,
-      (o) => {
-        live!.outcome = o;
-      },
-      progress,
-    );
+    const track = (o: StageOutcome) => {
+      live!.outcome = o;
+    };
+    // The first request of a customer or order stage holds one record. Its result
+    // is read before the rest goes out, so a shape the API refuses costs one
+    // failed operation, not one per record.
+    const canaryBatch = stageBatches[0].canary ? stageBatches[0] : undefined;
+    const rest = canaryBatch ? stageBatches.slice(1) : stageBatches;
+    const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+    let outcome: StageOutcome;
+    let sent = stageBatches;
+    let stopped = false;
+
+    if (canaryBatch) {
+      const statuses: ImportOperationStatus[] = [];
+      const first = await pushStage(clients, stage, [canaryBatch], 1, track, progress, statuses);
+      const verdict = await judgeCanary(
+        clients,
+        stage,
+        canaryBatch,
+        first,
+        statuses,
+        options.canaryTimeoutMs ?? DEFAULT_CANARY_TIMEOUT_MS,
+        options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      );
+      canary = verdict.outcome;
+      for (const d of verdict.diagnostics) diagnostics.push(d);
+      if (verdict.outcome.proceeded && rest.length > 0) {
+        const others = await pushStage(clients, stage, rest, concurrency, (o) => track(mergeOutcomes(first, o)), progress);
+        outcome = mergeOutcomes(first, others);
+      } else {
+        outcome = { ...first, requests: stageBatches.length, resources: stageBatches.reduce((n, b) => n + b.resourceKeys.length, 0) };
+      }
+      if (!verdict.outcome.proceeded) {
+        stopped = true;
+        sent = [canaryBatch];
+      }
+    } else {
+      outcome = await pushStage(clients, stage, stageBatches, concurrency, track, progress);
+    }
     outcome.containers = containers;
     stages.push(outcome);
 
     if (waited) {
-      for (const batch of stageBatches) {
+      for (const batch of sent) {
         expected.get(batch.containerKey)!.operations += batch.resourceKeys.length;
       }
       // A rejected request registers no operations, so it is not waited for.
@@ -378,6 +430,7 @@ export async function runLoad(
           `${failure.message}\n      Resources: ${failure.resourceKeys.join(', ')}`,
       });
     }
+    if (stopped) break;
   }
 
   live = undefined;
@@ -397,7 +450,8 @@ export async function runLoad(
 
   // Last, and only now: every selection a store points at has either resolved
   // or been reported above.
-  if (platformStages(scoped.loadOrder, 'after').includes('store')) {
+  // Not after a stopped load: the stores belong to a load that completed.
+  if (canary?.proceeded !== false && platformStages(scoped.loadOrder, 'after').includes('store')) {
     const wanted = plan.prerequisites?.stores ?? [];
     if (wanted.length > 0) {
       activity.status(() => 'creating the stores');
@@ -405,7 +459,16 @@ export async function runLoad(
     }
   }
 
-  return tag({ executed: true, prerequisites, batches, stages, summaries, diagnostics, waited });
+  return tag({
+    executed: true,
+    prerequisites,
+    batches,
+    stages,
+    summaries,
+    diagnostics,
+    waited,
+    ...(canary ? { canary } : {}),
+  });
 }
 
 /**
@@ -1173,6 +1236,126 @@ function poster(clients: Clients, batch: Batch) {
  * the stage: one bad batch out of two thousand should not stop the other
  * 1,999, and the keys are what a targeted re-run needs.
  */
+function mergeOutcomes(a: StageOutcome, b: StageOutcome): StageOutcome {
+  return {
+    stage: a.stage,
+    containers: [],
+    requests: a.requests + b.requests,
+    resources: a.resources + b.resources,
+    accepted: a.accepted + b.accepted,
+    failed: [...a.failed, ...b.failed],
+  };
+}
+
+/**
+ * Reads the result of the one record a canary request carried, and says whether
+ * the rest of the stage may go.
+ *
+ * `imported` goes. `unresolved` and `waitForMasterVariant` go too, with a
+ * warning: the API took the record and is waiting for a reference that arrives on
+ * its own, which is what a customer imported a moment ago looks like to an order.
+ * `validationFailed`, `rejected`, `partiallyImported` and `canceled` stop the
+ * stage, and so does a result that cannot be read, because sending the rest
+ * without knowing is the thing the canary exists to prevent. `processing` is
+ * waited out, with a ceiling.
+ */
+async function judgeCanary(
+  clients: Clients,
+  stage: LoadStage,
+  batch: Batch,
+  pushed: StageOutcome,
+  statuses: ImportOperationStatus[],
+  timeoutMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<{ outcome: CanaryOutcome; diagnostics: Diagnostic[] }> {
+  const resourceKey = batch.resourceKeys[0];
+  const later = `the rest of the ${stage} stage was not sent, and no later stage ran`;
+  const stop = (state: string, message: string, errors?: string[]) => ({
+    outcome: { stage, resourceKey, state, proceeded: false, ...(errors ? { errors } : {}) },
+    diagnostics: [{ severity: 'error' as const, code: 'canary-stopped', message: `${message} ${later}.` }],
+  });
+  const resend = `Fix the cause and resend with \`load --only ${stage} --execute\`.`;
+
+  if (pushed.failed.length > 0) {
+    const reason = pushed.failed[0].message;
+    return stop(
+      'rejected',
+      `The first ${stage} request (one record, ${resourceKey}) was rejected: ${reason}. ${resend} Nothing was imported from it;`,
+    );
+  }
+
+  const status = statuses[0];
+  const id = status?.operationId;
+  if (status === undefined || id === undefined) {
+    return stop(
+      'unreadable',
+      `The Import API gave no operation id for the first ${stage} record (${resourceKey}), so its result cannot be read.` +
+        ` Read the container's operations, then resend with \`load --only ${stage} --execute\`;`,
+    );
+  }
+
+  const errorsOf = (list?: { code: string; message?: string }[]): string[] | undefined =>
+    list && list.length > 0
+      ? list.map((e) => `${e.code}${e.message ? `: ${e.message}` : ''}`.slice(0, 600))
+      : undefined;
+
+  let state = status.state as string;
+  let errors = errorsOf(status.errors);
+  let unresolved: ImportOperation['unresolvedReferences'];
+  let waitedMs = 0;
+  let delay = 500;
+  for (;;) {
+    if (state !== 'processing') break;
+    if (waitedMs >= timeoutMs) {
+      return stop(
+        'processing',
+        `The first ${stage} record (${resourceKey}) was still processing after ${Math.round(timeoutMs / 1000)} seconds. ` +
+          `Check its operation (${id}) and resend with \`load --only ${stage} --execute\` once it has settled;`,
+      );
+    }
+    await sleep(delay);
+    waitedMs += delay;
+    delay = Math.min(delay * 2, 5_000);
+    try {
+      const op = (await clients.importApi.importOperations().withIdValue({ id }).get().execute()).body;
+      state = op.state as string;
+      errors = errorsOf(op.errors) ?? errors;
+      unresolved = op.unresolvedReferences;
+    } catch (err) {
+      return stop(
+        'unreadable',
+        `The result of the first ${stage} record (${resourceKey}) could not be read (${describeError(err)}). ` +
+          `Its operation is ${id}; resend with \`load --only ${stage} --execute\` once it is readable;`,
+      );
+    }
+  }
+
+  if (state === 'imported') {
+    return { outcome: { stage, resourceKey, state, proceeded: true }, diagnostics: [] };
+  }
+  if (state === 'unresolved' || state === 'waitForMasterVariant') {
+    const refs = (unresolved ?? []).map((u) => `${u.typeId} ${u.key}`).join(', ');
+    return {
+      outcome: { stage, resourceKey, state, proceeded: true },
+      diagnostics: [
+        {
+          severity: 'warning',
+          code: 'canary-unresolved',
+          message:
+            `The first ${stage} record (${resourceKey}) is ${state}${refs ? `, waiting for ${refs}` : ''}. ` +
+            'The API accepted its shape; the rest was sent, and `--wait` and `verify` show whether the reference arrives.',
+        },
+      ],
+    };
+  }
+  return stop(
+    state,
+    `The first ${stage} record (${resourceKey}) was refused by the Import API (${state})` +
+      `${errors ? `: ${errors.join('; ')}` : ''}. ${resend}`,
+    errors,
+  );
+}
+
 async function pushStage(
   clients: Clients,
   stage: LoadStage,
@@ -1180,6 +1363,7 @@ async function pushStage(
   concurrency: number,
   onOutcome?: (outcome: StageOutcome) => void,
   progress?: Progress,
+  statuses?: ImportOperationStatus[],
 ): Promise<StageOutcome> {
   const outcome: StageOutcome = {
     stage,
@@ -1196,8 +1380,11 @@ async function pushStage(
     while (next < batches.length) {
       const batch = batches[next++];
       try {
-        await poster(clients, batch).execute();
+        const response = await poster(clients, batch).execute();
         outcome.accepted++;
+        const status = (response?.body as { operationStatus?: ImportOperationStatus[] } | undefined)
+          ?.operationStatus;
+        if (statuses && status) statuses.push(...status);
       } catch (err) {
         outcome.failed.push({
           containerKey: batch.containerKey,

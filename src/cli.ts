@@ -829,6 +829,13 @@ async function runLoadCommand(opts: Opts): Promise<number> {
   }
 
   if (errors.length > 0) {
+    if (result.canary && !result.canary.proceeded) {
+      // Not "a re-run updates": orders are create-only. A resend of the stage is
+      // safe because orders the project holds are read and left out.
+      console.log(`${errors.length} error(s). The load stopped at the first ${result.canary.stage} record.`);
+      console.log(`Fix the cause, then \`load --only ${result.canary.stage} --execute\` sends the stage again.`);
+      return 1;
+    }
     console.log(`${errors.length} error(s). Fix the cause and re-run — keys are`);
     console.log('deterministic, so a second run updates rather than duplicating.');
     return 1;

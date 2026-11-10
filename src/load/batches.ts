@@ -84,6 +84,19 @@ const RESOURCE_TYPE: Record<ImportStage, ImportResourceType> = {
   order: 'order',
 };
 
+/**
+ * Stages whose first request carries a single record, so the load can read that
+ * record's result before it sends the rest.
+ *
+ * The Import API has no dry run, so no offline stage can show that it accepts the
+ * shape a mapper sends, and these are the stages where finding out late is
+ * expensive: orders are create-only and wake every `OrderImported` subscription
+ * once per record, and customers are personal data. A shape the API refuses then
+ * costs one failed operation instead of one per record. The other stages upsert
+ * by key, so a wrong guess there is fixed by running them again.
+ */
+export const CANARY_STAGES: readonly LoadStage[] = ['customer', 'order'];
+
 export interface Batch {
   stage: LoadStage;
   containerKey: string;
@@ -92,6 +105,8 @@ export interface Batch {
   /** Keys of the resources in this request, for reporting and resubmission. */
   resourceKeys: string[];
   body: ImportRequestBody;
+  /** The one-record request that goes first in a {@link CANARY_STAGES} stage. */
+  canary?: true;
 }
 
 export interface ContainerPlan {
@@ -214,7 +229,13 @@ export function planBatches(plan: MigrationPlan, config: PipelineConfig): LoadBa
         operations: part.length,
       });
 
-      for (const group of chunk(part, perRequest)) {
+      // The first request of a canary stage holds one record. It is the first
+      // request of the first container: that is the one the load sends first.
+      const withCanary = CANARY_STAGES.includes(stage) && partIndex === 0 && part.length > 0;
+      const groups = withCanary
+        ? [part.slice(0, 1), ...chunk(part.slice(1), perRequest)]
+        : chunk(part, perRequest);
+      groups.forEach((group, groupIndex) => {
         index++;
         batches.push({
           stage,
@@ -225,8 +246,9 @@ export function planBatches(plan: MigrationPlan, config: PipelineConfig): LoadBa
             stage as ImportStage,
             group.map((g) => g.resource),
           ),
+          ...(withCanary && groupIndex === 0 ? { canary: true as const } : {}),
         });
-      }
+      });
     });
   }
 

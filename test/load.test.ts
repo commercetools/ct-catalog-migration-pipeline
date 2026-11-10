@@ -270,6 +270,8 @@ interface Recorded {
   prerequisiteReads: { kind: string; where: string }[];
   /** `where` predicates of the reads for orders the project already holds. */
   orderReads: string[];
+  /** Operation ids read, one entry per poll. */
+  operationReads: string[];
   created: { kind: string; body: Record<string, unknown> }[];
   containerCreates: string[];
   /** Container reads, which only happen when a create failed. */
@@ -285,6 +287,18 @@ interface Recorded {
 interface FakeOptions {
   /** Order numbers the project already holds, or the error the read fails with. */
   existingOrders?: string[] | Error;
+  /**
+   * What the one-record first request of a customer or order stage comes back as.
+   * `state` is read per poll (the last one repeats); `postState` is what the POST
+   * response itself says.
+   */
+  canary?: {
+    state?: string | string[];
+    errors?: { code: string; message?: string }[];
+    unresolvedReferences?: { typeId: string; key: string }[];
+    readError?: Error;
+    postState?: string;
+  };
   /** What the project already holds, per kind. */
   existing?: {
     stores?: { key: string; productSelections?: unknown[] }[] | Error;
@@ -338,6 +352,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
   const recorded: Recorded = {
     prerequisiteReads: [],
     orderReads: [],
+    operationReads: [],
     created: [],
     containerCreates: [],
     containerReads: [],
@@ -354,7 +369,10 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
           execute: async () => {
             if (
               options.failResourceKey &&
-              body.resources.some((r) => r.key === options.failResourceKey)
+              body.resources.some(
+                (r) => (r as { key?: string; orderNumber?: string }).key === options.failResourceKey ||
+                  (r as { orderNumber?: string }).orderNumber === options.failResourceKey,
+              )
             ) {
               throw httpError(400, 'InvalidInput');
             }
@@ -364,7 +382,18 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
               resources: body.resources.length,
             });
             recorded.sequence.push(`post:${stage}`);
-            return { body: { operationStatus: [] } };
+            const n = recorded.posts.length;
+            return {
+              body: {
+                operationStatus: body.resources.map((_, i) => ({
+                  operationId: `op-${stage}-${n}-${i}`,
+                  state: options.canary?.postState ?? 'processing',
+                  ...(options.canary?.postState === 'validationFailed' && options.canary.errors
+                    ? { errors: options.canary.errors }
+                    : {}),
+                })),
+              },
+            };
           },
         }),
       }),
@@ -429,6 +458,31 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
         }),
       }),
     }),
+    importOperations: () => ({
+      withIdValue: ({ id }: { id: string }) => ({
+        get: () => ({
+          execute: async () => {
+            recorded.operationReads.push(id);
+            recorded.sequence.push('read:operation');
+            if (options.canary?.readError) throw options.canary.readError;
+            const seq = Array.isArray(options.canary?.state)
+              ? options.canary!.state
+              : [options.canary?.state ?? 'imported'];
+            const polls = recorded.operationReads.length;
+            return {
+              body: {
+                id,
+                state: seq[Math.min(polls - 1, seq.length - 1)],
+                ...(options.canary?.errors ? { errors: options.canary.errors } : {}),
+                ...(options.canary?.unresolvedReferences
+                  ? { unresolvedReferences: options.canary.unresolvedReferences }
+                  : {}),
+              },
+            };
+          },
+        }),
+      }),
+    }),
     productTypes: stagePoster('product-type'),
     categories: stagePoster('category'),
     productDrafts: stagePoster('product-draft'),
@@ -436,6 +490,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     productSelections: stagePoster('product-selection'),
     variants: stagePoster('variant'),
     orders: stagePoster('order'),
+    customers: stagePoster('customer'),
   };
 
   const platformStage = (kind: 'channels' | 'customerGroups' | 'taxCategories' | 'stores') => () => ({
@@ -1884,4 +1939,257 @@ test('artefact: a restricted run writes beside the full run\'s record, not over 
   assert.match(partPath, /load-result-only-order\.json$/);
   assert.deepEqual(JSON.parse(readFileSync(partPath, 'utf8')).only, ['order']);
   assert.equal(JSON.parse(readFileSync(fullPath, 'utf8')).only, undefined, 'the full record is untouched');
+});
+
+// ---------------------------------------------------------------------------
+// The one-record first request of a customer or order stage
+//
+// The Import API has no dry run, so nothing offline can show that it accepts the
+// shape a mapper sends. In the first live run of orders every request was
+// refused, one failed operation per record, after the offline gates all passed.
+// The first request of these stages now holds one record, and its result is read
+// before the rest is sent.
+// ---------------------------------------------------------------------------
+
+function planWithCustomersAndOrders(customers: string[], orders: string[]): MigrationPlan {
+  return {
+    ...planWithOrders(orders),
+    customers: customers.map((key) => ({ key, email: `${key}@example.com` }) as never),
+  };
+}
+
+function sleeps() {
+  const waited: number[] = [];
+  return { waited, sleep: async (ms: number) => void waited.push(ms) };
+}
+
+test('canary: the first request of an order stage holds one record and is flagged', () => {
+  const numbers = Array.from({ length: 45 }, (_, i) => `N-${i}`);
+  const { batches } = planBatches(planWithOrders(numbers), config());
+  const orders = batches.filter((b) => b.stage === 'order');
+  assert.deepEqual(orders.map((b) => b.resourceKeys.length), [1, 20, 20, 4]);
+  assert.equal(orders[0].canary, true);
+  assert.ok(orders.slice(1).every((b) => b.canary === undefined));
+  assert.equal(orders.flatMap((b) => b.resourceKeys).length, 45, 'every order is still sent exactly once');
+});
+
+test('canary: customers get one too, and the catalog stages do not', () => {
+  const plan = planWithCustomersAndOrders(['c1', 'c2', 'c3'], ['A-1']);
+  const { batches } = planBatches(plan, config());
+  assert.equal(batches.filter((b) => b.canary).map((b) => b.stage).sort().join(), 'customer,order');
+  assert.ok(batches.filter((b) => b.stage === 'product-draft').every((b) => b.canary === undefined));
+});
+
+test('canary: a stage of one record is its own canary and sends nothing after it', async () => {
+  const { clients, recorded } = fakeClients();
+  await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], sleep: noSleep });
+  assert.equal(sentTo(recorded, 'order'), 1);
+});
+
+test('canary: the rest is sent only after the first record\'s result was read', async () => {
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(
+    recorded.sequence.filter((x) => x === 'post:order' || x === 'read:operation'),
+    ['post:order', 'read:operation', 'post:order'],
+  );
+  assert.equal(recorded.posts[0].resources, 1);
+  assert.equal(sentTo(recorded, 'order'), 3);
+  assert.equal(r.canary?.proceeded, true);
+  assert.equal(r.canary?.state, 'imported');
+  assert.ok(!codes(r.diagnostics).includes('canary-stopped'));
+});
+
+test('canary: a refused first record stops the stage with one operation, and says why', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: {
+      state: 'validationFailed',
+      errors: [{ code: 'InvalidOperation', message: 'Line item has invalid product variant identification information.' }],
+    },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3', 'A-4']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 1, 'exactly one record was sent');
+  assert.equal(r.canary?.proceeded, false);
+  assert.equal(r.canary?.state, 'validationFailed');
+  const d = r.diagnostics.find((x) => x.code === 'canary-stopped');
+  assert.equal(d?.severity, 'error');
+  assert.match(d!.message, /A-1/);
+  assert.match(d!.message, /invalid product variant identification/);
+  assert.match(d!.message, /--only order --execute/);
+  assert.match(d!.message, /not sent/);
+  const stage = r.stages.find((s) => s.stage === 'order')!;
+  assert.equal(stage.accepted, 1);
+  assert.equal(stage.resources, 4, 'the report still says how many records the stage holds');
+});
+
+test('canary: a refused customer stops the load before the orders that reference it', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: { state: 'validationFailed', errors: [{ code: 'InvalidField', message: 'email' }] },
+  });
+  const r = await runLoad(clients, planWithCustomersAndOrders(['c1', 'c2'], ['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['customer', 'order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'customer'), 1);
+  assert.equal(sentTo(recorded, 'order'), 0, 'no later stage ran');
+  assert.equal(r.canary?.stage, 'customer');
+});
+
+test('canary: a stopped load creates no store, which belongs to a load that finished', async () => {
+  const withOrders = { ...planWithStore(0), orders: planWithOrders(['A-1', 'A-2']).orders };
+  const { clients, recorded } = fakeClients({
+    canary: { state: 'validationFailed' },
+    existing: { channels: [{ key: 'retail-uk', roles: ['ProductDistribution'] }], customerGroups: [], stores: [] },
+  });
+  const r = await runLoad(clients, withOrders, config(), { execute: true, sleep: noSleep });
+  assert.equal(r.canary?.proceeded, false);
+  assert.ok(!recorded.created.some((c) => c.kind === 'stores'), 'no store may be created after a stop');
+
+  // The same plan, with the first record accepted, does create it.
+  const ok = fakeClients({
+    existing: { channels: [{ key: 'retail-uk', roles: ['ProductDistribution'] }], customerGroups: [], stores: [] },
+  });
+  await runLoad(ok.clients, withOrders, config(), { execute: true, sleep: noSleep });
+  assert.ok(ok.recorded.created.some((c) => c.kind === 'stores'), 'the control run must create it');
+});
+
+test('canary: a result the POST itself already calls validationFailed is not polled', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: { postState: 'validationFailed', errors: [{ code: 'InvalidInput', message: 'bad shape' }] },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(recorded.operationReads, []);
+  assert.equal(sentTo(recorded, 'order'), 1);
+  assert.match(r.diagnostics.find((x) => x.code === 'canary-stopped')!.message, /bad shape/);
+});
+
+test('canary: a record still processing is waited for, with growing pauses', async () => {
+  const { clients, recorded } = fakeClients({ canary: { state: ['processing', 'processing', 'imported'] } });
+  const { waited, sleep } = sleeps();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep,
+  });
+  assert.equal(recorded.operationReads.length, 3);
+  assert.deepEqual(waited, [500, 1000, 2000]);
+  assert.equal(sentTo(recorded, 'order'), 2);
+  assert.equal(r.canary?.proceeded, true);
+});
+
+test('canary: a record that never leaves processing stops the stage at the ceiling', async () => {
+  const { clients, recorded } = fakeClients({ canary: { state: 'processing' } });
+  const { waited, sleep } = sleeps();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    canaryTimeoutMs: 3000,
+    sleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 1);
+  assert.ok(waited.reduce((a, b) => a + b, 0) >= 3000 && waited.length < 10);
+  assert.match(r.diagnostics.find((x) => x.code === 'canary-stopped')!.message, /still processing/);
+});
+
+test('canary: an unresolved first record is not a refusal: the rest is sent, with a warning naming the reference', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: { state: 'unresolved', unresolvedReferences: [{ typeId: 'customer', key: 'mig-C-1' }] },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 3);
+  const d = r.diagnostics.find((x) => x.code === 'canary-unresolved');
+  assert.equal(d?.severity, 'warning');
+  assert.match(d!.message, /customer mig-C-1/);
+  assert.equal(r.canary?.proceeded, true);
+});
+
+test('canary: a result that cannot be read stops the stage rather than sending blind', async () => {
+  const { clients, recorded } = fakeClients({ canary: { readError: httpError(403, 'insufficient scope') } });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 1);
+  assert.equal(r.canary?.state, 'unreadable');
+  assert.ok(codes(r.diagnostics).includes('canary-stopped'));
+});
+
+test('canary: a first request the API rejects outright stops the stage too', async () => {
+  const { clients, recorded } = fakeClients({ failResourceKey: 'A-1' });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 0, 'neither it nor the rest was accepted');
+  assert.equal(r.canary?.state, 'rejected');
+  assert.equal(r.canary?.proceeded, false);
+});
+
+test('canary: after orders the project holds are left out, the first record is the first one that remains', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-1'] });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(r.canary?.resourceKey, 'A-2');
+  assert.equal(sentTo(recorded, 'order'), 2);
+});
+
+test('canary: a dry run shows the one-record request and reads no operation', async () => {
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), { only: ['order'], sleep: noSleep });
+  const first = r.batches.batches.find((b) => b.stage === 'order')!;
+  assert.equal(first.resourceKeys.length, 1);
+  assert.equal(first.canary, true);
+  assert.deepEqual(recorded.operationReads, []);
+  assert.deepEqual(recorded.posts, []);
+});
+
+test('canary: the dry run explains the one-record first request, and a stopped load does not read as executed', async () => {
+  const dry = fakeClients();
+  const d = await runLoad(dry.clients, planWithOrders(['A-1', 'A-2']), config(), { only: ['order'], sleep: noSleep });
+  assert.match(renderLoad(d).join('\n'), /first order request holds one record/);
+
+  const live = fakeClients({ canary: { state: 'validationFailed' } });
+  const r = await runLoad(live.clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  const out = renderLoad(r).join('\n');
+  assert.match(out, /LOAD STOPPED at the first order record \(validationFailed\)/);
+  assert.doesNotMatch(out, /^Load executed\./m);
+});
+
+test('canary: the artefact of an executed run records the first record\'s result', async () => {
+  const { clients } = fakeClients({ canary: { state: 'validationFailed' } });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  const written = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(written.canary.resourceKey, 'A-1');
+  assert.equal(written.canary.proceeded, false);
 });

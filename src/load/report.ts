@@ -29,6 +29,7 @@ export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
             executed: true,
             ...(result.only ? { only: result.only } : {}),
             ...(result.skippedOrders ? { skippedOrders: result.skippedOrders } : {}),
+            ...(result.canary ? { canary: result.canary } : {}),
             prerequisites: result.prerequisites,
             stages: result.stages,
             summaries: result.summaries,
@@ -81,9 +82,12 @@ export function renderLoad(result: LoadResult): string[] {
   // whose orders the project already holds.
   const nothingToSend = result.executed && result.batches.batches.length === 0;
   const halted = result.executed && result.stages.length === 0 && !nothingToSend;
+  const stoppedAtCanary = result.canary !== undefined && !result.canary.proceeded;
 
   lines.push(
-    halted
+    stoppedAtCanary
+      ? `LOAD STOPPED at the first ${result.canary!.stage} record (${result.canary!.state}). See below.`
+      : halted
       ? 'LOAD STOPPED before the first import. See below.'
       : nothingToSend
         ? 'Load executed: there was nothing to send.'
@@ -93,6 +97,15 @@ export function renderLoad(result: LoadResult): string[] {
   );
   if (result.only) {
     lines.push(`Restricted with --only to: ${result.only.join(', ')}. The other stages were not run.`);
+  }
+  if (!result.executed) {
+    const canaryStages = [...new Set(result.batches.batches.filter((b) => b.canary).map((b) => b.stage))];
+    if (canaryStages.length > 0) {
+      lines.push(
+        `The first ${canaryStages.join(' and ')} request holds one record: on --execute the load reads ` +
+          'its result before it sends the rest, and stops there if the API refuses it.',
+      );
+    }
   }
   if (result.skippedOrders && result.skippedOrders.length > 0) {
     lines.push(
