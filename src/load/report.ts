@@ -48,6 +48,9 @@ export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
               containerKey: b.containerKey,
               index: b.index,
               resourceKeys: b.resourceKeys,
+              // The one-record request that goes first in a customer or order
+              // stage: the part of the file a reviewer should look for.
+              ...(b.canary ? { canary: true } : {}),
               body: b.body,
             })),
           },

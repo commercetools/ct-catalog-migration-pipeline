@@ -2193,3 +2193,38 @@ test('canary: the artefact of an executed run records the first record\'s result
   assert.equal(written.canary.resourceKey, 'A-1');
   assert.equal(written.canary.proceeded, false);
 });
+
+test('artefact: the written load-requests.json flags the one-record first request, and only that one', async () => {
+  // Read from disk, not from the batches in memory: the flag was on the batch and
+  // missing from the file for a whole iteration because this test did not exist.
+  const { clients } = fakeClients();
+  const plan = planWithCustomersAndOrders(['c1', 'c2', 'c3'], ['A-1', 'A-2', 'A-3', 'A-4']);
+  const r = await runLoad(clients, plan, config(), { sleep: noSleep });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  assert.match(path, /load-requests\.json$/);
+
+  const written = JSON.parse(readFileSync(path, 'utf8')) as {
+    requests: { stage: string; resourceKeys: string[]; canary?: boolean }[];
+  };
+  const flagged = written.requests.filter((q) => q.canary);
+  assert.deepEqual(flagged.map((q) => q.stage).sort(), ['customer', 'order']);
+  for (const q of flagged) assert.equal(q.resourceKeys.length, 1, `the ${q.stage} canary holds one record`);
+  for (const stage of ['customer', 'order']) {
+    const first = written.requests.find((q) => q.stage === stage)!;
+    assert.equal(first.canary, true, `the first ${stage} request is the flagged one`);
+  }
+  assert.ok(
+    written.requests.filter((q) => q.stage !== 'customer' && q.stage !== 'order').every((q) => q.canary === undefined),
+    'a catalog stage has no canary',
+  );
+});
+
+test('artefact: a restricted dry run flags the canary in its own file too', async () => {
+  const { clients } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), { only: ['order'], sleep: noSleep });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  assert.match(path, /load-requests-only-order\.json$/);
+  const written = JSON.parse(readFileSync(path, 'utf8')) as { requests: { canary?: boolean }[] };
+  // One canary request of one record, then the one remaining order.
+  assert.deepEqual(written.requests.map((q) => q.canary === true), [true, false]);
+});
