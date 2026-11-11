@@ -277,6 +277,8 @@ interface Recorded {
   operationReads: string[];
   /** Which record each operation id was issued for. */
   operationKeys: Record<string, string>;
+  /** The list reads of failing operations: container and query arguments. */
+  operationListReads: { containerKey: string; state?: string; limit?: number }[];
   created: { kind: string; body: Record<string, unknown> }[];
   containerCreates: string[];
   /** Container reads, which only happen when a create failed. */
@@ -290,6 +292,11 @@ interface Recorded {
 }
 
 interface FakeOptions {
+  /** The API's error body for a request refused by `failResourceKey`: `errors` as the Import API sends them. */
+  failBody?: { errors: { code: string; message?: string; detailedErrorMessage?: string }[] };
+  /** Failing operations a container's list returns, per state; `operationsError` makes the read throw. */
+  failedOperations?: { state: string; resourceKey: string; errors?: { code: string; message?: string }[] }[];
+  operationsError?: Error;
   /** Order numbers the project already holds, or the error the read fails with. */
   existingOrders?: string[] | Error;
   /**
@@ -361,6 +368,7 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
     orderReads: [],
     operationReads: [],
     operationKeys: {},
+    operationListReads: [],
     created: [],
     containerCreates: [],
     containerReads: [],
@@ -382,7 +390,11 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
                   (r as { orderNumber?: string }).orderNumber === options.failResourceKey,
               )
             ) {
-              throw httpError(400, 'InvalidInput');
+              throw options.failBody
+                ? Object.assign(httpError(400, 'Complete request got rejected. Import request has some invalid fields'), {
+                    body: options.failBody,
+                  })
+                : httpError(400, 'InvalidInput');
             }
             recorded.posts.push({
               stage,
@@ -432,6 +444,16 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
             if (!options.containerExists) throw httpError(404, 'Not Found');
             return { body: { key: importContainerKey, resourceType: 'product-draft', version: 1 } };
           },
+        }),
+        importOperations: () => ({
+          get: ({ queryArgs }: { queryArgs: { state?: string; limit?: number } }) => ({
+            execute: async () => {
+              recorded.operationListReads.push({ containerKey: importContainerKey, ...queryArgs });
+              if (options.operationsError) throw options.operationsError;
+              const rows = (options.failedOperations ?? []).filter((o) => o.state === queryArgs.state);
+              return { body: { results: rows.slice(0, queryArgs.limit ?? 20) } };
+            },
+          }),
         }),
         importSummaries: () => ({
           get: () => ({
@@ -2399,4 +2421,96 @@ test('artefact: the written file lists every record of the canary request, flagg
   assert.deepEqual(written.requests[0].resourceKeys, ['A-1', 'A-2']);
   assert.equal(written.requests[0].canary, true);
   assert.deepEqual(written.requests[1].resourceKeys, ['A-3']);
+});
+
+// ---------------------------------------------------------------------------
+// Which field the API refused
+//
+// A refused request used to print only the API's top-level message ("Import request
+// has some invalid fields"), and a failing operation only a count. The field and the
+// reason are in the response body, and the reader had to send one record by hand,
+// or read the operations by hand, to see them.
+// ---------------------------------------------------------------------------
+
+test('error detail: a refused request prints the field and the reason from the API\'s body', async () => {
+  const customers = [person('c1'), person('c2'), person('c3')];
+  const { clients } = fakeClients({
+    failResourceKey: 'c3',
+    failBody: { errors: [{ code: 'InvalidField', message: 'defaultShippingAddress must be a valid index in shipping addresses array' }] },
+  });
+  const r = await runLoad(clients, planWithCustomers(customers), config(), { execute: true, only: ['customer'], sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'import-request-failed')!;
+  assert.match(d.message, /Import request has some invalid fields/);
+  assert.match(d.message, /InvalidField: defaultShippingAddress must be a valid index in shipping addresses array/);
+});
+
+test('error detail: a long error list is cut, and a body without errors changes nothing', async () => {
+  const many = Array.from({ length: 8 }, (_, i) => ({ code: 'InvalidField', message: `field${i}` }));
+  const { clients } = fakeClients({ failResourceKey: 'c3', failBody: { errors: many } });
+  const r = await runLoad(clients, planWithCustomers([person('c1'), person('c2'), person('c3')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  const msg = r.diagnostics.find((x) => x.code === 'import-request-failed')!.message;
+  assert.match(msg, /field0/);
+  assert.match(msg, /field4/);
+  assert.doesNotMatch(msg, /field5/);
+  assert.match(msg, /and 3 more/);
+
+  const plain = fakeClients({ failResourceKey: 'c3' });
+  const r2 = await runLoad(plain.clients, planWithCustomers([person('c1'), person('c2'), person('c3')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  assert.match(r2.diagnostics.find((x) => x.code === 'import-request-failed')!.message, /400: InvalidInput/);
+});
+
+test('error detail: the canary\'s refusal carries the field too', async () => {
+  const { clients } = fakeClients({
+    failResourceKey: 'c1',
+    failBody: { errors: [{ code: 'InvalidField', message: 'addresses[0].country is required' }] },
+  });
+  const r = await runLoad(clients, planWithCustomers([person('c1'), person('c2')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  assert.match(r.diagnostics.find((x) => x.code === 'canary-stopped')!.message, /addresses\[0\]\.country is required/);
+});
+
+test('operation errors: failing operations are sampled, grouped by reason and printed with one example', async () => {
+  const failing = Array.from({ length: 5 }, (_, i) => ({
+    state: 'validationFailed',
+    resourceKey: `BV${i}`,
+    errors: [{ code: 'InvalidOperation', message: 'Line item has invalid product variant identification information' }],
+  }));
+  failing.push({ state: 'validationFailed', resourceKey: 'BV9', errors: [{ code: 'InvalidField', message: 'customerEmail is not valid' }] });
+  const { clients, recorded } = fakeClients({ states: { validationFailed: 6 }, failedOperations: failing });
+  const r = await runLoad(clients, planWithOrders(['BV0', 'BV1', 'BV2']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'operation-errors')!;
+  assert.ok(d, 'the reasons are printed');
+  assert.equal(d.severity, 'warning', 'the failure itself is already an error; this only explains it');
+  assert.match(d.message, /5 x validationFailed: InvalidOperation: Line item has invalid product variant identification information \(for example BV0\)/);
+  assert.match(d.message, /1 x validationFailed: InvalidField: customerEmail is not valid \(for example BV9\)/);
+  assert.ok(recorded.operationListReads.every((q) => q.limit === 20), 'the read is bounded');
+  assert.ok(r.diagnostics.some((x) => x.code === 'operations-validation-failed'), 'the counts are still reported as errors');
+});
+
+test('operation errors: nothing is read when nothing failed, and a failed read hides nothing', async () => {
+  const clean = fakeClients();
+  await runLoad(clean.clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  assert.deepEqual(clean.recorded.operationListReads, []);
+
+  const broken = fakeClients({ states: { validationFailed: 2 }, operationsError: httpError(403, 'insufficient scope') });
+  const r = await runLoad(broken.clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  assert.ok(r.diagnostics.some((x) => x.code === 'operations-validation-failed'), 'the counts stand');
+  assert.ok(!r.diagnostics.some((x) => x.code === 'operation-errors'), 'and nothing is claimed about the cause');
+});
+
+test('operation errors: a failing operation with no recorded error is said so, not skipped', async () => {
+  const { clients } = fakeClients({ states: { rejected: 1 }, failedOperations: [{ state: 'rejected', resourceKey: 'A-1' }] });
+  const r = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  assert.match(r.diagnostics.find((x) => x.code === 'operation-errors')!.message, /no error was recorded/);
 });

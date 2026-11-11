@@ -1359,6 +1359,24 @@ function checkCustomers(
       }
     }
 
+    // The default of a kind has to be one of that kind's addresses: the API refuses
+    // the whole request otherwise, and an absent list counts as not listing it.
+    const defaults: [string, number | undefined, string, number[] | undefined][] = [
+      ['defaultShippingAddress', customer.defaultShippingAddress, 'shippingAddresses', customer.shippingAddresses],
+      ['defaultBillingAddress', customer.defaultBillingAddress, 'billingAddresses', customer.billingAddresses],
+    ];
+    for (const [field, position, listField, list] of defaults) {
+      if (position === undefined || !Number.isInteger(position) || position < 0 || position >= addresses.length) continue;
+      if ((list ?? []).includes(position)) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-default-address-not-listed',
+        message:
+          `Customer '${customer.key}' sets ${field} to position ${position} but ${list === undefined ? `has no ${listField}` : `does not list it in ${listField}`}. ` +
+          'The Import API would refuse the whole request: the default has to be one of that kind\'s addresses.',
+      });
+    }
+
     const email = customer.email.toLowerCase();
     const stores = customer.stores?.map((s) => s.key);
     byEmail.set(email, [...(byEmail.get(email) ?? []), { key: customer.key, stores }]);

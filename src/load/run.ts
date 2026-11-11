@@ -450,6 +450,7 @@ export async function runLoad(
   );
 
   reportStates(summaries, diagnostics);
+  await sampleOperationErrors(clients, summaries, diagnostics);
 
   // Last, and only now: every selection a store points at has either resolved
   // or been reported above.
@@ -1617,6 +1618,72 @@ async function readSummaries(
  * its own if it does within 48 hours. `rejected` and `validationFailed` are
  * real failures.
  */
+/** How many failing operations per container and state are read to say why they failed. */
+const OPERATION_SAMPLE = 20;
+/** At most this many distinct reasons are printed per container. */
+const OPERATION_REASONS_SHOWN = 5;
+
+/**
+ * Says why operations failed, from a bounded sample: a container whose summary shows
+ * failures has its failing operations read (the first few, per state) and the
+ * errors grouped, so the diagnostic names the reason, the count in the sample and
+ * one record. The summary only counts; run 16 and run 17 each had to read the
+ * operations by hand to learn what the same count meant. A read that fails adds
+ * nothing and never hides the counts.
+ */
+async function sampleOperationErrors(
+  clients: Clients,
+  summaries: LoadResult['summaries'],
+  diagnostics: Diagnostic[],
+): Promise<void> {
+  for (const { containerKey, summary } of summaries) {
+    const failing = (['validationFailed', 'rejected', 'partiallyImported'] as const).filter(
+      (state) => summary.states[state] > 0,
+    );
+    if (failing.length === 0) continue;
+    const groups = new Map<string, { state: string; count: number; example: string }>();
+    let seen = 0;
+    for (const state of failing) {
+      try {
+        const res = await clients.importApi
+          .importContainers()
+          .withImportContainerKeyValue({ importContainerKey: containerKey })
+          .importOperations()
+          .get({ queryArgs: { state, limit: OPERATION_SAMPLE } })
+          .execute();
+        for (const op of res.body.results) {
+          seen++;
+          const reasons = (op.errors ?? []).map((e) =>
+            [e.code, e.message].filter((part) => part !== undefined && part !== '').join(': ').slice(0, 400),
+          );
+          for (const reason of reasons.length > 0 ? reasons : ['(no error was recorded on the operation)']) {
+            const key = `${state}\u0000${reason}`;
+            const found = groups.get(key);
+            if (found) found.count++;
+            else groups.set(key, { state, count: 1, example: op.resourceKey });
+          }
+        }
+      } catch {
+        // Not read: the counts above stand, and nothing is claimed about the cause.
+      }
+    }
+    if (groups.size === 0) continue;
+    const ranked = [...groups.entries()].sort((a, b) => b[1].count - a[1].count);
+    const lines = ranked.slice(0, OPERATION_REASONS_SHOWN).map(([key, g]) => {
+      const reason = key.slice(key.indexOf('\u0000') + 1);
+      return `      ${g.count} x ${g.state}: ${reason} (for example ${g.example})`;
+    });
+    diagnostics.push({
+      severity: 'warning',
+      code: 'operation-errors',
+      message:
+        `Why operations in '${containerKey}' failed, from the first ${seen} failing operation(s) read:\n` +
+        lines.join('\n') +
+        (ranked.length > OPERATION_REASONS_SHOWN ? `\n      ... and ${ranked.length - OPERATION_REASONS_SHOWN} more reason(s)` : ''),
+    });
+  }
+}
+
 function reportStates(
   summaries: LoadResult['summaries'],
   diagnostics: Diagnostic[],
@@ -1662,9 +1729,9 @@ function reportStates(
       severity: 'error',
       code: 'operations-validation-failed',
       message:
-        `${total.validationFailed} operation(s) failed validation. Read the errors on the ` +
-        'Import Operations — the audit gate should have caught anything structural, so ' +
-        'these are worth feeding back into it as a new check.\n' +
+        `${total.validationFailed} operation(s) failed validation. \`operation-errors\` below ` +
+        'says why, from a sample; the operations hold the rest. The audit gate should have ' +
+        'caught anything structural, so these are worth feeding back into it as a new check.\n' +
         '      Note these counts are per container and cumulative: operations are retained ' +
         '48 hours, so a failure from an earlier run is still counted after a later run ' +
         'fixed it. Compare the operations\' resource keys and timestamps against this run ' +
@@ -1727,7 +1794,40 @@ function statusOf(err: unknown): number | undefined {
 }
 
 function messageOf(err: unknown): string {
-  return (err as { message?: string }).message ?? String(err);
+  const base = (err as { message?: string }).message ?? String(err);
+  const detail = errorDetail(err);
+  // The API's top-level message is generic ("Import request has some invalid
+  // fields"); the field and the reason are in the body's `errors`.
+  return detail !== undefined && !base.includes(detail) ? `${base} (${detail})` : base;
+}
+
+/** At most this many entries of an error body's `errors` are printed. */
+const ERROR_DETAILS_SHOWN = 5;
+
+/**
+ * What the Import or platform API said was wrong, from the `errors` of the response
+ * body the SDK keeps on the error it throws: `InvalidField: defaultShippingAddress
+ * must be a valid index in shipping addresses array`. Without it a refused request
+ * says only that some field was invalid, and the reader has to send one record by
+ * hand to find out which.
+ */
+function errorDetail(err: unknown): string | undefined {
+  const e = err as { body?: { errors?: unknown }; error?: { errors?: unknown } } | null | undefined;
+  const list = e?.body?.errors ?? e?.error?.errors;
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  const lines = list
+    .slice(0, ERROR_DETAILS_SHOWN)
+    .map((x) => {
+      const o = x as { code?: unknown; message?: unknown; detailedErrorMessage?: unknown };
+      const text = o.detailedErrorMessage ?? o.message;
+      return [typeof o.code === 'string' ? o.code : undefined, typeof text === 'string' ? text : undefined]
+        .filter((part): part is string => part !== undefined)
+        .join(': ');
+    })
+    .filter((line) => line !== '')
+    .map((line) => line.slice(0, 400));
+  if (lines.length === 0) return undefined;
+  return lines.join('; ') + (list.length > ERROR_DETAILS_SHOWN ? ` (and ${list.length - ERROR_DETAILS_SHOWN} more)` : '');
 }
 
 /**

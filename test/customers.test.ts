@@ -64,6 +64,7 @@ const ADA = {
   defaultShippingAddress: 'office',
   defaultBillingAddress: 'home',
   shippingAddresses: ['home', 'office'],
+  billingAddresses: ['home'],
 };
 
 const GROUP = { _type: 'customerGroup', code: 'trade', name: 'Trade' };
@@ -207,6 +208,43 @@ test('customers: undeclared group, undeclared store and unknown address codes ar
   assert.ok(found.includes('customer-address-unknown'));
 });
 
+test('customers: a default address that is not in its list is an error, whether the list is absent or does not name it', () => {
+  // The Import API refuses the whole request ("defaultShippingAddress must be a valid
+  // index in shipping addresses array"), and nothing else offline said so.
+  const { shippingAddresses: _s, billingAddresses: _b, ...bare } = ADA;
+  const absent = validate([...CATALOG, GROUP, bare], config(true));
+  const found = absent.diagnostics.filter((d) => d.code === 'customer-default-address-not-listed');
+  assert.equal(found.length, 2, 'both the shipping and the billing default');
+  assert.match(found[0].message, /defaultShippingAddress 'office' but has no shippingAddresses/);
+  assert.match(found[1].message, /defaultBillingAddress 'home' but has no billingAddresses/);
+  assert.match(found[0].message, /Add 'office' to shippingAddresses/);
+
+  const elsewhere = validate(
+    [...CATALOG, GROUP, { ...ADA, shippingAddresses: ['home'], billingAddresses: ['office'] }],
+    config(true),
+  );
+  const named = elsewhere.diagnostics.filter((d) => d.code === 'customer-default-address-not-listed');
+  assert.equal(named.length, 2);
+  assert.match(named[0].message, /does not list it in shippingAddresses/);
+  assert.match(named[1].message, /does not list it in billingAddresses/);
+  assert.equal(elsewhere.diagnostics.find((d) => d.code === 'customer-default-address-not-listed')?.severity, 'error');
+});
+
+test('customers: listed defaults, no defaults and unknown addresses raise no not-listed error', () => {
+  const clean = validate([...CATALOG, GROUP, ADA], config(true));
+  assert.ok(!codes(clean.diagnostics).includes('customer-default-address-not-listed'));
+
+  // A customer with addresses and no default is fine: the rule is about a default that is set.
+  const { defaultShippingAddress: _d, defaultBillingAddress: _e, shippingAddresses: _s, billingAddresses: _b, ...none } = ADA;
+  const noDefaults = validate([...CATALOG, GROUP, none], config(true));
+  assert.ok(!codes(noDefaults.diagnostics).includes('customer-default-address-not-listed'));
+
+  // An address that does not exist is reported once, as unknown, and not again as unlisted.
+  const unknown = validate([...CATALOG, GROUP, { ...ADA, defaultBillingAddress: 'holiday' }], config(true));
+  assert.ok(codes(unknown.diagnostics).includes('customer-address-unknown'));
+  assert.ok(!codes(unknown.diagnostics).includes('customer-default-address-not-listed'));
+});
+
 test('customers: duplicate address codes and customer numbers are errors', () => {
   const r = validate(
     [
@@ -340,6 +378,25 @@ test('audit: any authentication mode but ExternalAuth is refused', () => {
 test('audit: an address position outside the list is refused', () => {
   const a = auditCustomers((c) => { c.defaultShippingAddress = 2; });
   assert.ok(codes(a.diagnostics).includes('customer-address-position'));
+});
+
+test('audit: a default address position that is not in its list is refused, absent list included', () => {
+  const missing = auditCustomers((c) => { delete c.shippingAddresses; });
+  const a = missing.diagnostics.filter((d) => d.code === 'customer-default-address-not-listed');
+  assert.equal(a.length, 1);
+  assert.match(a[0].message, /defaultShippingAddress to position 1 but has no shippingAddresses/);
+
+  const elsewhere = auditCustomers((c) => { c.shippingAddresses = [0]; });
+  assert.match(
+    elsewhere.diagnostics.find((d) => d.code === 'customer-default-address-not-listed')!.message,
+    /does not list it in shippingAddresses/,
+  );
+});
+
+test('audit: a default address position outside the address list is the position error, not also the not-listed one', () => {
+  const a = auditCustomers((c) => { c.defaultShippingAddress = 2; });
+  assert.ok(codes(a.diagnostics).includes('customer-address-position'));
+  assert.ok(!codes(a.diagnostics).includes('customer-default-address-not-listed'));
 });
 
 test('audit: a plan with customers and the switch off is refused', () => {
