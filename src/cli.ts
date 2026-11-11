@@ -21,12 +21,19 @@ import { writePlan } from './map/report.js';
 import { auditPlan } from './audit/gate.js';
 import { loadPlan } from './audit/load-plan.js';
 import { checkPlanFreshness, feedDigest } from './contract/digest.js';
-import { attributeDefinitionsOf, indexVariants, pricesOf, variantsOf } from './model/plan.js';
+import {
+  attributeDefinitionsOf,
+  indexVariants,
+  LOAD_ORDER,
+  pricesOf,
+  variantsOf,
+  type LoadStage,
+} from './model/plan.js';
 import { MAX_VARIANTS_CLASSIC, requiredCatalogModel } from './model/limits.js';
 import { describeCredentials, loadCredentials, MissingCredentialsError } from './client/credentials.js';
 import { createClients } from './client/factory.js';
 import { effectiveCatalogModel, preflight } from './preflight/check.js';
-import { readCreatedPrerequisites } from './load/created.js';
+import { readCreatedPrerequisites, type CreatedPrerequisites } from './load/created.js';
 import { createProgress, type Progress } from './progress/progress.js';
 import { runLoad } from './load/run.js';
 import { countInFlight, describeInFlight, fetchSnapshot } from './verify/snapshot.js';
@@ -72,7 +79,13 @@ Options:
   --wait            load only: poll Import Summaries until nothing is processing
   --confirm-project <key>  teardown only: with --execute, must equal the credentials' project key
   --include-created-tax-categories  teardown only: also delete the tax categories this plan's load created
+  --include-created-prerequisites  teardown only: also delete everything this plan's load created beyond the
+                    catalog: stores, channels, customer groups and tax categories, never one the project held
+                    before (the API refuses while something still uses one)
   --concurrency <n> load only: in-flight Import Requests (default 4)
+  --only <stage>[,<stage>]  load only: run just these stages, e.g. --only order to resend the orders
+                    after a failure. The other stages are not touched, and orders the project
+                    already holds are skipped (they are create-only)
   --progress-interval <seconds>  Seconds between progress lines on stderr (default 30, 0 = none);
                     a command shorter than that prints only 'done in <time>'
   --json            Emit diagnostics as JSON
@@ -104,8 +117,10 @@ async function main(): Promise<number> {
         execute: { type: 'boolean', default: false },
         wait: { type: 'boolean', default: false },
         concurrency: { type: 'string', default: '4' },
+        only: { type: 'string', default: '' },
         'confirm-project': { type: 'string', default: '' },
         'include-created-tax-categories': { type: 'boolean', default: false },
+        'include-created-prerequisites': { type: 'boolean', default: false },
         'progress-interval': { type: 'string', default: '30' },
       },
       allowPositionals: false,
@@ -121,6 +136,25 @@ async function main(): Promise<number> {
     return 1;
   }
 
+  let only: LoadStage[] | undefined;
+  const onlyValue = (values.only as string).trim();
+  if (onlyValue !== '') {
+    if (command !== 'load') {
+      console.error(`--only is for \`load\` only.\n\n${USAGE}`);
+      return 1;
+    }
+    const named = onlyValue.split(',').map((x) => x.trim()).filter((x) => x !== '');
+    const unknown = named.filter((x) => !(LOAD_ORDER as readonly string[]).includes(x));
+    if (named.length === 0 || unknown.length > 0) {
+      console.error(
+        `--only names ${unknown.length > 0 ? `unknown stage(s) ${unknown.join(', ')}` : 'no stage'}. ` +
+          `The stages are: ${LOAD_ORDER.join(', ')}.`,
+      );
+      return 1;
+    }
+    only = [...new Set(named)] as LoadStage[];
+  }
+
   const base = {
     config: values.config as string,
     json: values.json as boolean,
@@ -133,8 +167,10 @@ async function main(): Promise<number> {
     execute: values.execute as boolean,
     wait: values.wait as boolean,
     concurrency: Number(values.concurrency),
+    only,
     confirmProject: values['confirm-project'] as string,
     includeCreatedTaxCategories: values['include-created-tax-categories'] as boolean,
+    includeCreatedPrerequisites: values['include-created-prerequisites'] as boolean,
   };
 
   // Written beside the other artefacts, so a caller that pipes the command
@@ -158,6 +194,13 @@ async function main(): Promise<number> {
     progress.finish(code);
   }
 }
+
+const readNothingCreated = (): CreatedPrerequisites => ({
+  taxCategories: [],
+  channels: [],
+  customerGroups: [],
+  stores: [],
+});
 
 async function runCommand(command: string, opts: Opts): Promise<number> {
   switch (command) {
@@ -234,8 +277,10 @@ interface Opts {
   execute: boolean;
   wait: boolean;
   concurrency: number;
+  only?: LoadStage[];
   confirmProject: string;
   includeCreatedTaxCategories: boolean;
+  includeCreatedPrerequisites: boolean;
   progress: Progress;
 }
 
@@ -751,6 +796,7 @@ async function runLoadCommand(opts: Opts): Promise<number> {
     execute: opts.execute,
     wait: opts.wait,
     concurrency: opts.concurrency,
+    ...(opts.only ? { only: opts.only } : {}),
     progress: opts.progress,
   });
 
@@ -796,6 +842,13 @@ async function runLoadCommand(opts: Opts): Promise<number> {
   }
 
   if (errors.length > 0) {
+    if (result.canary && !result.canary.proceeded) {
+      // Not "a re-run updates": orders are create-only. A resend of the stage is
+      // safe because orders the project holds are read and left out.
+      console.log(`${errors.length} error(s). The load stopped at the first ${result.canary.stage} record.`);
+      console.log(`Fix the cause, then \`load --only ${result.canary.stage} --execute\` sends the stage again.`);
+      return 1;
+    }
     console.log(`${errors.length} error(s). Fix the cause and re-run — keys are`);
     console.log('deterministic, so a second run updates rather than duplicating.');
     return 1;
@@ -851,15 +904,15 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
 
   // What `load` recorded as created. A damaged file only matters if the delete
   // of those categories was asked for; otherwise teardown goes on without the hint.
-  let createdTaxCategories: string[] = [];
+  let created = readNothingCreated();
   try {
-    createdTaxCategories = readCreatedPrerequisites(outDirFor(opts)).taxCategories;
+    created = readCreatedPrerequisites(outDirFor(opts));
   } catch (err) {
-    if (opts.includeCreatedTaxCategories) {
+    if (opts.includeCreatedTaxCategories || opts.includeCreatedPrerequisites) {
       console.error(`${(err as Error).message} Nothing was deleted.`);
       return 1;
     }
-    console.error(`warn  ${(err as Error).message} Ignored: no tax category will be offered for removal.`);
+    console.error(`warn  ${(err as Error).message} Ignored: nothing a load created will be offered for removal.`);
   }
 
   const clients = createClients(credentials);
@@ -869,8 +922,15 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
   const result = await runTeardown(clients, plan, config, {
     execute: opts.execute,
     concurrency: opts.concurrency,
-    createdTaxCategories,
-    removeCreatedTaxCategories: opts.includeCreatedTaxCategories,
+    createdTaxCategories: created.taxCategories,
+    // The wider flag covers tax categories too: it means "everything load created".
+    removeCreatedTaxCategories: opts.includeCreatedTaxCategories || opts.includeCreatedPrerequisites,
+    createdPrerequisites: {
+      stores: created.stores,
+      channels: created.channels,
+      customerGroups: created.customerGroups,
+    },
+    removeCreatedPrerequisites: opts.includeCreatedPrerequisites,
     progress: opts.progress,
   });
 

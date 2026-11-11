@@ -65,6 +65,8 @@ class FakeProject {
   containers = new Set<string>();
   /** Keys whose delete always fails with 500. */
   broken = new Set<string>();
+  /** Keys the API refuses to delete because something still uses them (a 400, as the real API does). */
+  inUse = new Set<string>();
   /** After a selection is deleted, this many product deletes are still refused (the API clears the references asynchronously). */
   clearDelayAttempts = 0;
   private pendingRefusals = 0;
@@ -158,6 +160,7 @@ class FakeProject {
             const r = self.kind(kind).get(key);
             if (!r) throw self.err(404, `no ${kind} ${key}`);
             if (self.broken.has(key)) throw self.err(500, 'boom');
+            if (self.inUse.has(key)) throw self.err(400, `${kind} ${key} is still used`);
             if (r.version !== queryArgs.version) throw self.err(409, 'ConcurrentModification');
             self.refuse(kind, r);
             let tree: unknown;
@@ -254,6 +257,8 @@ class FakeProject {
       inventory: 'inventory',
       stores: 'stores',
       taxCategories: 'taxCategories',
+      channels: 'channels',
+      customerGroups: 'customerGroups',
     };
     const platform = Object.fromEntries(Object.entries(names).map(([n, k]) => [n, self.endpoint(k)]));
     return {
@@ -313,6 +318,11 @@ function projectHolding(plan: MigrationPlan, prefix: string) {
   world.add('categories', 'other-cat');
   world.add('productTypes', 'other-type');
   for (const t of plan.prerequisites.taxCategories ?? []) world.add('taxCategories', t.key);
+  for (const c of plan.prerequisites.channels) world.add('channels', c.key);
+  for (const g of plan.prerequisites.customerGroups) world.add('customerGroups', g.key);
+  // The project's own, which no load of this plan created.
+  world.add('channels', 'someone-elses-channel');
+  world.add('customerGroups', 'someone-elses-group');
   for (const b of ['product-draft', 'category', 'product-type']) world.containers.add(`${prefix}-${b}`);
   return world;
 }
@@ -880,4 +890,153 @@ test('progress: without a reporter teardown behaves as before', async () => {
   const world = projectHolding(plan, PREFIX);
   const r = await runTeardown(world.clients(), plan, config, { execute: true });
   assert.ok(teardownComplete(r));
+});
+
+// ---------------------------------------------------------------------------
+// Stores, channels and customer groups a load created
+//
+// They are keyed verbatim and the project's, so teardown left them, and emptying a
+// trial project took a script of its own. The ones a load of this plan created are
+// recorded, and a flag removes exactly those: never one the project held before.
+// ---------------------------------------------------------------------------
+
+/** The plan with one channel, customer group and store in it, held by the project. */
+function withCreatedPrerequisites(prefix: string) {
+  const { config, plan: base } = planFor('classic-standalone');
+  const plan = {
+    ...base,
+    prerequisites: {
+      ...base.prerequisites,
+      channels: [{ key: 'retail-uk', roles: ['ProductDistribution'] }],
+      customerGroups: [{ key: 'trade', name: 'Trade' }],
+      stores: [{ key: 'northwind-uk', distributionChannels: ['retail-uk'], supplyChannels: [], productSelections: [] }],
+      taxCategories: [{ key: 'standard', name: 'standard', rates: [] }],
+    },
+  } as unknown as MigrationPlan;
+  const world = projectHolding(plan, prefix);
+  return { config, plan, world };
+}
+
+const CREATED = { stores: ['northwind-uk'], channels: ['retail-uk'], customerGroups: ['trade'] };
+
+test('teardown: the stores, channels and groups a load created are named and left, with the flag that removes them', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, { execute: true, createdPrerequisites: CREATED });
+  assert.deepEqual(r.createdPrerequisites.stores.present, ['northwind-uk']);
+  assert.deepEqual(r.createdPrerequisites.channels.present, ['retail-uk']);
+  assert.deepEqual(r.createdPrerequisites.customerGroups.present, ['trade']);
+  assert.equal(r.createdPrerequisites.removing, false);
+  for (const [kind, key] of [['stores', 'northwind-uk'], ['channels', 'retail-uk'], ['customerGroups', 'trade']]) {
+    assert.ok(world.kind(kind).has(key), `${key} stays unless asked`);
+  }
+  assert.match(renderTeardown(r), /Stores this plan's load created, still in the project: northwind-uk.*--include-created-prerequisites/s);
+  assert.ok(teardownComplete(r), 'leaving them is the default and not an incomplete teardown');
+});
+
+test('teardown: with the flag they go, the store first and all of them after the products', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdPrerequisites: CREATED,
+    removeCreatedPrerequisites: true,
+  });
+  assert.deepEqual(r.failed, []);
+  assert.deepEqual(r.createdPrerequisites.stores.deleted, ['northwind-uk']);
+  assert.deepEqual(r.createdPrerequisites.channels.deleted, ['retail-uk']);
+  assert.deepEqual(r.createdPrerequisites.customerGroups.deleted, ['trade']);
+  const at = (e: string) => world.log.indexOf(e);
+  assert.ok(at('stores:northwind-uk') < at('channels:retail-uk'), 'a store names channels, so it goes first');
+  assert.ok(at('stores:northwind-uk') < at('customerGroups:trade'));
+  assert.ok(at('channels:retail-uk') > world.log.findLastIndex((e) => e.startsWith('products:')));
+  assert.ok(at('customerGroups:trade') > world.log.findLastIndex((e) => e.startsWith('inventory:')));
+  const text = renderTeardown(r);
+  assert.match(text, /Stores this plan's load created, deleted: northwind-uk/);
+  assert.match(text, /Channels this plan's load created, deleted: retail-uk/);
+  assert.match(text, /Customer groups this plan's load created, deleted: trade/);
+  assert.doesNotMatch(text, /channels: retail-uk/, 'no longer listed as left alone');
+  assert.ok(teardownComplete(r));
+});
+
+test('teardown: the flag removes only what the ledger names, never what the project held before', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  // The channel was there before the load (so the ledger does not name it); the
+  // group and the store the load made.
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdPrerequisites: { stores: ['northwind-uk'], customerGroups: ['trade'] },
+    removeCreatedPrerequisites: true,
+  });
+  assert.deepEqual(r.createdPrerequisites.channels.createdByLoad, []);
+  assert.ok(world.kind('channels').has('retail-uk'), 'held before the load: the project\'s');
+  assert.ok(world.kind('channels').has('someone-elses-channel'));
+  assert.ok(world.kind('customerGroups').has('someone-elses-group'));
+  assert.equal(world.kind('customerGroups').has('trade'), false);
+  assert.match(renderTeardown(r), /channels: retail-uk/, 'still reported as left alone');
+});
+
+test('teardown: a recorded key the plan does not name is not this plan\'s and is ignored', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdPrerequisites: { channels: ['someone-elses-channel'] },
+    removeCreatedPrerequisites: true,
+  });
+  assert.deepEqual(r.createdPrerequisites.channels.createdByLoad, []);
+  assert.ok(world.kind('channels').has('someone-elses-channel'));
+});
+
+test('teardown: a group the API still sees in use is a failure, the others are still removed, and the run is not complete', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  world.inUse.add('trade');
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdPrerequisites: CREATED,
+    removeCreatedPrerequisites: true,
+  });
+  assert.equal(r.failed.length, 1);
+  assert.equal(r.failed[0].kind, 'customerGroups');
+  assert.equal(r.failed[0].key, 'trade');
+  assert.deepEqual(r.createdPrerequisites.stores.deleted, ['northwind-uk']);
+  assert.deepEqual(r.createdPrerequisites.channels.deleted, ['retail-uk']);
+  assert.ok(world.kind('customerGroups').has('trade'));
+  assert.equal(teardownComplete(r), false);
+  assert.match(renderTeardown(r), /customer groups: trade/, 'what is left is still named');
+});
+
+test('teardown: one already gone is not counted, and is not an error', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  world.kind('stores').delete('northwind-uk');
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdPrerequisites: CREATED,
+    removeCreatedPrerequisites: true,
+  });
+  assert.deepEqual(r.createdPrerequisites.stores.present, []);
+  assert.deepEqual(r.failed, []);
+  assert.ok(teardownComplete(r));
+});
+
+test('teardown: a dry run with the flag says what it would delete and deletes nothing', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  const r = await runTeardown(world.clients(), plan, config, {
+    execute: false,
+    createdPrerequisites: CREATED,
+    removeCreatedPrerequisites: true,
+  });
+  assert.deepEqual(world.log, []);
+  const text = renderTeardown(r);
+  assert.match(text, /Stores this plan's load created, would be deleted: northwind-uk/);
+  assert.match(text, /Channels this plan's load created, would be deleted: retail-uk/);
+  assert.match(text, /Customer groups this plan's load created, would be deleted: trade/);
+});
+
+test('teardown: the prerequisite flag alone leaves the tax category, which has its own flag', async () => {
+  const { config, plan, world } = withCreatedPrerequisites(PREFIX);
+  await runTeardown(world.clients(), plan, config, {
+    execute: true,
+    createdTaxCategories: ['standard'],
+    createdPrerequisites: CREATED,
+    removeCreatedPrerequisites: true,
+  });
+  assert.ok(world.kind('taxCategories').has('standard'));
 });

@@ -1564,6 +1564,29 @@ function checkCustomers(feed: CatalogFeed, diagnostics: Diagnostic[]): void {
         ...at(customer.code),
       });
     }
+
+    // The default of a kind has to be one of that kind's addresses. The Import API
+    // refuses the whole request otherwise ("defaultShippingAddress must be a valid
+    // index in shipping addresses array"), and a customer with no address list at
+    // all counts as not listing it. It is the adapter's to state, so it is refused
+    // here and not derived.
+    const defaults: [string, string | undefined, string, string[] | undefined][] = [
+      ['defaultShippingAddress', customer.defaultShippingAddress, 'shippingAddresses', customer.shippingAddresses],
+      ['defaultBillingAddress', customer.defaultBillingAddress, 'billingAddresses', customer.billingAddresses],
+    ];
+    for (const [field, code, listField, list] of defaults) {
+      if (code === undefined || !addressCodes.has(code) || (list ?? []).includes(code)) continue;
+      diagnostics.push({
+        severity: 'error',
+        code: 'customer-default-address-not-listed',
+        message:
+          `Customer '${customer.code}' sets ${field} '${code}' but ${list === undefined ? `has no ${listField}` : `does not list it in ${listField}`}. ` +
+          `The Import API refuses the whole request ("${field} must be a valid index in ` +
+          `${listField === 'shippingAddresses' ? 'shipping' : 'billing'} addresses array"): the default has ` +
+          `to be one of that kind's addresses. Add '${code}' to ${listField} in the adapter.`,
+        ...at(customer.code),
+      });
+    }
   }
 
   for (const codes of byEmail.values()) {

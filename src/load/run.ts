@@ -22,7 +22,12 @@
  *    every key is deterministic, resubmitting is just running `load` again.
  */
 
-import type { ImportSummary, OperationStates } from '@commercetools/importapi-sdk';
+import type {
+  ImportOperation,
+  ImportOperationStatus,
+  ImportSummary,
+  OperationStates,
+} from '@commercetools/importapi-sdk';
 
 import type { Clients } from '../client/factory.js';
 import type { PipelineConfig } from '../model/config.js';
@@ -43,8 +48,16 @@ export interface LoadOptions {
   wait?: boolean;
   /** In-flight Import Requests. */
   concurrency?: number;
+  /**
+   * Run only these stages, in plan order, and touch nothing else: the platform
+   * stages are skipped unless named, so a resend of one stage cannot create,
+   * update or unpublish what an earlier stage left in the project.
+   */
+  only?: LoadStage[];
   /** Ceiling on --wait, in milliseconds. */
   waitTimeoutMs?: number;
+  /** How long the first record of a customer or order stage may stay `processing`. */
+  canaryTimeoutMs?: number;
   /** Reports on ticks where the load is, including what `--wait` is waiting for. */
   progress?: Progress;
   sleep?: (ms: number) => Promise<void>;
@@ -95,9 +108,30 @@ export interface LoadResult {
   summaries: { containerKey: string; summary: ImportSummary }[];
   diagnostics: Diagnostic[];
   waited: boolean;
+  /** Set when `--only` restricted the run: the stages it was allowed to run. */
+  only?: LoadStage[];
+  /** Order numbers the project already held, so they were not sent again. */
+  skippedOrders?: string[];
+  /** Set when the first record of a stage was refused, unresolved or unreadable. */
+  canary?: CanaryOutcome;
+}
+
+/** What the one-record first request of a stage came back as. */
+export interface CanaryOutcome {
+  stage: LoadStage;
+  /** The record that decided the verdict, or the first one when all agreed. */
+  resourceKey: string;
+  /** Every record of the first request. */
+  resourceKeys: string[];
+  /** The operation's state, or why it could not be read. */
+  state: string;
+  /** Whether the rest of the stage was sent. */
+  proceeded: boolean;
+  errors?: string[];
 }
 
 const DEFAULT_CONCURRENCY = 4;
+const DEFAULT_CANARY_TIMEOUT_MS = 2 * 60_000;
 const DEFAULT_WAIT_TIMEOUT_MS = 10 * 60_000;
 
 export async function runLoad(
@@ -107,7 +141,20 @@ export async function runLoad(
   options: LoadOptions = {},
 ): Promise<LoadResult> {
   const diagnostics: Diagnostic[] = [];
-  const batches = planBatches(plan, config);
+  const only = options.only;
+  // Every stage decision below reads `scoped.loadOrder`, so `--only` narrows the
+  // import stages and the platform stages with one filter.
+  let scoped: MigrationPlan = only
+    ? { ...plan, loadOrder: plan.loadOrder.filter((s) => only.includes(s)) }
+    : plan;
+  let batches = planBatches(scoped, config);
+  const skippedOrders: string[] = [];
+  // Marks what restricted or shortened the run on every result it returns.
+  const tag = (r: LoadResult): LoadResult => ({
+    ...r,
+    ...(only ? { only } : {}),
+    ...(skippedOrders.length > 0 ? { skippedOrders } : {}),
+  });
   const progress = options.progress ?? noProgress;
   const activity = progress.activity('load');
   // Counters move as often as the work does; a tick prints them (see progress.ts).
@@ -122,8 +169,15 @@ export async function runLoad(
         : 'checking and creating channels, customer groups and tax categories',
   );
 
-  for (const warning of batches.warnings) {
-    diagnostics.push({ severity: 'warning', code: 'batching', message: warning });
+  if (only) {
+    const left = plan.loadOrder.filter((s) => !only.includes(s));
+    diagnostics.push({
+      severity: 'warning',
+      code: 'only-stages',
+      message:
+        `--only ${only.join(',')}: ${left.length} stage(s) not run (${left.join(', ')}). ` +
+        'This run assumes the project already holds what they create; read it back with `verify`.',
+    });
   }
 
   // A store referencing product selections cannot be created until those
@@ -132,7 +186,10 @@ export async function runLoad(
   // Refusing up front rather than half-loading: this is the last cheap place
   // to say so.
   const storesNeedingSelections = (plan.prerequisites?.stores ?? []).filter(
-    (st) => st.productSelections.length > 0,
+    (st) =>
+      st.productSelections.length > 0 &&
+      scoped.loadOrder.includes('store') &&
+      scoped.loadOrder.includes('product-selection'),
   );
   // Only when executing: a dry run writes nothing, so there is no selection
   // that could fail to resolve and nothing to protect.
@@ -149,7 +206,7 @@ export async function runLoad(
         '      Re-run with --wait. Nothing was created and nothing was imported — this ' +
         'check needs only the plan, so it runs before the first write.',
     });
-    return {
+    return tag({
       executed: true,
       prerequisites: [],
       batches,
@@ -157,13 +214,65 @@ export async function runLoad(
       summaries: [],
       diagnostics,
       waited: false,
-    };
+    });
   }
 
 
+  // Orders are create-only: a number the project holds is rejected, never
+  // updated. Read which ones it holds before any write, so a resend sends only
+  // what is missing and an unreadable project stops an `--execute` while
+  // nothing has been created yet.
+  const plannedOrders = scoped.loadOrder.includes('order') ? (plan.orders ?? []) : [];
+  if (plannedOrders.length > 0) {
+    const read = await readExistingOrderNumbers(
+      clients,
+      plannedOrders.map((o) => o.orderNumber),
+    );
+    if (read.found === undefined) {
+      diagnostics.push({
+        severity: options.execute ? 'error' : 'warning',
+        code: 'orders-unreadable',
+        message:
+          `The orders the project already holds could not be read (${prerequisiteError(read.error)}). ` +
+          (options.execute
+            ? 'Nothing was created and nothing was imported: without that read, orders already ' +
+              'there would be sent again and rejected. Fix the cause (the credentials need ' +
+              'view_orders or manage_orders) and re-run.'
+            : 'This dry run lists every planned order as new.'),
+      });
+      if (options.execute) {
+        return tag({
+          executed: true,
+          prerequisites: [],
+          batches,
+          stages: [],
+          summaries: [],
+          diagnostics,
+          waited: false,
+        });
+      }
+    } else if (read.found.size > 0) {
+      skippedOrders.push(...plannedOrders.map((o) => o.orderNumber).filter((n) => read.found!.has(n)));
+      scoped = { ...scoped, orders: plannedOrders.filter((o) => !read.found!.has(o.orderNumber)) };
+      batches = planBatches(scoped, config);
+      diagnostics.push({
+        severity: 'warning',
+        code: 'orders-already-in-project',
+        message:
+          `${skippedOrders.length} of ${plannedOrders.length} order number(s) are already in the ` +
+          'project and are not sent again (orders are create-only; a number the project holds ' +
+          'is rejected). `verify` compares them with the plan.',
+      });
+    }
+  }
+
+  for (const warning of batches.warnings) {
+    diagnostics.push({ severity: 'warning', code: 'batching', message: warning });
+  }
+
   // Platform stages first, on both paths: a dry run has to say what it would
   // create, and reading the project to find out costs only GETs.
-  const prerequisites = await runPrerequisites(clients, plan, options, diagnostics);
+  const prerequisites = await runPrerequisites(clients, scoped, options, diagnostics);
 
   if (!options.execute) {
     // Stores are created last on the executed path, so the dry run has to ask
@@ -171,7 +280,7 @@ export async function runLoad(
     // `load-requests.json` is documented as what the run will do. Reading
     // costs GETs; the `--wait` requirement does not apply, because a dry run
     // creates nothing that could point at a missing selection.
-    if (platformStages(plan.loadOrder, 'after').includes('store')) {
+    if (platformStages(scoped.loadOrder, 'after').includes('store')) {
       const wantedStores = plan.prerequisites?.stores ?? [];
       if (wantedStores.length > 0) {
         prerequisites.push(await ensureStores(clients, wantedStores, options, diagnostics));
@@ -180,7 +289,7 @@ export async function runLoad(
 
     // The dry run still reports per-stage totals, because the useful question
     // before a load is "how many requests, into which containers".
-    return {
+    return tag({
       executed: false,
       prerequisites,
       batches,
@@ -188,7 +297,7 @@ export async function runLoad(
       summaries: [],
       diagnostics,
       waited: false,
-    };
+    });
   }
 
   // A prerequisite that is missing, unusable or unreadable stops the import
@@ -229,7 +338,7 @@ export async function runLoad(
         'hours, so the import is not worth starting. Resolve the above and re-run — keys are deterministic, so a re-run ' +
         'updates rather than duplicates.',
     });
-    return {
+    return tag({
       executed: true,
       prerequisites,
       batches,
@@ -237,15 +346,16 @@ export async function runLoad(
       summaries: [],
       diagnostics,
       waited: false,
-    };
+    });
   }
 
   const stages: StageOutcome[] = [];
+  let canary: CanaryOutcome | undefined;
   const waited = options.wait === true;
   const expected = new Map<string, ExpectedOperations>();
-  const stagesWithRequests = plan.loadOrder.filter((s) => batches.batches.some((b) => b.stage === s));
+  const stagesWithRequests = scoped.loadOrder.filter((s) => batches.batches.some((b) => b.stage === s));
 
-  for (const stage of plan.loadOrder) {
+  for (const stage of scoped.loadOrder) {
     const stageBatches = batches.batches.filter((b) => b.stage === stage);
     if (stageBatches.length === 0) continue;
     live = { stage, number: stagesWithRequests.indexOf(stage) + 1, of: stagesWithRequests.length };
@@ -261,21 +371,51 @@ export async function runLoad(
       }
     }
 
-    const outcome = await pushStage(
-      clients,
-      stage,
-      stageBatches,
-      options.concurrency ?? DEFAULT_CONCURRENCY,
-      (o) => {
-        live!.outcome = o;
-      },
-      progress,
-    );
+    const track = (o: StageOutcome) => {
+      live!.outcome = o;
+    };
+    // The first request of a customer or order stage holds one record. Its result
+    // is read before the rest goes out, so a shape the API refuses costs one
+    // failed operation, not one per record.
+    const canaryBatch = stageBatches[0].canary ? stageBatches[0] : undefined;
+    const rest = canaryBatch ? stageBatches.slice(1) : stageBatches;
+    const concurrency = options.concurrency ?? DEFAULT_CONCURRENCY;
+    let outcome: StageOutcome;
+    let sent = stageBatches;
+    let stopped = false;
+
+    if (canaryBatch) {
+      const statuses: ImportOperationStatus[] = [];
+      const first = await pushStage(clients, stage, [canaryBatch], 1, track, progress, statuses);
+      const verdict = await judgeCanary(
+        clients,
+        stage,
+        canaryBatch,
+        first,
+        statuses,
+        options.canaryTimeoutMs ?? DEFAULT_CANARY_TIMEOUT_MS,
+        options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms))),
+      );
+      canary = verdict.outcome;
+      for (const d of verdict.diagnostics) diagnostics.push(d);
+      if (verdict.outcome.proceeded && rest.length > 0) {
+        const others = await pushStage(clients, stage, rest, concurrency, (o) => track(mergeOutcomes(first, o)), progress);
+        outcome = mergeOutcomes(first, others);
+      } else {
+        outcome = { ...first, requests: stageBatches.length, resources: stageBatches.reduce((n, b) => n + b.resourceKeys.length, 0) };
+      }
+      if (!verdict.outcome.proceeded) {
+        stopped = true;
+        sent = [canaryBatch];
+      }
+    } else {
+      outcome = await pushStage(clients, stage, stageBatches, concurrency, track, progress);
+    }
     outcome.containers = containers;
     stages.push(outcome);
 
     if (waited) {
-      for (const batch of stageBatches) {
+      for (const batch of sent) {
         expected.get(batch.containerKey)!.operations += batch.resourceKeys.length;
       }
       // A rejected request registers no operations, so it is not waited for.
@@ -293,6 +433,7 @@ export async function runLoad(
           `${failure.message}\n      Resources: ${failure.resourceKeys.join(', ')}`,
       });
     }
+    if (stopped) break;
   }
 
   live = undefined;
@@ -309,10 +450,12 @@ export async function runLoad(
   );
 
   reportStates(summaries, diagnostics);
+  await sampleOperationErrors(clients, summaries, diagnostics);
 
   // Last, and only now: every selection a store points at has either resolved
   // or been reported above.
-  if (platformStages(plan.loadOrder, 'after').includes('store')) {
+  // Not after a stopped load: the stores belong to a load that completed.
+  if (canary?.proceeded !== false && platformStages(scoped.loadOrder, 'after').includes('store')) {
     const wanted = plan.prerequisites?.stores ?? [];
     if (wanted.length > 0) {
       activity.status(() => 'creating the stores');
@@ -320,7 +463,16 @@ export async function runLoad(
     }
   }
 
-  return { executed: true, prerequisites, batches, stages, summaries, diagnostics, waited };
+  return tag({
+    executed: true,
+    prerequisites,
+    batches,
+    stages,
+    summaries,
+    diagnostics,
+    waited,
+    ...(canary ? { canary } : {}),
+  });
 }
 
 /**
@@ -464,6 +616,41 @@ async function readTaxCategories(
           .map((t) => [t.key as string, t as unknown]),
       ),
     };
+  } catch (err) {
+    return { error: err };
+  }
+}
+
+/** Order numbers per read: keeps the `where` predicate well under URL limits. */
+const ORDER_READ_CHUNK = 100;
+
+/**
+ * Which of these order numbers the project already holds. Orders are
+ * create-only and have no key, so the number is the only way to ask.
+ */
+async function readExistingOrderNumbers(
+  clients: Clients,
+  numbers: string[],
+): Promise<{ found?: Set<string>; error?: unknown }> {
+  const found = new Set<string>();
+  try {
+    for (let i = 0; i < numbers.length; i += ORDER_READ_CHUNK) {
+      const slice = numbers.slice(i, i + ORDER_READ_CHUNK);
+      const res = await clients.platform
+        .orders()
+        .get({
+          queryArgs: {
+            where: `orderNumber in (${slice.map((n) => `"${n.replace(/"/g, '\\"')}"`).join(',')})`,
+            limit: slice.length,
+            withTotal: false,
+          },
+        })
+        .execute();
+      for (const order of res.body.results) {
+        if (order.orderNumber !== undefined) found.add(order.orderNumber);
+      }
+    }
+    return { found };
   } catch (err) {
     return { error: err };
   }
@@ -1053,6 +1240,167 @@ function poster(clients: Clients, batch: Batch) {
  * the stage: one bad batch out of two thousand should not stop the other
  * 1,999, and the keys are what a targeted re-run needs.
  */
+function mergeOutcomes(a: StageOutcome, b: StageOutcome): StageOutcome {
+  return {
+    stage: a.stage,
+    containers: [],
+    requests: a.requests + b.requests,
+    resources: a.resources + b.resources,
+    accepted: a.accepted + b.accepted,
+    failed: [...a.failed, ...b.failed],
+  };
+}
+
+/**
+ * Reads the result of the one record a canary request carried, and says whether
+ * the rest of the stage may go.
+ *
+ * `imported` goes. `unresolved` and `waitForMasterVariant` go too, with a
+ * warning: the API took the record and is waiting for a reference that arrives on
+ * its own, which is what a customer imported a moment ago looks like to an order.
+ * `validationFailed`, `rejected`, `partiallyImported` and `canceled` stop the
+ * stage, and so does a result that cannot be read, because sending the rest
+ * without knowing is the thing the canary exists to prevent. `processing` is
+ * waited out, with a ceiling.
+ */
+async function judgeCanary(
+  clients: Clients,
+  stage: LoadStage,
+  batch: Batch,
+  pushed: StageOutcome,
+  statuses: ImportOperationStatus[],
+  timeoutMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<{ outcome: CanaryOutcome; diagnostics: Diagnostic[] }> {
+  const keys = batch.resourceKeys;
+  // One record is "the first record"; several are one request that together shows
+  // every structure of the stage (see pickCanary).
+  const named = (key: string) =>
+    keys.length === 1
+      ? `first ${stage} record (${key})`
+      : `first ${stage} request (${keys.length} records that together show every structure of the stage; ${key} among them)`;
+  const later = `the rest of the ${stage} stage was not sent, and no later stage ran`;
+  const resend = `Fix the cause and resend with \`load --only ${stage} --execute\`.`;
+  const stop = (key: string, state: string, message: string, errors?: string[]) => ({
+    outcome: {
+      stage,
+      resourceKey: key,
+      resourceKeys: keys,
+      state,
+      proceeded: false,
+      ...(errors ? { errors } : {}),
+    },
+    diagnostics: [{ severity: 'error' as const, code: 'canary-stopped', message: `${message} ${later}.` }],
+  });
+
+  if (pushed.failed.length > 0) {
+    return stop(
+      keys[0],
+      'rejected',
+      `The ${named(keys[0])} was rejected: ${pushed.failed[0].message}. ${resend} Nothing was imported from it;`,
+    );
+  }
+
+  const errorsOf = (list?: { code: string; message?: string }[]): string[] | undefined =>
+    list && list.length > 0
+      ? list.map((e) => `${e.code}${e.message ? `: ${e.message}` : ''}`.slice(0, 600))
+      : undefined;
+
+  interface Watched {
+    key: string;
+    id?: string;
+    state: string;
+    errors?: string[];
+    unresolved?: ImportOperation['unresolvedReferences'];
+  }
+  // The statuses come back in the order of the resources in the request.
+  const watched: Watched[] = keys.map((key, i) => ({
+    key,
+    id: statuses[i]?.operationId,
+    state: (statuses[i]?.state as string | undefined) ?? 'unreadable',
+    errors: errorsOf(statuses[i]?.errors),
+  }));
+
+  const noId = watched.find((w) => w.id === undefined);
+  if (noId) {
+    return stop(
+      noId.key,
+      'unreadable',
+      `The Import API gave no operation id for the ${named(noId.key)}, so its result cannot be read.` +
+        ` Read the container's operations, then resend with \`load --only ${stage} --execute\`;`,
+    );
+  }
+
+  let waitedMs = 0;
+  let delay = 500;
+  for (;;) {
+    const pending = watched.filter((w) => w.state === 'processing');
+    if (pending.length === 0) break;
+    if (waitedMs >= timeoutMs) {
+      return stop(
+        pending[0].key,
+        'processing',
+        `The ${named(pending[0].key)} was still processing after ${Math.round(timeoutMs / 1000)} seconds. ` +
+          `Check its operation (${pending[0].id}) and resend with \`load --only ${stage} --execute\` once it has settled;`,
+      );
+    }
+    await sleep(delay);
+    waitedMs += delay;
+    delay = Math.min(delay * 2, 5_000);
+    for (const w of pending) {
+      try {
+        const op = (await clients.importApi.importOperations().withIdValue({ id: w.id! }).get().execute()).body;
+        w.state = op.state as string;
+        w.errors = errorsOf(op.errors) ?? w.errors;
+        w.unresolved = op.unresolvedReferences;
+      } catch (err) {
+        return stop(
+          w.key,
+          'unreadable',
+          `The result of the ${named(w.key)} could not be read (${describeError(err)}). ` +
+            `Its operation is ${w.id}; resend with \`load --only ${stage} --execute\` once it is readable;`,
+        );
+      }
+    }
+  }
+
+  const open = (w: Watched) => w.state === 'unresolved' || w.state === 'waitForMasterVariant';
+  const refused = watched.filter((w) => w.state !== 'imported' && !open(w));
+  if (refused.length > 0) {
+    const w = refused[0];
+    const others = refused.length > 1 ? ` (${refused.length} of its ${keys.length} records were refused)` : '';
+    return stop(
+      w.key,
+      w.state,
+      `The ${named(w.key)} was refused by the Import API (${w.state})${others}` +
+        `${w.errors ? `: ${w.errors.join('; ')}` : ''}. ${resend}`,
+      w.errors,
+    );
+  }
+
+  const waiting = watched.filter(open);
+  if (waiting.length > 0) {
+    const w = waiting[0];
+    const refs = (w.unresolved ?? []).map((u) => `${u.typeId} ${u.key}`).join(', ');
+    return {
+      outcome: { stage, resourceKey: w.key, resourceKeys: keys, state: w.state, proceeded: true },
+      diagnostics: [
+        {
+          severity: 'warning',
+          code: 'canary-unresolved',
+          message:
+            `The ${named(w.key)} is ${w.state}${refs ? `, waiting for ${refs}` : ''}. ` +
+            'The API accepted its shape; the rest was sent, and `--wait` and `verify` show whether the reference arrives.',
+        },
+      ],
+    };
+  }
+  return {
+    outcome: { stage, resourceKey: keys[0], resourceKeys: keys, state: 'imported', proceeded: true },
+    diagnostics: [],
+  };
+}
+
 async function pushStage(
   clients: Clients,
   stage: LoadStage,
@@ -1060,6 +1408,7 @@ async function pushStage(
   concurrency: number,
   onOutcome?: (outcome: StageOutcome) => void,
   progress?: Progress,
+  statuses?: ImportOperationStatus[],
 ): Promise<StageOutcome> {
   const outcome: StageOutcome = {
     stage,
@@ -1076,8 +1425,11 @@ async function pushStage(
     while (next < batches.length) {
       const batch = batches[next++];
       try {
-        await poster(clients, batch).execute();
+        const response = await poster(clients, batch).execute();
         outcome.accepted++;
+        const status = (response?.body as { operationStatus?: ImportOperationStatus[] } | undefined)
+          ?.operationStatus;
+        if (statuses && status) statuses.push(...status);
       } catch (err) {
         outcome.failed.push({
           containerKey: batch.containerKey,
@@ -1266,6 +1618,72 @@ async function readSummaries(
  * its own if it does within 48 hours. `rejected` and `validationFailed` are
  * real failures.
  */
+/** How many failing operations per container and state are read to say why they failed. */
+const OPERATION_SAMPLE = 20;
+/** At most this many distinct reasons are printed per container. */
+const OPERATION_REASONS_SHOWN = 5;
+
+/**
+ * Says why operations failed, from a bounded sample: a container whose summary shows
+ * failures has its failing operations read (the first few, per state) and the
+ * errors grouped, so the diagnostic names the reason, the count in the sample and
+ * one record. The summary only counts; run 16 and run 17 each had to read the
+ * operations by hand to learn what the same count meant. A read that fails adds
+ * nothing and never hides the counts.
+ */
+async function sampleOperationErrors(
+  clients: Clients,
+  summaries: LoadResult['summaries'],
+  diagnostics: Diagnostic[],
+): Promise<void> {
+  for (const { containerKey, summary } of summaries) {
+    const failing = (['validationFailed', 'rejected', 'partiallyImported'] as const).filter(
+      (state) => summary.states[state] > 0,
+    );
+    if (failing.length === 0) continue;
+    const groups = new Map<string, { state: string; count: number; example: string }>();
+    let seen = 0;
+    for (const state of failing) {
+      try {
+        const res = await clients.importApi
+          .importContainers()
+          .withImportContainerKeyValue({ importContainerKey: containerKey })
+          .importOperations()
+          .get({ queryArgs: { state, limit: OPERATION_SAMPLE } })
+          .execute();
+        for (const op of res.body.results) {
+          seen++;
+          const reasons = (op.errors ?? []).map((e) =>
+            [e.code, e.message].filter((part) => part !== undefined && part !== '').join(': ').slice(0, 400),
+          );
+          for (const reason of reasons.length > 0 ? reasons : ['(no error was recorded on the operation)']) {
+            const key = `${state}\u0000${reason}`;
+            const found = groups.get(key);
+            if (found) found.count++;
+            else groups.set(key, { state, count: 1, example: op.resourceKey });
+          }
+        }
+      } catch {
+        // Not read: the counts above stand, and nothing is claimed about the cause.
+      }
+    }
+    if (groups.size === 0) continue;
+    const ranked = [...groups.entries()].sort((a, b) => b[1].count - a[1].count);
+    const lines = ranked.slice(0, OPERATION_REASONS_SHOWN).map(([key, g]) => {
+      const reason = key.slice(key.indexOf('\u0000') + 1);
+      return `      ${g.count} x ${g.state}: ${reason} (for example ${g.example})`;
+    });
+    diagnostics.push({
+      severity: 'warning',
+      code: 'operation-errors',
+      message:
+        `Why operations in '${containerKey}' failed, from the first ${seen} failing operation(s) read:\n` +
+        lines.join('\n') +
+        (ranked.length > OPERATION_REASONS_SHOWN ? `\n      ... and ${ranked.length - OPERATION_REASONS_SHOWN} more reason(s)` : ''),
+    });
+  }
+}
+
 function reportStates(
   summaries: LoadResult['summaries'],
   diagnostics: Diagnostic[],
@@ -1311,9 +1729,9 @@ function reportStates(
       severity: 'error',
       code: 'operations-validation-failed',
       message:
-        `${total.validationFailed} operation(s) failed validation. Read the errors on the ` +
-        'Import Operations — the audit gate should have caught anything structural, so ' +
-        'these are worth feeding back into it as a new check.\n' +
+        `${total.validationFailed} operation(s) failed validation. \`operation-errors\` below ` +
+        'says why, from a sample; the operations hold the rest. The audit gate should have ' +
+        'caught anything structural, so these are worth feeding back into it as a new check.\n' +
         '      Note these counts are per container and cumulative: operations are retained ' +
         '48 hours, so a failure from an earlier run is still counted after a later run ' +
         'fixed it. Compare the operations\' resource keys and timestamps against this run ' +
@@ -1376,7 +1794,40 @@ function statusOf(err: unknown): number | undefined {
 }
 
 function messageOf(err: unknown): string {
-  return (err as { message?: string }).message ?? String(err);
+  const base = (err as { message?: string }).message ?? String(err);
+  const detail = errorDetail(err);
+  // The API's top-level message is generic ("Import request has some invalid
+  // fields"); the field and the reason are in the body's `errors`.
+  return detail !== undefined && !base.includes(detail) ? `${base} (${detail})` : base;
+}
+
+/** At most this many entries of an error body's `errors` are printed. */
+const ERROR_DETAILS_SHOWN = 5;
+
+/**
+ * What the Import or platform API said was wrong, from the `errors` of the response
+ * body the SDK keeps on the error it throws: `InvalidField: defaultShippingAddress
+ * must be a valid index in shipping addresses array`. Without it a refused request
+ * says only that some field was invalid, and the reader has to send one record by
+ * hand to find out which.
+ */
+function errorDetail(err: unknown): string | undefined {
+  const e = err as { body?: { errors?: unknown }; error?: { errors?: unknown } } | null | undefined;
+  const list = e?.body?.errors ?? e?.error?.errors;
+  if (!Array.isArray(list) || list.length === 0) return undefined;
+  const lines = list
+    .slice(0, ERROR_DETAILS_SHOWN)
+    .map((x) => {
+      const o = x as { code?: unknown; message?: unknown; detailedErrorMessage?: unknown };
+      const text = o.detailedErrorMessage ?? o.message;
+      return [typeof o.code === 'string' ? o.code : undefined, typeof text === 'string' ? text : undefined]
+        .filter((part): part is string => part !== undefined)
+        .join(': ');
+    })
+    .filter((line) => line !== '')
+    .map((line) => line.slice(0, 400));
+  if (lines.length === 0) return undefined;
+  return lines.join('; ') + (list.length > ERROR_DETAILS_SHOWN ? ` (and ${list.length - ERROR_DETAILS_SHOWN} more)` : '');
 }
 
 /**

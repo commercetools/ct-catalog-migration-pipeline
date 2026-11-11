@@ -28,11 +28,14 @@ import {
   planBatches,
   summarise,
   MAX_RESOURCES_PER_REQUEST,
+  MAX_CANARY_RECORDS,
+  pickCanary,
+  structureOf,
 } from '../src/load/batches.js';
 import { runLoad } from '../src/load/run.js';
 import { createProgress } from '../src/progress/progress.js';
 import { renderLoad, writeLoadArtefacts } from '../src/load/report.js';
-import type { MigrationPlan, ProductDraftImport } from '../src/model/plan.js';
+import type { MigrationPlan, OrderImport, ProductDraftImport } from '../src/model/plan.js';
 
 function packageRoot(): string {
   let dir = dirname(fileURLToPath(import.meta.url));
@@ -268,6 +271,14 @@ test('summarise: totals match the batches', () => {
 interface Recorded {
   /** Keyed reads of prerequisites, to prove nothing is posted blindly. */
   prerequisiteReads: { kind: string; where: string }[];
+  /** `where` predicates of the reads for orders the project already holds. */
+  orderReads: string[];
+  /** Operation ids read, one entry per poll. */
+  operationReads: string[];
+  /** Which record each operation id was issued for. */
+  operationKeys: Record<string, string>;
+  /** The list reads of failing operations: container and query arguments. */
+  operationListReads: { containerKey: string; state?: string; limit?: number }[];
   created: { kind: string; body: Record<string, unknown> }[];
   containerCreates: string[];
   /** Container reads, which only happen when a create failed. */
@@ -281,6 +292,27 @@ interface Recorded {
 }
 
 interface FakeOptions {
+  /** The API's error body for a request refused by `failResourceKey`: `errors` as the Import API sends them. */
+  failBody?: { errors: { code: string; message?: string; detailedErrorMessage?: string }[] };
+  /** Failing operations a container's list returns, per state; `operationsError` makes the read throw. */
+  failedOperations?: { state: string; resourceKey: string; errors?: { code: string; message?: string }[] }[];
+  operationsError?: Error;
+  /** Order numbers the project already holds, or the error the read fails with. */
+  existingOrders?: string[] | Error;
+  /**
+   * What the one-record first request of a customer or order stage comes back as.
+   * `state` is read per poll (the last one repeats); `postState` is what the POST
+   * response itself says.
+   */
+  canary?: {
+    state?: string | string[];
+    errors?: { code: string; message?: string }[];
+    unresolvedReferences?: { typeId: string; key: string }[];
+    readError?: Error;
+    postState?: string;
+    /** Per record (resource key or order number): what its operation comes back as. */
+    byResource?: Record<string, { state?: string | string[]; errors?: { code: string; message?: string }[] }>;
+  };
   /** What the project already holds, per kind. */
   existing?: {
     stores?: { key: string; productSelections?: unknown[] }[] | Error;
@@ -333,6 +365,10 @@ function states(overrides: Partial<OperationStates> = {}): OperationStates {
 function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: Recorded } {
   const recorded: Recorded = {
     prerequisiteReads: [],
+    orderReads: [],
+    operationReads: [],
+    operationKeys: {},
+    operationListReads: [],
     created: [],
     containerCreates: [],
     containerReads: [],
@@ -349,9 +385,16 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
           execute: async () => {
             if (
               options.failResourceKey &&
-              body.resources.some((r) => r.key === options.failResourceKey)
+              body.resources.some(
+                (r) => (r as { key?: string; orderNumber?: string }).key === options.failResourceKey ||
+                  (r as { orderNumber?: string }).orderNumber === options.failResourceKey,
+              )
             ) {
-              throw httpError(400, 'InvalidInput');
+              throw options.failBody
+                ? Object.assign(httpError(400, 'Complete request got rejected. Import request has some invalid fields'), {
+                    body: options.failBody,
+                  })
+                : httpError(400, 'InvalidInput');
             }
             recorded.posts.push({
               stage,
@@ -359,7 +402,22 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
               resources: body.resources.length,
             });
             recorded.sequence.push(`post:${stage}`);
-            return { body: { operationStatus: [] } };
+            const n = recorded.posts.length;
+            body.resources.forEach((r, i) => {
+              const k = (r as { key?: string; orderNumber?: string }).key ?? (r as { orderNumber?: string }).orderNumber;
+              if (k !== undefined) recorded.operationKeys[`op-${stage}-${n}-${i}`] = k;
+            });
+            return {
+              body: {
+                operationStatus: body.resources.map((_, i) => ({
+                  operationId: `op-${stage}-${n}-${i}`,
+                  state: options.canary?.postState ?? 'processing',
+                  ...(options.canary?.postState === 'validationFailed' && options.canary.errors
+                    ? { errors: options.canary.errors }
+                    : {}),
+                })),
+              },
+            };
           },
         }),
       }),
@@ -386,6 +444,16 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
             if (!options.containerExists) throw httpError(404, 'Not Found');
             return { body: { key: importContainerKey, resourceType: 'product-draft', version: 1 } };
           },
+        }),
+        importOperations: () => ({
+          get: ({ queryArgs }: { queryArgs: { state?: string; limit?: number } }) => ({
+            execute: async () => {
+              recorded.operationListReads.push({ containerKey: importContainerKey, ...queryArgs });
+              if (options.operationsError) throw options.operationsError;
+              const rows = (options.failedOperations ?? []).filter((o) => o.state === queryArgs.state);
+              return { body: { results: rows.slice(0, queryArgs.limit ?? 20) } };
+            },
+          }),
         }),
         importSummaries: () => ({
           get: () => ({
@@ -424,12 +492,43 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
         }),
       }),
     }),
+    importOperations: () => ({
+      withIdValue: ({ id }: { id: string }) => ({
+        get: () => ({
+          execute: async () => {
+            recorded.operationReads.push(id);
+            recorded.sequence.push('read:operation');
+            if (options.canary?.readError) throw options.canary.readError;
+            const own = options.canary?.byResource?.[recorded.operationKeys[id]];
+            const stateOf = own ? own.state : options.canary?.state;
+            const seq = Array.isArray(stateOf) ? stateOf : [stateOf ?? 'imported'];
+            const polls = own
+              ? recorded.operationReads.filter((x) => x === id).length
+              : recorded.operationReads.length;
+            const errors = own ? own.errors : options.canary?.errors;
+            return {
+              body: {
+                id,
+                resourceKey: recorded.operationKeys[id],
+                state: seq[Math.min(polls - 1, seq.length - 1)],
+                ...(errors ? { errors } : {}),
+                ...(options.canary?.unresolvedReferences
+                  ? { unresolvedReferences: options.canary.unresolvedReferences }
+                  : {}),
+              },
+            };
+          },
+        }),
+      }),
+    }),
     productTypes: stagePoster('product-type'),
     categories: stagePoster('category'),
     productDrafts: stagePoster('product-draft'),
     standalonePrices: stagePoster('standalone-price'),
     productSelections: stagePoster('product-selection'),
     variants: stagePoster('variant'),
+    orders: stagePoster('order'),
+    customers: stagePoster('customer'),
   };
 
   const platformStage = (kind: 'channels' | 'customerGroups' | 'taxCategories' | 'stores') => () => ({
@@ -459,6 +558,20 @@ function fakeClients(options: FakeOptions = {}): { clients: Clients; recorded: R
       customerGroups: platformStage('customerGroups'),
       taxCategories: platformStage('taxCategories'),
       stores: platformStage('stores'),
+      orders: () => ({
+        get: ({ queryArgs }: { queryArgs: { where: string } }) => ({
+          execute: async () => {
+            recorded.orderReads.push(queryArgs.where);
+            recorded.sequence.push('read:orders');
+            if (options.existingOrders instanceof Error) throw options.existingOrders;
+            const held = new Set(options.existingOrders ?? []);
+            const asked = [...queryArgs.where.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+            return {
+              body: { results: asked.filter((n) => held.has(n)).map((orderNumber) => ({ orderNumber })) },
+            };
+          },
+        }),
+      }),
     },
     {
       // Stubbed properties fall through to the target; anything else throws, so
@@ -1726,4 +1839,678 @@ test('progress: without a reporter the load behaves as before', async () => {
   const { clients } = fakeClients();
   const result = await runLoad(clients, basePlan(), config(), { execute: true, sleep: noSleep });
   assert.equal(result.executed, true);
+});
+
+// ---------------------------------------------------------------------------
+// --only, and orders the project already holds
+//
+// After a partial failure the only recoveries used to be a full re-run, which
+// resends every product draft with publish:false, or posting the saved bodies by
+// hand. `only` runs the named stages and nothing else; orders are create-only,
+// so the ones the project holds are read first and left out of the sends.
+// ---------------------------------------------------------------------------
+
+function planWithOrders(numbers: string[]): MigrationPlan {
+  const orders = numbers.map(
+    (orderNumber) =>
+      ({
+        orderNumber,
+        totalPrice: { type: 'centPrecision', currencyCode: 'EUR', centAmount: 100, fractionDigits: 2 },
+      }) as OrderImport,
+  );
+  return { ...basePlan(), orders };
+}
+
+const sentTo = (recorded: Recorded, stage: string) =>
+  recorded.posts.filter((p) => p.stage === stage).reduce((n, p) => n + p.resources, 0);
+
+test('only: runs the named stage and touches nothing else in the project', async () => {
+  const { clients, recorded } = fakeClients();
+  const plan = planWithOrders(['A-1', 'A-2', 'A-3']);
+  const r = await runLoad(clients, plan, config(), { execute: true, only: ['order'], sleep: noSleep });
+
+  assert.deepEqual(r.only, ['order']);
+  assert.deepEqual(r.stages.map((s) => s.stage), ['order']);
+  assert.equal(sentTo(recorded, 'order'), 3);
+  assert.deepEqual([...new Set(recorded.posts.map((p) => p.stage))], ['order']);
+  assert.deepEqual(recorded.created, [], 'no channel, group, tax category or store may be created');
+  assert.deepEqual(recorded.prerequisiteReads, [], 'the platform stages were not even read');
+  assert.deepEqual(r.prerequisites, []);
+  assert.ok(codes(r.diagnostics).includes('only-stages'), 'the run says what it did not run');
+});
+
+test('only: a platform stage runs when it is named', async () => {
+  const { clients, recorded } = fakeClients({ existing: { channels: [], customerGroups: [] } });
+  const r = await runLoad(clients, planNeedingPrerequisites(), config(), {
+    execute: true,
+    only: ['channel'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(recorded.created.map((c) => c.kind), ['channels']);
+  assert.deepEqual(r.prerequisites.map((p) => p.stage), ['channel']);
+});
+
+test('only: a dry run is restricted too', async () => {
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1']), config(), { only: ['order'], sleep: noSleep });
+  assert.equal(r.executed, false);
+  assert.deepEqual(r.stages.map((s) => s.stage), ['order']);
+  assert.deepEqual(recorded.prerequisiteReads, []);
+  assert.deepEqual(recorded.posts, []);
+});
+
+test('orders: those the project already holds are not sent again', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-2'] });
+  const plan = planWithOrders(['A-1', 'A-2', 'A-3']);
+  const r = await runLoad(clients, plan, config(), { execute: true, only: ['order'], sleep: noSleep });
+
+  assert.equal(sentTo(recorded, 'order'), 2, 'only the missing numbers are posted');
+  assert.deepEqual(r.skippedOrders, ['A-2']);
+  assert.ok(codes(r.diagnostics).includes('orders-already-in-project'));
+  assert.equal(plan.orders!.length, 3, 'the caller\'s plan is not modified');
+});
+
+test('orders: a full load skips what the project holds, too, so a re-run is not a wall of rejections', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-1', 'A-2', 'A-3'] });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 0);
+  assert.ok(sentTo(recorded, 'product-draft') > 0, 'the rest of the load still runs');
+  assert.deepEqual(r.skippedOrders, ['A-1', 'A-2', 'A-3']);
+});
+
+test('orders: when every order is already there nothing is sent and the report says so', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-1', 'A-2'] });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(recorded.posts, []);
+  const out = renderLoad(r).join('\n');
+  assert.match(out, /nothing to send/);
+  assert.doesNotMatch(out, /LOAD STOPPED/);
+});
+
+test('orders: an unreadable project stops an execute before anything is created', async () => {
+  const { clients, recorded } = fakeClients({
+    existingOrders: httpError(403, 'insufficient scope'),
+    existing: { channels: [], customerGroups: [] },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, sleep: noSleep });
+  assert.ok(codes(r.diagnostics).includes('orders-unreadable'));
+  assert.deepEqual(recorded.created, []);
+  assert.deepEqual(recorded.posts, []);
+  assert.deepEqual(recorded.containerCreates, []);
+});
+
+test('orders: an unreadable project only warns on a dry run, which lists every order as new', async () => {
+  const { clients } = fakeClients({ existingOrders: httpError(403, 'insufficient scope') });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), { sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'orders-unreadable');
+  assert.equal(d?.severity, 'warning');
+  assert.equal(r.stages.find((s) => s.stage === 'order')?.resources, 2);
+});
+
+test('orders: the read is chunked, so a long history does not build one huge predicate', async () => {
+  const numbers = Array.from({ length: 250 }, (_, i) => `N-${String(i).padStart(4, '0')}`);
+  const { clients, recorded } = fakeClients();
+  await runLoad(clients, planWithOrders(numbers), config(), { only: ['order'], sleep: noSleep });
+  assert.equal(recorded.orderReads.length, 3);
+  assert.ok(recorded.orderReads.every((w) => w.length < 3000));
+});
+
+test('artefact: a restricted run writes beside the full run\'s record, not over it', async () => {
+  const { clients } = fakeClients();
+  const dir = mkdtempSync(resolve(tmpdir(), 'load-artefact-'));
+  const full = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, sleep: noSleep });
+  const fullPath = writeLoadArtefacts(dir, full);
+  const part = await runLoad(clients, planWithOrders(['A-1']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  const partPath = writeLoadArtefacts(dir, part);
+  assert.match(fullPath, /load-result\.json$/);
+  assert.match(partPath, /load-result-only-order\.json$/);
+  assert.deepEqual(JSON.parse(readFileSync(partPath, 'utf8')).only, ['order']);
+  assert.equal(JSON.parse(readFileSync(fullPath, 'utf8')).only, undefined, 'the full record is untouched');
+});
+
+// ---------------------------------------------------------------------------
+// The one-record first request of a customer or order stage
+//
+// The Import API has no dry run, so nothing offline can show that it accepts the
+// shape a mapper sends. In the first live run of orders every request was
+// refused, one failed operation per record, after the offline gates all passed.
+// The first request of these stages now holds one record, and its result is read
+// before the rest is sent.
+// ---------------------------------------------------------------------------
+
+function planWithCustomersAndOrders(customers: string[], orders: string[]): MigrationPlan {
+  return {
+    ...planWithOrders(orders),
+    customers: customers.map((key) => ({ key, email: `${key}@example.com` }) as never),
+  };
+}
+
+function sleeps() {
+  const waited: number[] = [];
+  return { waited, sleep: async (ms: number) => void waited.push(ms) };
+}
+
+test('canary: the first request of an order stage holds one record and is flagged', () => {
+  const numbers = Array.from({ length: 45 }, (_, i) => `N-${i}`);
+  const { batches } = planBatches(planWithOrders(numbers), config());
+  const orders = batches.filter((b) => b.stage === 'order');
+  assert.deepEqual(orders.map((b) => b.resourceKeys.length), [1, 20, 20, 4]);
+  assert.equal(orders[0].canary, true);
+  assert.ok(orders.slice(1).every((b) => b.canary === undefined));
+  assert.equal(orders.flatMap((b) => b.resourceKeys).length, 45, 'every order is still sent exactly once');
+});
+
+test('canary: customers get one too, and the catalog stages do not', () => {
+  const plan = planWithCustomersAndOrders(['c1', 'c2', 'c3'], ['A-1']);
+  const { batches } = planBatches(plan, config());
+  assert.equal(batches.filter((b) => b.canary).map((b) => b.stage).sort().join(), 'customer,order');
+  assert.ok(batches.filter((b) => b.stage === 'product-draft').every((b) => b.canary === undefined));
+});
+
+test('canary: a stage of one record is its own canary and sends nothing after it', async () => {
+  const { clients, recorded } = fakeClients();
+  await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], sleep: noSleep });
+  assert.equal(sentTo(recorded, 'order'), 1);
+});
+
+test('canary: the rest is sent only after the first record\'s result was read', async () => {
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(
+    recorded.sequence.filter((x) => x === 'post:order' || x === 'read:operation'),
+    ['post:order', 'read:operation', 'post:order'],
+  );
+  assert.equal(recorded.posts[0].resources, 1);
+  assert.equal(sentTo(recorded, 'order'), 3);
+  assert.equal(r.canary?.proceeded, true);
+  assert.equal(r.canary?.state, 'imported');
+  assert.ok(!codes(r.diagnostics).includes('canary-stopped'));
+});
+
+test('canary: a refused first record stops the stage with one operation, and says why', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: {
+      state: 'validationFailed',
+      errors: [{ code: 'InvalidOperation', message: 'Line item has invalid product variant identification information.' }],
+    },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3', 'A-4']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 1, 'exactly one record was sent');
+  assert.equal(r.canary?.proceeded, false);
+  assert.equal(r.canary?.state, 'validationFailed');
+  const d = r.diagnostics.find((x) => x.code === 'canary-stopped');
+  assert.equal(d?.severity, 'error');
+  assert.match(d!.message, /A-1/);
+  assert.match(d!.message, /invalid product variant identification/);
+  assert.match(d!.message, /--only order --execute/);
+  assert.match(d!.message, /not sent/);
+  const stage = r.stages.find((s) => s.stage === 'order')!;
+  assert.equal(stage.accepted, 1);
+  assert.equal(stage.resources, 4, 'the report still says how many records the stage holds');
+});
+
+test('canary: a refused customer stops the load before the orders that reference it', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: { state: 'validationFailed', errors: [{ code: 'InvalidField', message: 'email' }] },
+  });
+  const r = await runLoad(clients, planWithCustomersAndOrders(['c1', 'c2'], ['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['customer', 'order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'customer'), 1);
+  assert.equal(sentTo(recorded, 'order'), 0, 'no later stage ran');
+  assert.equal(r.canary?.stage, 'customer');
+});
+
+test('canary: a stopped load creates no store, which belongs to a load that finished', async () => {
+  const withOrders = { ...planWithStore(0), orders: planWithOrders(['A-1', 'A-2']).orders };
+  const { clients, recorded } = fakeClients({
+    canary: { state: 'validationFailed' },
+    existing: { channels: [{ key: 'retail-uk', roles: ['ProductDistribution'] }], customerGroups: [], stores: [] },
+  });
+  const r = await runLoad(clients, withOrders, config(), { execute: true, sleep: noSleep });
+  assert.equal(r.canary?.proceeded, false);
+  assert.ok(!recorded.created.some((c) => c.kind === 'stores'), 'no store may be created after a stop');
+
+  // The same plan, with the first record accepted, does create it.
+  const ok = fakeClients({
+    existing: { channels: [{ key: 'retail-uk', roles: ['ProductDistribution'] }], customerGroups: [], stores: [] },
+  });
+  await runLoad(ok.clients, withOrders, config(), { execute: true, sleep: noSleep });
+  assert.ok(ok.recorded.created.some((c) => c.kind === 'stores'), 'the control run must create it');
+});
+
+test('canary: a result the POST itself already calls validationFailed is not polled', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: { postState: 'validationFailed', errors: [{ code: 'InvalidInput', message: 'bad shape' }] },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.deepEqual(recorded.operationReads, []);
+  assert.equal(sentTo(recorded, 'order'), 1);
+  assert.match(r.diagnostics.find((x) => x.code === 'canary-stopped')!.message, /bad shape/);
+});
+
+test('canary: a record still processing is waited for, with growing pauses', async () => {
+  const { clients, recorded } = fakeClients({ canary: { state: ['processing', 'processing', 'imported'] } });
+  const { waited, sleep } = sleeps();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep,
+  });
+  assert.equal(recorded.operationReads.length, 3);
+  assert.deepEqual(waited, [500, 1000, 2000]);
+  assert.equal(sentTo(recorded, 'order'), 2);
+  assert.equal(r.canary?.proceeded, true);
+});
+
+test('canary: a record that never leaves processing stops the stage at the ceiling', async () => {
+  const { clients, recorded } = fakeClients({ canary: { state: 'processing' } });
+  const { waited, sleep } = sleeps();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    canaryTimeoutMs: 3000,
+    sleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 1);
+  assert.ok(waited.reduce((a, b) => a + b, 0) >= 3000 && waited.length < 10);
+  assert.match(r.diagnostics.find((x) => x.code === 'canary-stopped')!.message, /still processing/);
+});
+
+test('canary: an unresolved first record is not a refusal: the rest is sent, with a warning naming the reference', async () => {
+  const { clients, recorded } = fakeClients({
+    canary: { state: 'unresolved', unresolvedReferences: [{ typeId: 'customer', key: 'mig-C-1' }] },
+  });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 3);
+  const d = r.diagnostics.find((x) => x.code === 'canary-unresolved');
+  assert.equal(d?.severity, 'warning');
+  assert.match(d!.message, /customer mig-C-1/);
+  assert.equal(r.canary?.proceeded, true);
+});
+
+test('canary: a result that cannot be read stops the stage rather than sending blind', async () => {
+  const { clients, recorded } = fakeClients({ canary: { readError: httpError(403, 'insufficient scope') } });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 1);
+  assert.equal(r.canary?.state, 'unreadable');
+  assert.ok(codes(r.diagnostics).includes('canary-stopped'));
+});
+
+test('canary: a first request the API rejects outright stops the stage too', async () => {
+  const { clients, recorded } = fakeClients({ failResourceKey: 'A-1' });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(sentTo(recorded, 'order'), 0, 'neither it nor the rest was accepted');
+  assert.equal(r.canary?.state, 'rejected');
+  assert.equal(r.canary?.proceeded, false);
+});
+
+test('canary: after orders the project holds are left out, the first record is the first one that remains', async () => {
+  const { clients, recorded } = fakeClients({ existingOrders: ['A-1'] });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  assert.equal(r.canary?.resourceKey, 'A-2');
+  assert.equal(sentTo(recorded, 'order'), 2);
+});
+
+test('canary: a dry run shows the one-record request and reads no operation', async () => {
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2', 'A-3']), config(), { only: ['order'], sleep: noSleep });
+  const first = r.batches.batches.find((b) => b.stage === 'order')!;
+  assert.equal(first.resourceKeys.length, 1);
+  assert.equal(first.canary, true);
+  assert.deepEqual(recorded.operationReads, []);
+  assert.deepEqual(recorded.posts, []);
+});
+
+test('canary: the dry run explains the one-record first request, and a stopped load does not read as executed', async () => {
+  const dry = fakeClients();
+  const d = await runLoad(dry.clients, planWithOrders(['A-1', 'A-2']), config(), { only: ['order'], sleep: noSleep });
+  assert.match(renderLoad(d).join('\n'), /first order request holds the record\(s\) that show every structure/);
+
+  const live = fakeClients({ canary: { state: 'validationFailed' } });
+  const r = await runLoad(live.clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  const out = renderLoad(r).join('\n');
+  assert.match(out, /LOAD STOPPED at the first order record \(validationFailed\)/);
+  assert.doesNotMatch(out, /^Load executed\./m);
+});
+
+test('canary: the artefact of an executed run records the first record\'s result', async () => {
+  const { clients } = fakeClients({ canary: { state: 'validationFailed' } });
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), {
+    execute: true,
+    only: ['order'],
+    sleep: noSleep,
+  });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  const written = JSON.parse(readFileSync(path, 'utf8'));
+  assert.equal(written.canary.resourceKey, 'A-1');
+  assert.equal(written.canary.proceeded, false);
+});
+
+test('artefact: the written load-requests.json flags the one-record first request, and only that one', async () => {
+  // Read from disk, not from the batches in memory: the flag was on the batch and
+  // missing from the file for a whole iteration because this test did not exist.
+  const { clients } = fakeClients();
+  const plan = planWithCustomersAndOrders(['c1', 'c2', 'c3'], ['A-1', 'A-2', 'A-3', 'A-4']);
+  const r = await runLoad(clients, plan, config(), { sleep: noSleep });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  assert.match(path, /load-requests\.json$/);
+
+  const written = JSON.parse(readFileSync(path, 'utf8')) as {
+    requests: { stage: string; resourceKeys: string[]; canary?: boolean }[];
+  };
+  const flagged = written.requests.filter((q) => q.canary);
+  assert.deepEqual(flagged.map((q) => q.stage).sort(), ['customer', 'order']);
+  for (const q of flagged) assert.equal(q.resourceKeys.length, 1, `the ${q.stage} canary holds one record`);
+  for (const stage of ['customer', 'order']) {
+    const first = written.requests.find((q) => q.stage === stage)!;
+    assert.equal(first.canary, true, `the first ${stage} request is the flagged one`);
+  }
+  assert.ok(
+    written.requests.filter((q) => q.stage !== 'customer' && q.stage !== 'order').every((q) => q.canary === undefined),
+    'a catalog stage has no canary',
+  );
+});
+
+test('artefact: a restricted dry run flags the canary in its own file too', async () => {
+  const { clients } = fakeClients();
+  const r = await runLoad(clients, planWithOrders(['A-1', 'A-2']), config(), { only: ['order'], sleep: noSleep });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  assert.match(path, /load-requests-only-order\.json$/);
+  const written = JSON.parse(readFileSync(path, 'utf8')) as { requests: { canary?: boolean }[] };
+  // One canary request of one record, then the one remaining order.
+  assert.deepEqual(written.requests.map((q) => q.canary === true), [true, false]);
+});
+
+// ---------------------------------------------------------------------------
+// Which records go first
+//
+// The plan's first record proves only its own structure. In the first live run of
+// customers it was the one with no address, so it passed and the 47 others were
+// refused; the first order had no custom line item. The canary is now chosen by
+// what a record carries: the fewest records that together show every key path.
+// ---------------------------------------------------------------------------
+
+const person = (key: string, extra: Record<string, unknown> = {}) => ({ key, email: `${key}@example.com`, ...extra });
+const withAddress = { addresses: [{ key: 'a', country: 'BE', city: 'Gent' }], defaultShippingAddress: 0 };
+
+function planWithCustomers(customers: unknown[]): MigrationPlan {
+  return { ...basePlan(), customers: customers as never };
+}
+
+test('structure: values are ignored, arrays collapse, empty values are skipped', () => {
+  const s = structureOf({
+    key: 'c1',
+    email: 'someone@example.com',
+    addresses: [{ key: 'a', city: 'Gent' }, { key: 'b', city: 'Brugge', company: 'X' }],
+    customerGroup: { key: 'g' },
+    custom: {},
+    note: '',
+    stores: [],
+    gone: null,
+  });
+  assert.deepEqual(
+    [...s].sort(),
+    ['addresses', 'addresses[].city', 'addresses[].company', 'addresses[].key', 'customerGroup', 'customerGroup.key', 'email', 'key'],
+  );
+  assert.deepEqual([...structureOf({ key: 'z', email: 'other@example.com' })].sort(), ['email', 'key']);
+});
+
+test('canary choice: a record that has every field wins, wherever it sits', () => {
+  const records = [person('c1'), person('c2'), person('c3', withAddress), person('c4', withAddress)];
+  assert.deepEqual(pickCanary(records), [2], 'the first record with an address, not the plan\'s first record');
+});
+
+test('canary choice: ties go to the earliest record, and identical records pick the first', () => {
+  assert.deepEqual(pickCanary([person('c1'), person('c2'), person('c3')]), [0]);
+});
+
+test('canary choice: shapes no single record shows together are all covered', () => {
+  // A guest order and a customer order carry different fields, so one record cannot show both.
+  const records = [{ orderNumber: 'A', customerEmail: 'g@example.com' }, { orderNumber: 'B', customer: { key: 'c' } }];
+  assert.deepEqual(pickCanary(records), [0, 1]);
+});
+
+test(`canary choice: at most ${MAX_CANARY_RECORDS} records, however many structures there are`, () => {
+  const records = Array.from({ length: 12 }, (_, i) => ({ key: `r${i}`, [`field${i}`]: 'x' }));
+  assert.equal(pickCanary(records).length, MAX_CANARY_RECORDS);
+});
+
+test('canary choice: nothing to choose from, and records with no key path at all', () => {
+  assert.deepEqual(pickCanary([]), []);
+  assert.deepEqual(pickCanary([{}, {}]), [0]);
+});
+
+test('canary choice: a long stage costs a pass, not a quadratic scan', () => {
+  const records = Array.from({ length: 30_000 }, (_, i) => (i % 3 === 0 ? person(`c${i}`, withAddress) : person(`c${i}`)));
+  const started = Date.now();
+  assert.deepEqual(pickCanary(records), [0]);
+  assert.ok(Date.now() - started < 3000, 'must stay fast on tens of thousands of records');
+});
+
+test('batches: the canary request holds the record that shows every structure, and the rest still go exactly once, in plan order', () => {
+  const customers = [person('c1'), person('c2'), person('c3', withAddress), person('c4'), person('c5', withAddress)];
+  const { batches } = planBatches(planWithCustomers(customers), config());
+  const mine = batches.filter((b) => b.stage === 'customer');
+  assert.deepEqual(mine[0].resourceKeys, ['c3']);
+  assert.equal(mine[0].canary, true);
+  assert.deepEqual(mine.slice(1).flatMap((b) => b.resourceKeys), ['c1', 'c2', 'c4', 'c5']);
+  assert.ok(mine.slice(1).every((b) => b.canary === undefined));
+});
+
+test('batches: an order with a custom line item goes first even when it is far down the list', () => {
+  const plain = (n: string) => ({ orderNumber: n, totalPrice: { centAmount: 1 }, lineItems: [{ quantity: 1 }] });
+  const orders = [
+    ...Array.from({ length: 7 }, (_, i) => plain(`P-${i}`)),
+    { ...plain('C-1'), customLineItems: [{ name: { en: 'x' }, quantity: 1, slug: 's' }] },
+    plain('P-9'),
+  ];
+  const { batches } = planBatches({ ...basePlan(), orders: orders as never }, config());
+  const first = batches.find((b) => b.stage === 'order')!;
+  assert.deepEqual(first.resourceKeys, ['C-1']);
+  assert.equal(first.canary, true);
+});
+
+test('canary: the run-17 case, the plan\'s first customer has no address and the API refuses the ones that do, so one request is spent, not all', async () => {
+  const customers = [
+    person('c1'),
+    ...Array.from({ length: 44 }, (_, i) => person(`a${i}`, withAddress)),
+    person('c2'),
+  ];
+  const addressed = Object.fromEntries(
+    customers.filter((c) => 'addresses' in c).map((c) => [c.key, { state: 'validationFailed', errors: [{ code: 'InvalidField', message: 'defaultShippingAddress must be a valid index in shippingAddresses' }] }]),
+  );
+  const { clients, recorded } = fakeClients({ canary: { byResource: addressed } });
+  const r = await runLoad(clients, planWithCustomers(customers), config(), { execute: true, only: ['customer'], sleep: noSleep });
+  assert.equal(sentTo(recorded, 'customer'), 1, 'exactly one record was sent');
+  assert.equal(r.canary?.proceeded, false);
+  assert.equal(r.canary?.resourceKey, 'a0', 'the record that has an address, not the first one');
+  const d = r.diagnostics.find((x) => x.code === 'canary-stopped')!;
+  assert.match(d.message, /defaultShippingAddress must be a valid index/);
+});
+
+test('canary: several records, all imported, and the rest is sent', async () => {
+  const records = [{ orderNumber: 'A-1', customerEmail: 'g@example.com' }, { orderNumber: 'A-2', customer: { key: 'c' } }, { orderNumber: 'A-3' }, { orderNumber: 'A-4' }];
+  const { clients, recorded } = fakeClients();
+  const r = await runLoad(clients, { ...basePlan(), orders: records as never }, config(), { execute: true, only: ['order'], sleep: noSleep });
+  assert.equal(recorded.posts[0].resources, 2, 'the first request holds the two structures');
+  assert.equal(recorded.operationReads.length, 2, 'each record\'s operation is polled once');
+  assert.equal(sentTo(recorded, 'order'), 4);
+  assert.deepEqual(r.canary?.resourceKeys, ['A-1', 'A-2']);
+  assert.equal(r.canary?.proceeded, true);
+});
+
+test('canary: several records, one refused, stops naming that record and how many were refused', async () => {
+  const records = [{ orderNumber: 'A-1', customerEmail: 'g@example.com' }, { orderNumber: 'A-2', customer: { key: 'c' } }, { orderNumber: 'A-3' }];
+  const { clients, recorded } = fakeClients({
+    canary: { state: ['processing', 'imported'], byResource: { 'A-2': { state: ['processing', 'validationFailed'], errors: [{ code: 'InvalidOperation', message: 'no such customer shape' }] } } },
+  });
+  const r = await runLoad(clients, { ...basePlan(), orders: records as never }, config(), { execute: true, only: ['order'], sleep: noSleep });
+  assert.equal(sentTo(recorded, 'order'), 2, 'only the first request went out');
+  assert.equal(r.canary?.resourceKey, 'A-2');
+  assert.equal(r.canary?.state, 'validationFailed');
+  assert.deepEqual(r.canary?.resourceKeys, ['A-1', 'A-2']);
+  const d = r.diagnostics.find((x) => x.code === 'canary-stopped')!;
+  assert.match(d.message, /2 records that together show every structure/);
+  assert.match(d.message, /A-2/);
+  assert.match(d.message, /no such customer shape/);
+  assert.ok(recorded.operationReads.length >= 2, 'every record\'s operation is polled');
+});
+
+test('canary: several records, one unresolved and the rest imported, goes on with a warning naming it', async () => {
+  const records = [{ orderNumber: 'A-1', customerEmail: 'g@example.com' }, { orderNumber: 'A-2', customer: { key: 'c' } }, { orderNumber: 'A-3' }];
+  const { clients, recorded } = fakeClients({ canary: { byResource: { 'A-2': { state: 'unresolved' } } } });
+  const r = await runLoad(clients, { ...basePlan(), orders: records as never }, config(), { execute: true, only: ['order'], sleep: noSleep });
+  assert.equal(sentTo(recorded, 'order'), 3);
+  assert.equal(r.canary?.proceeded, true);
+  assert.equal(r.canary?.resourceKey, 'A-2');
+  assert.ok(codes(r.diagnostics).includes('canary-unresolved'));
+});
+
+test('artefact: the written file lists every record of the canary request, flagged', async () => {
+  const records = [{ orderNumber: 'A-1', customerEmail: 'g@example.com' }, { orderNumber: 'A-2', customer: { key: 'c' } }, { orderNumber: 'A-3' }];
+  const { clients } = fakeClients();
+  const r = await runLoad(clients, { ...basePlan(), orders: records as never }, config(), { only: ['order'], sleep: noSleep });
+  const path = writeLoadArtefacts(mkdtempSync(resolve(tmpdir(), 'load-artefact-')), r);
+  const written = JSON.parse(readFileSync(path, 'utf8')) as { requests: { resourceKeys: string[]; canary?: boolean }[] };
+  assert.deepEqual(written.requests[0].resourceKeys, ['A-1', 'A-2']);
+  assert.equal(written.requests[0].canary, true);
+  assert.deepEqual(written.requests[1].resourceKeys, ['A-3']);
+});
+
+// ---------------------------------------------------------------------------
+// Which field the API refused
+//
+// A refused request used to print only the API's top-level message ("Import request
+// has some invalid fields"), and a failing operation only a count. The field and the
+// reason are in the response body, and the reader had to send one record by hand,
+// or read the operations by hand, to see them.
+// ---------------------------------------------------------------------------
+
+test('error detail: a refused request prints the field and the reason from the API\'s body', async () => {
+  const customers = [person('c1'), person('c2'), person('c3')];
+  const { clients } = fakeClients({
+    failResourceKey: 'c3',
+    failBody: { errors: [{ code: 'InvalidField', message: 'defaultShippingAddress must be a valid index in shipping addresses array' }] },
+  });
+  const r = await runLoad(clients, planWithCustomers(customers), config(), { execute: true, only: ['customer'], sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'import-request-failed')!;
+  assert.match(d.message, /Import request has some invalid fields/);
+  assert.match(d.message, /InvalidField: defaultShippingAddress must be a valid index in shipping addresses array/);
+});
+
+test('error detail: a long error list is cut, and a body without errors changes nothing', async () => {
+  const many = Array.from({ length: 8 }, (_, i) => ({ code: 'InvalidField', message: `field${i}` }));
+  const { clients } = fakeClients({ failResourceKey: 'c3', failBody: { errors: many } });
+  const r = await runLoad(clients, planWithCustomers([person('c1'), person('c2'), person('c3')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  const msg = r.diagnostics.find((x) => x.code === 'import-request-failed')!.message;
+  assert.match(msg, /field0/);
+  assert.match(msg, /field4/);
+  assert.doesNotMatch(msg, /field5/);
+  assert.match(msg, /and 3 more/);
+
+  const plain = fakeClients({ failResourceKey: 'c3' });
+  const r2 = await runLoad(plain.clients, planWithCustomers([person('c1'), person('c2'), person('c3')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  assert.match(r2.diagnostics.find((x) => x.code === 'import-request-failed')!.message, /400: InvalidInput/);
+});
+
+test('error detail: the canary\'s refusal carries the field too', async () => {
+  const { clients } = fakeClients({
+    failResourceKey: 'c1',
+    failBody: { errors: [{ code: 'InvalidField', message: 'addresses[0].country is required' }] },
+  });
+  const r = await runLoad(clients, planWithCustomers([person('c1'), person('c2')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  assert.match(r.diagnostics.find((x) => x.code === 'canary-stopped')!.message, /addresses\[0\]\.country is required/);
+});
+
+test('operation errors: failing operations are sampled, grouped by reason and printed with one example', async () => {
+  const failing = Array.from({ length: 5 }, (_, i) => ({
+    state: 'validationFailed',
+    resourceKey: `BV${i}`,
+    errors: [{ code: 'InvalidOperation', message: 'Line item has invalid product variant identification information' }],
+  }));
+  failing.push({ state: 'validationFailed', resourceKey: 'BV9', errors: [{ code: 'InvalidField', message: 'customerEmail is not valid' }] });
+  const { clients, recorded } = fakeClients({ states: { validationFailed: 6 }, failedOperations: failing });
+  const r = await runLoad(clients, planWithOrders(['BV0', 'BV1', 'BV2']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'operation-errors')!;
+  assert.ok(d, 'the reasons are printed');
+  assert.equal(d.severity, 'warning', 'the failure itself is already an error; this only explains it');
+  assert.match(d.message, /5 x validationFailed: InvalidOperation: Line item has invalid product variant identification information \(for example BV0\)/);
+  assert.match(d.message, /1 x validationFailed: InvalidField: customerEmail is not valid \(for example BV9\)/);
+  assert.ok(recorded.operationListReads.every((q) => q.limit === 20), 'the read is bounded');
+  assert.ok(r.diagnostics.some((x) => x.code === 'operations-validation-failed'), 'the counts are still reported as errors');
+});
+
+test('operation errors: nothing is read when nothing failed, and a failed read hides nothing', async () => {
+  const clean = fakeClients();
+  await runLoad(clean.clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  assert.deepEqual(clean.recorded.operationListReads, []);
+
+  const broken = fakeClients({ states: { validationFailed: 2 }, operationsError: httpError(403, 'insufficient scope') });
+  const r = await runLoad(broken.clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  assert.ok(r.diagnostics.some((x) => x.code === 'operations-validation-failed'), 'the counts stand');
+  assert.ok(!r.diagnostics.some((x) => x.code === 'operation-errors'), 'and nothing is claimed about the cause');
+});
+
+test('operation errors: a failing operation with no recorded error is said so, not skipped', async () => {
+  const { clients } = fakeClients({ states: { rejected: 1 }, failedOperations: [{ state: 'rejected', resourceKey: 'A-1' }] });
+  const r = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  assert.match(r.diagnostics.find((x) => x.code === 'operation-errors')!.message, /no error was recorded/);
 });

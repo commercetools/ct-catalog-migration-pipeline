@@ -15,7 +15,11 @@ import { stringifyArtefact } from '../model/artefact.js';
 
 export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
   mkdirSync(outDir, { recursive: true });
-  const path = join(outDir, result.executed ? 'load-result.json' : 'load-requests.json');
+  // A run restricted with --only writes beside the full run's record, not over
+  // it: the file of the whole load is what says what the project was given.
+  const suffix = result.only ? `-only-${result.only.join('+')}` : '';
+  const fileName = `${result.executed ? 'load-result' : 'load-requests'}${suffix}.json`;
+  const path = join(outDir, fileName);
 
   writeFileSync(
     path,
@@ -23,12 +27,17 @@ export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
       result.executed
         ? {
             executed: true,
+            ...(result.only ? { only: result.only } : {}),
+            ...(result.skippedOrders ? { skippedOrders: result.skippedOrders } : {}),
+            ...(result.canary ? { canary: result.canary } : {}),
             prerequisites: result.prerequisites,
             stages: result.stages,
             summaries: result.summaries,
           }
         : {
             executed: false,
+            ...(result.only ? { only: result.only } : {}),
+            ...(result.skippedOrders ? { skippedOrders: result.skippedOrders } : {}),
             // Before the request bodies, because they run before them and are
             // the part a reviewer cannot undo: a created channel stays in the
             // project whether or not the import that wanted it succeeds.
@@ -39,13 +48,16 @@ export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
               containerKey: b.containerKey,
               index: b.index,
               resourceKeys: b.resourceKeys,
+              // The one-record request that goes first in a customer or order
+              // stage: the part of the file a reviewer should look for.
+              ...(b.canary ? { canary: true } : {}),
               body: b.body,
             })),
           },
       {
         // A dry run's `load-requests.json` carries every request body, so it is
         // within a factor of the plan's size and hits the same ceiling.
-        artefact: result.executed ? 'load-result.json' : 'load-requests.json',
+        artefact: fileName,
         counts: {
           'request(s)': result.batches.batches.length,
           'resource(s)': result.batches.batches.reduce(
@@ -69,15 +81,41 @@ export function renderLoad(result: LoadResult): string[] {
   // An executed run with no stages did not simply import nothing — it was
   // stopped, and the containers listed below are what it *would* have used.
   // Saying "Load executed" over that reads as success.
-  const halted = result.executed && result.stages.length === 0;
+  // Not when there was simply nothing to send, as when --only names a stage
+  // whose orders the project already holds.
+  const nothingToSend = result.executed && result.batches.batches.length === 0;
+  const halted = result.executed && result.stages.length === 0 && !nothingToSend;
+  const stoppedAtCanary = result.canary !== undefined && !result.canary.proceeded;
 
   lines.push(
-    halted
+    stoppedAtCanary
+      ? `LOAD STOPPED at the first ${result.canary!.stage} record (${result.canary!.state}). See below.`
+      : halted
       ? 'LOAD STOPPED before the first import. See below.'
-      : result.executed
-        ? 'Load executed.'
-        : 'DRY RUN — nothing was sent. Re-run with --execute to load.',
+      : nothingToSend
+        ? 'Load executed: there was nothing to send.'
+        : result.executed
+          ? 'Load executed.'
+          : 'DRY RUN — nothing was sent. Re-run with --execute to load.',
   );
+  if (result.only) {
+    lines.push(`Restricted with --only to: ${result.only.join(', ')}. The other stages were not run.`);
+  }
+  if (!result.executed) {
+    const canaryStages = [...new Set(result.batches.batches.filter((b) => b.canary).map((b) => b.stage))];
+    if (canaryStages.length > 0) {
+      lines.push(
+        `The first ${canaryStages.join(' and ')} request holds the record(s) that show every structure of the ` +
+          'stage, usually one: on --execute the load reads their result before it sends the rest, and stops ' +
+          'there if the API refuses one.',
+      );
+    }
+  }
+  if (result.skippedOrders && result.skippedOrders.length > 0) {
+    lines.push(
+      `${result.skippedOrders.length} order(s) already in the project were not sent again (orders are create-only).`,
+    );
+  }
   lines.push('');
 
   // Platform stages first, matching the order they run in. They are reported

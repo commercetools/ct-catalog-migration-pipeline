@@ -75,8 +75,21 @@ export const TEARDOWN_KINDS = [
 
 export type TeardownKind = (typeof TEARDOWN_KINDS)[number];
 
+/** The prerequisites a load creates, besides tax categories, that teardown can remove on request. */
+export const PREREQUISITE_KINDS = ['stores', 'channels', 'customerGroups'] as const;
+export type PrerequisiteKind = (typeof PREREQUISITE_KINDS)[number];
+
+/** What teardown found of one kind a load created, and what it did about it. */
+export interface CreatedRow {
+  /** Recorded by a load of this plan, limited to keys the plan names. */
+  createdByLoad: string[];
+  /** Of those, the ones the project holds. */
+  present: string[];
+  deleted: string[];
+}
+
 export interface TeardownFailure {
-  kind: TeardownKind | 'taxCategories';
+  kind: TeardownKind | 'taxCategories' | PrerequisiteKind;
   key: string;
   reason: string;
 }
@@ -118,6 +131,11 @@ export interface TeardownResult {
    * those this run deleted. Deleted only with `removeCreatedTaxCategories`.
    */
   taxCategories: { createdByLoad: string[]; present: string[]; deleted: string[]; removing: boolean };
+  /**
+   * The stores, channels and customer groups a load of this plan created, the same
+   * way. Deleted only with `removeCreatedPrerequisites`, stores first.
+   */
+  createdPrerequisites: { removing: boolean } & Record<PrerequisiteKind, CreatedRow>;
   /** After an execute: planned resources the project still holds, per kind. */
   remaining?: Record<TeardownKind, number>;
   diagnostics: Diagnostic[];
@@ -133,6 +151,15 @@ export interface TeardownOptions {
    * method uses it.
    */
   removeCreatedTaxCategories?: boolean;
+  /** Keys a load created, per kind, as recorded by `load`. */
+  createdPrerequisites?: Partial<Record<PrerequisiteKind, string[]>>;
+  /**
+   * Also delete the stores, channels and customer groups a load of this plan
+   * created, and never one the project held before. Off by default: they are the
+   * project's once they exist, and the API refuses a delete while something uses
+   * one (a customer group with customers, a channel with inventory).
+   */
+  removeCreatedPrerequisites?: boolean;
   /** Reports on ticks what is being read or deleted. */
   progress?: Progress;
   /** In-flight deletes within one kind. */
@@ -426,6 +453,36 @@ function taxCategoryRemover(clients: Clients): Remover {
   };
 }
 
+function prerequisiteRemover(clients: Clients, kind: PrerequisiteKind): Remover {
+  const p = clients.platform;
+  const read = async (get: () => Promise<{ body: { version: number } }>): Promise<number | undefined> => {
+    try {
+      return (await get()).body.version;
+    } catch (err) {
+      if (statusOf(err) === 404) return undefined;
+      throw err;
+    }
+  };
+  switch (kind) {
+    case 'stores':
+      return {
+        fresh: (key) => read(() => p.stores().withKey({ key }).get().execute()),
+        remove: (key, version) => p.stores().withKey({ key }).delete({ queryArgs: { version } }).execute(),
+      };
+    case 'channels':
+      return {
+        fresh: (key) => read(() => p.channels().withKey({ key }).get().execute()),
+        remove: (key, version) => p.channels().withKey({ key }).delete({ queryArgs: { version } }).execute(),
+      };
+    case 'customerGroups':
+      return {
+        fresh: (key) => read(() => p.customerGroups().withKey({ key }).get().execute()),
+        remove: (key, version) =>
+          p.customerGroups().withKey({ key }).delete({ queryArgs: { version } }).execute(),
+      };
+  }
+}
+
 /** Deletes one resource. A 404 is success (already gone); a 409 is retried with a fresh version. */
 async function deleteOne(
   remover: Remover,
@@ -563,6 +620,12 @@ export async function runTeardown(
       present: [],
       deleted: [],
       removing: options.removeCreatedTaxCategories === true,
+    },
+    createdPrerequisites: {
+      removing: options.removeCreatedPrerequisites === true,
+      stores: { createdByLoad: [], present: [], deleted: [] },
+      channels: { createdByLoad: [], present: [], deleted: [] },
+      customerGroups: { createdByLoad: [], present: [], deleted: [] },
     },
     untouched: {
       channels: plan.prerequisites.channels.map((c) => c.key),
@@ -716,6 +779,32 @@ export async function runTeardown(
     }
   }
 
+  // The same for the stores, channels and customer groups a load created.
+  const plannedKeys: Record<PrerequisiteKind, Set<string>> = {
+    stores: new Set(plan.prerequisites.stores.map((x) => x.key)),
+    channels: new Set(plan.prerequisites.channels.map((x) => x.key)),
+    customerGroups: new Set(plan.prerequisites.customerGroups.map((x) => x.key)),
+  };
+  const prerequisiteRemovers = {
+    stores: prerequisiteRemover(clients, 'stores'),
+    channels: prerequisiteRemover(clients, 'channels'),
+    customerGroups: prerequisiteRemover(clients, 'customerGroups'),
+  };
+  for (const kind of PREREQUISITE_KINDS) {
+    const row = result.createdPrerequisites[kind];
+    row.createdByLoad = [...new Set(options.createdPrerequisites?.[kind] ?? [])].filter((k) =>
+      plannedKeys[kind].has(k),
+    );
+    for (const key of row.createdByLoad) {
+      try {
+        if ((await prerequisiteRemovers[kind].fresh(key)) !== undefined) row.present.push(key);
+      } catch {
+        // As for tax categories: not read is not known to be gone.
+        row.present.push(key);
+      }
+    }
+  }
+
   if (!options.execute) return result;
 
   const concurrency = options.concurrency ?? 4;
@@ -859,6 +948,25 @@ export async function runTeardown(
     }
   }
 
+  // Stores first: a store names channels, and nothing else the pipeline creates
+  // names a store. Then channels and customer groups, which only inventory and
+  // customers use, and those are gone by now: the API refuses a customer group
+  // that still has customers, and a channel that still has inventory entries.
+  if (options.removeCreatedPrerequisites) {
+    for (const kind of PREREQUISITE_KINDS) {
+      const row = result.createdPrerequisites[kind];
+      phase = `deleting ${row.present.length} ${kind} this plan's load created`;
+      for (const key of row.present) {
+        try {
+          const outcome = await deleteOne(prerequisiteRemovers[kind], key, undefined, true);
+          if (outcome === 'deleted') row.deleted.push(key);
+        } catch (err) {
+          result.failed.push({ kind, key, reason: describe(err) });
+        }
+      }
+    }
+  }
+
   // After the products: a product holding the category makes the API refuse it.
   if (options.removeCreatedTaxCategories) {
     phase = `deleting ${result.taxCategories.present.length} tax categor${result.taxCategories.present.length === 1 ? 'y' : 'ies'} this plan's load created`;
@@ -964,16 +1072,42 @@ export function renderTeardown(result: TeardownResult): string {
       );
     }
   }
+  const created = result.createdPrerequisites;
+  const kindLabel: Record<PrerequisiteKind, string> = {
+    stores: 'Stores',
+    channels: 'Channels',
+    customerGroups: 'Customer groups',
+  };
+  for (const kind of PREREQUISITE_KINDS) {
+    const row = created[kind];
+    if (row.present.length === 0) continue;
+    lines.push('');
+    if (result.executed && row.deleted.length > 0) {
+      lines.push(`${kindLabel[kind]} this plan's load created, deleted: ${row.deleted.join(', ')}`);
+    } else if (!result.executed && created.removing) {
+      lines.push(`${kindLabel[kind]} this plan's load created, would be deleted: ${row.present.join(', ')}`);
+    } else if (!created.removing) {
+      lines.push(
+        `${kindLabel[kind]} this plan's load created, still in the project: ${row.present.join(', ')}. ` +
+          'Left alone; add --include-created-prerequisites to delete them (the API refuses ' +
+          'while something uses one).',
+      );
+    }
+  }
   const u = result.untouched;
   const taxLeft = u.taxCategories.filter((k) => !t.deleted.includes(k));
-  if (u.channels.length + u.customerGroups.length + taxLeft.length + u.stores.length > 0) {
+  const leftOf = (kind: PrerequisiteKind, keys: string[]) => keys.filter((k) => !created[kind].deleted.includes(k));
+  const channelsLeft = leftOf('channels', u.channels);
+  const groupsLeft = leftOf('customerGroups', u.customerGroups);
+  const storesLeft = leftOf('stores', u.stores);
+  if (channelsLeft.length + groupsLeft.length + taxLeft.length + storesLeft.length > 0) {
     lines.push('');
     lines.push("Left alone on purpose (verbatim keys, the project's own):");
     const row = (label: string, keys: string[]) => keys.length > 0 && lines.push(`  ${label}: ${keys.join(', ')}`);
-    row('channels', u.channels);
-    row('customer groups', u.customerGroups);
+    row('channels', channelsLeft);
+    row('customer groups', groupsLeft);
     row('tax categories', taxLeft);
-    row('stores', u.stores);
+    row('stores', storesLeft);
   }
   if (result.failed.length > 0) {
     lines.push('');
