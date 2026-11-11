@@ -105,8 +105,9 @@ export function renderLoad(result: LoadResult): string[] {
     const canaryStages = [...new Set(result.batches.batches.filter((b) => b.canary).map((b) => b.stage))];
     if (canaryStages.length > 0) {
       lines.push(
-        `The first ${canaryStages.join(' and ')} request holds one record: on --execute the load reads ` +
-          'its result before it sends the rest, and stops there if the API refuses it.',
+        `The first ${canaryStages.join(' and ')} request holds the record(s) that show every structure of the ` +
+          'stage, usually one: on --execute the load reads their result before it sends the rest, and stops ' +
+          'there if the API refuses one.',
       );
     }
   }

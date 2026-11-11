@@ -97,6 +97,82 @@ const RESOURCE_TYPE: Record<ImportStage, ImportResourceType> = {
  */
 export const CANARY_STAGES: readonly LoadStage[] = ['customer', 'order'];
 
+/** The most records a canary request may hold. */
+export const MAX_CANARY_RECORDS = 5;
+
+/**
+ * The structure of a record: every key path it carries, with array positions
+ * collapsed (`addresses[].city`) and empty values skipped. Values are ignored on
+ * purpose: this asks which fields and nestings a record exercises, which is
+ * what the API's validation of a shape depends on, and it needs no knowledge of
+ * the API or of the mapper.
+ */
+export function structureOf(resource: unknown): Set<string> {
+  const out = new Set<string>();
+  const walk = (value: unknown, path: string): void => {
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item, `${path}[]`);
+    } else if (value !== null && typeof value === 'object') {
+      for (const [key, inner] of Object.entries(value as Record<string, unknown>)) {
+        if (inner === null || inner === undefined || inner === '') continue;
+        if (Array.isArray(inner) && inner.length === 0) continue;
+        if (typeof inner === 'object' && !Array.isArray(inner) && Object.keys(inner).length === 0) continue;
+        const next = path === '' ? key : `${path}.${key}`;
+        out.add(next);
+        walk(inner, next);
+      }
+    }
+  };
+  walk(resource, '');
+  return out;
+}
+
+/**
+ * Which records go first: the fewest that together show every key path any record
+ * of the stage has, richest first, and at most {@link MAX_CANARY_RECORDS}. Returns
+ * indexes in plan order.
+ *
+ * The plan's first record proves only its own structure. In the first live run of
+ * customers it was the one customer with no address, so it passed and the 47 with
+ * one were refused; the first order had no custom line item. Choosing by what a
+ * record carries makes the first request as informative as the stage allows, and
+ * in practice one record is enough: a record that has every optional field.
+ */
+export function pickCanary(resources: unknown[]): number[] {
+  if (resources.length === 0) return [];
+  // One entry per distinct structure, in first-seen order, so a very long stage
+  // costs one pass and a handful of sets in memory.
+  const distinct = new Map<string, { index: number; paths: Set<string> }>();
+  for (let i = 0; i < resources.length; i++) {
+    const paths = structureOf(resources[i]);
+    const key = [...paths].sort().join('\u0000');
+    if (!distinct.has(key)) distinct.set(key, { index: i, paths });
+  }
+  const left = new Set<string>();
+  for (const { paths } of distinct.values()) for (const p of paths) left.add(p);
+
+  const chosen: number[] = [];
+  const pool = [...distinct.values()];
+  while (left.size > 0 && chosen.length < MAX_CANARY_RECORDS) {
+    let best: { index: number; paths: Set<string> } | undefined;
+    let bestGain = 0;
+    for (const candidate of pool) {
+      let gain = 0;
+      for (const p of candidate.paths) if (left.has(p)) gain++;
+      if (gain > bestGain) {
+        best = candidate;
+        bestGain = gain;
+      }
+    }
+    if (best === undefined) break;
+    chosen.push(best.index);
+    for (const p of best.paths) left.delete(p);
+  }
+  // Records with no key path at all cannot be told apart: the first one will do.
+  if (chosen.length === 0) return [0];
+  return chosen.sort((a, b) => a - b);
+}
+
 export interface Batch {
   stage: LoadStage;
   containerKey: string;
@@ -105,7 +181,7 @@ export interface Batch {
   /** Keys of the resources in this request, for reporting and resubmission. */
   resourceKeys: string[];
   body: ImportRequestBody;
-  /** The one-record request that goes first in a {@link CANARY_STAGES} stage. */
+  /** The request that goes first in a {@link CANARY_STAGES} stage: the records that show every structure (usually one). */
   canary?: true;
 }
 
@@ -229,12 +305,23 @@ export function planBatches(plan: MigrationPlan, config: PipelineConfig): LoadBa
         operations: part.length,
       });
 
-      // The first request of a canary stage holds one record. It is the first
-      // request of the first container: that is the one the load sends first.
+      // The first request of a canary stage holds the records that show every
+      // structure in the stage (see pickCanary): usually one. It is the first
+      // request of the first container, the one the load sends first.
       const withCanary = CANARY_STAGES.includes(stage) && partIndex === 0 && part.length > 0;
-      const groups = withCanary
-        ? [part.slice(0, 1), ...chunk(part.slice(1), perRequest)]
-        : chunk(part, perRequest);
+      let groups: typeof part[];
+      if (withCanary) {
+        const picked = new Set(pickCanary(part.map((g) => g.resource)));
+        groups = [
+          part.filter((_, i) => picked.has(i)),
+          ...chunk(
+            part.filter((_, i) => !picked.has(i)),
+            perRequest,
+          ),
+        ];
+      } else {
+        groups = chunk(part, perRequest);
+      }
       groups.forEach((group, groupIndex) => {
         index++;
         batches.push({

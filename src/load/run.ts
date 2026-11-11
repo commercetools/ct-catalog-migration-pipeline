@@ -119,7 +119,10 @@ export interface LoadResult {
 /** What the one-record first request of a stage came back as. */
 export interface CanaryOutcome {
   stage: LoadStage;
+  /** The record that decided the verdict, or the first one when all agreed. */
   resourceKey: string;
+  /** Every record of the first request. */
+  resourceKeys: string[];
   /** The operation's state, or why it could not be read. */
   state: string;
   /** Whether the rest of the stage was sent. */
@@ -1268,29 +1271,32 @@ async function judgeCanary(
   timeoutMs: number,
   sleep: (ms: number) => Promise<void>,
 ): Promise<{ outcome: CanaryOutcome; diagnostics: Diagnostic[] }> {
-  const resourceKey = batch.resourceKeys[0];
+  const keys = batch.resourceKeys;
+  // One record is "the first record"; several are one request that together shows
+  // every structure of the stage (see pickCanary).
+  const named = (key: string) =>
+    keys.length === 1
+      ? `first ${stage} record (${key})`
+      : `first ${stage} request (${keys.length} records that together show every structure of the stage; ${key} among them)`;
   const later = `the rest of the ${stage} stage was not sent, and no later stage ran`;
-  const stop = (state: string, message: string, errors?: string[]) => ({
-    outcome: { stage, resourceKey, state, proceeded: false, ...(errors ? { errors } : {}) },
+  const resend = `Fix the cause and resend with \`load --only ${stage} --execute\`.`;
+  const stop = (key: string, state: string, message: string, errors?: string[]) => ({
+    outcome: {
+      stage,
+      resourceKey: key,
+      resourceKeys: keys,
+      state,
+      proceeded: false,
+      ...(errors ? { errors } : {}),
+    },
     diagnostics: [{ severity: 'error' as const, code: 'canary-stopped', message: `${message} ${later}.` }],
   });
-  const resend = `Fix the cause and resend with \`load --only ${stage} --execute\`.`;
 
   if (pushed.failed.length > 0) {
-    const reason = pushed.failed[0].message;
     return stop(
+      keys[0],
       'rejected',
-      `The first ${stage} request (one record, ${resourceKey}) was rejected: ${reason}. ${resend} Nothing was imported from it;`,
-    );
-  }
-
-  const status = statuses[0];
-  const id = status?.operationId;
-  if (status === undefined || id === undefined) {
-    return stop(
-      'unreadable',
-      `The Import API gave no operation id for the first ${stage} record (${resourceKey}), so its result cannot be read.` +
-        ` Read the container's operations, then resend with \`load --only ${stage} --execute\`;`,
+      `The ${named(keys[0])} was rejected: ${pushed.failed[0].message}. ${resend} Nothing was imported from it;`,
     );
   }
 
@@ -1299,61 +1305,99 @@ async function judgeCanary(
       ? list.map((e) => `${e.code}${e.message ? `: ${e.message}` : ''}`.slice(0, 600))
       : undefined;
 
-  let state = status.state as string;
-  let errors = errorsOf(status.errors);
-  let unresolved: ImportOperation['unresolvedReferences'];
+  interface Watched {
+    key: string;
+    id?: string;
+    state: string;
+    errors?: string[];
+    unresolved?: ImportOperation['unresolvedReferences'];
+  }
+  // The statuses come back in the order of the resources in the request.
+  const watched: Watched[] = keys.map((key, i) => ({
+    key,
+    id: statuses[i]?.operationId,
+    state: (statuses[i]?.state as string | undefined) ?? 'unreadable',
+    errors: errorsOf(statuses[i]?.errors),
+  }));
+
+  const noId = watched.find((w) => w.id === undefined);
+  if (noId) {
+    return stop(
+      noId.key,
+      'unreadable',
+      `The Import API gave no operation id for the ${named(noId.key)}, so its result cannot be read.` +
+        ` Read the container's operations, then resend with \`load --only ${stage} --execute\`;`,
+    );
+  }
+
   let waitedMs = 0;
   let delay = 500;
   for (;;) {
-    if (state !== 'processing') break;
+    const pending = watched.filter((w) => w.state === 'processing');
+    if (pending.length === 0) break;
     if (waitedMs >= timeoutMs) {
       return stop(
+        pending[0].key,
         'processing',
-        `The first ${stage} record (${resourceKey}) was still processing after ${Math.round(timeoutMs / 1000)} seconds. ` +
-          `Check its operation (${id}) and resend with \`load --only ${stage} --execute\` once it has settled;`,
+        `The ${named(pending[0].key)} was still processing after ${Math.round(timeoutMs / 1000)} seconds. ` +
+          `Check its operation (${pending[0].id}) and resend with \`load --only ${stage} --execute\` once it has settled;`,
       );
     }
     await sleep(delay);
     waitedMs += delay;
     delay = Math.min(delay * 2, 5_000);
-    try {
-      const op = (await clients.importApi.importOperations().withIdValue({ id }).get().execute()).body;
-      state = op.state as string;
-      errors = errorsOf(op.errors) ?? errors;
-      unresolved = op.unresolvedReferences;
-    } catch (err) {
-      return stop(
-        'unreadable',
-        `The result of the first ${stage} record (${resourceKey}) could not be read (${describeError(err)}). ` +
-          `Its operation is ${id}; resend with \`load --only ${stage} --execute\` once it is readable;`,
-      );
+    for (const w of pending) {
+      try {
+        const op = (await clients.importApi.importOperations().withIdValue({ id: w.id! }).get().execute()).body;
+        w.state = op.state as string;
+        w.errors = errorsOf(op.errors) ?? w.errors;
+        w.unresolved = op.unresolvedReferences;
+      } catch (err) {
+        return stop(
+          w.key,
+          'unreadable',
+          `The result of the ${named(w.key)} could not be read (${describeError(err)}). ` +
+            `Its operation is ${w.id}; resend with \`load --only ${stage} --execute\` once it is readable;`,
+        );
+      }
     }
   }
 
-  if (state === 'imported') {
-    return { outcome: { stage, resourceKey, state, proceeded: true }, diagnostics: [] };
+  const open = (w: Watched) => w.state === 'unresolved' || w.state === 'waitForMasterVariant';
+  const refused = watched.filter((w) => w.state !== 'imported' && !open(w));
+  if (refused.length > 0) {
+    const w = refused[0];
+    const others = refused.length > 1 ? ` (${refused.length} of its ${keys.length} records were refused)` : '';
+    return stop(
+      w.key,
+      w.state,
+      `The ${named(w.key)} was refused by the Import API (${w.state})${others}` +
+        `${w.errors ? `: ${w.errors.join('; ')}` : ''}. ${resend}`,
+      w.errors,
+    );
   }
-  if (state === 'unresolved' || state === 'waitForMasterVariant') {
-    const refs = (unresolved ?? []).map((u) => `${u.typeId} ${u.key}`).join(', ');
+
+  const waiting = watched.filter(open);
+  if (waiting.length > 0) {
+    const w = waiting[0];
+    const refs = (w.unresolved ?? []).map((u) => `${u.typeId} ${u.key}`).join(', ');
     return {
-      outcome: { stage, resourceKey, state, proceeded: true },
+      outcome: { stage, resourceKey: w.key, resourceKeys: keys, state: w.state, proceeded: true },
       diagnostics: [
         {
           severity: 'warning',
           code: 'canary-unresolved',
           message:
-            `The first ${stage} record (${resourceKey}) is ${state}${refs ? `, waiting for ${refs}` : ''}. ` +
+            `The ${named(w.key)} is ${w.state}${refs ? `, waiting for ${refs}` : ''}. ` +
             'The API accepted its shape; the rest was sent, and `--wait` and `verify` show whether the reference arrives.',
         },
       ],
     };
   }
-  return stop(
-    state,
-    `The first ${stage} record (${resourceKey}) was refused by the Import API (${state})` +
-      `${errors ? `: ${errors.join('; ')}` : ''}. ${resend}`,
-    errors,
-  );
+  return {
+    outcome: { stage, resourceKey: keys[0], resourceKeys: keys, state: 'imported', proceeded: true },
+    diagnostics: [],
+  };
 }
 
 async function pushStage(
