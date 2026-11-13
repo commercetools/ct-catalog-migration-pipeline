@@ -24,8 +24,8 @@
  * it exits) can read it while the command runs.
  */
 
-import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { appendPrivateFile, makePrivateDir } from '../model/private-file.js';
 
 export interface Activity {
   /** What a tick says about this activity. Called on ticks only, so it may read live counters. */
@@ -102,8 +102,8 @@ export function createProgress(options: ProgressOptions): Progress {
   const toFile = (line: string): void => {
     if (options.file === undefined) return;
     try {
-      mkdirSync(dirname(options.file), { recursive: true });
-      appendFileSync(options.file, `${new Date(now()).toISOString()}  ${line}\n`);
+      makePrivateDir(dirname(options.file));
+      appendPrivateFile(options.file, `${new Date(now()).toISOString()}  ${line}\n`);
     } catch {
       // Progress must never be the reason a command fails.
     }

@@ -174,8 +174,13 @@ has decided yet; `false` is the decision not to migrate that entity, and
 `validate` then ignores its records with one warning. An order naming a customer
 who is not migrated is refused: make it a guest order instead. The refusal is what
 stops an adapter that emits customers nobody agreed to move at the first stage.
-With the switch on, `plan.json` and `out/load-requests.json` hold personal data; keep
-`out/` out of version control, as the layout above does, and do not share it.
+With the switch on, the feed, `plan.json` and the `load-requests` and `load-result`
+files hold personal data. The pipeline writes every file in `out/` readable by its
+owner only (`0600`), and an `out/` it creates is `0700`; a directory that already
+exists keeps its mode. Keep them out of version control (the engagement's
+`.gitignore` above), do not share them, and delete them once the migration no
+longer needs them: a clean `verify` lists where they are. `teardown` reads
+`plan.json`, so that one stays until any trial load is removed.
 
 The skill that accompanies this pipeline conducts these as an interview and
 writes the config from the answers, which is the intended path. The template

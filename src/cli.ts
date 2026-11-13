@@ -8,9 +8,10 @@
  */
 
 import { fileURLToPath } from 'node:url';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { writePrivateFile } from './model/private-file.js';
 
 import { loadConfig, outDirFor } from './model/config.js';
 import { hasErrors, validateFeed, type Diagnostic } from './contract/validate.js';
@@ -20,6 +21,7 @@ import { buildPlan } from './map/plan.js';
 import { writePlan } from './map/report.js';
 import { auditPlan } from './audit/gate.js';
 import { loadPlan } from './audit/load-plan.js';
+import { personalDataReminder } from './verify/personal-data.js';
 import { checkPlanFreshness, feedDigest } from './contract/digest.js';
 import {
   attributeDefinitionsOf,
@@ -943,7 +945,7 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
 
   if (opts.execute) {
     const file = join(outDirFor(opts), 'teardown-result.json');
-    writeFileSync(file, JSON.stringify(result, null, 2) + '\n');
+    writePrivateFile(file, JSON.stringify(result, null, 2) + '\n');
     console.log('');
     console.log(`Written: ${file}`);
   }
@@ -951,7 +953,7 @@ async function runTeardownCommand(opts: Opts): Promise<number> {
 }
 
 async function runVerify(opts: Opts): Promise<number> {
-  const { config, configPath } = loadConfig(resolve(opts.config));
+  const { config, configPath, feedDir } = loadConfig(resolve(opts.config));
 
   let credentials;
   try {
@@ -1091,6 +1093,11 @@ async function runVerify(opts: Opts): Promise<number> {
         ? 'Verified. The project matches the plan.'
         : `Verified with ${warnings.length} warning(s). Nothing is missing or wrong.`,
     );
+    const reminder = personalDataReminder(result.checked, feedDir, outDirFor(opts));
+    if (reminder.length > 0) {
+      console.log('');
+      for (const line of reminder) console.log(line);
+    }
     return 0;
   }
 

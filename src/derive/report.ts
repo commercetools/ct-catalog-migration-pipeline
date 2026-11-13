@@ -9,8 +9,8 @@
  *   the point of the whole stage. Nobody reviews a JSON file.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { makePrivateDir, writePrivateFile } from '../model/private-file.js';
 
 import {
   attributeDefinitionsOf,
@@ -26,16 +26,16 @@ export interface WrittenArtefacts {
 }
 
 export function writeDerived(outDir: string, model: DerivedModel): WrittenArtefacts {
-  mkdirSync(outDir, { recursive: true });
+  makePrivateDir(outDir);
 
   const productTypesPath = join(outDir, 'product-types.json');
-  writeFileSync(
+  writePrivateFile(
     productTypesPath,
     JSON.stringify([...model.productTypes.values()], null, 2) + '\n',
   );
 
   const decisionsPath = join(outDir, 'decisions.json');
-  writeFileSync(decisionsPath, JSON.stringify(model.decisions, null, 2) + '\n');
+  writePrivateFile(decisionsPath, JSON.stringify(model.decisions, null, 2) + '\n');
 
   const reviewPath = writeReview(outDir, model, model.decisions, 'derive');
   return reviewPath
@@ -63,9 +63,9 @@ export function writeReview(
   const needsReview = decisions.filter((d) => d.review || d.lossy || d.irreversible);
   if (needsReview.length === 0) return undefined;
 
-  mkdirSync(outDir, { recursive: true });
+  makePrivateDir(outDir);
   const reviewPath = join(outDir, 'MODEL-REVIEW.md');
-  writeFileSync(reviewPath, renderReview(model, needsReview, stage));
+  writePrivateFile(reviewPath, renderReview(model, needsReview, stage));
   return reviewPath;
 }
 
