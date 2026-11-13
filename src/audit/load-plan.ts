@@ -14,6 +14,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { LOAD_ORDER, type MigrationPlan } from '../model/plan.js';
+import { describeJsonError } from '../model/redact.js';
 
 export function loadPlan(outDir: string): MigrationPlan {
   const planPath = join(outDir, 'plan.json');
@@ -47,7 +48,7 @@ export function loadPlan(outDir: string): MigrationPlan {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`${planPath} is not valid JSON: ${(err as Error).message}`);
+    throw new Error(`${planPath}: ${describeJsonError(err)}`);
   }
 
   const plan = parsed as Partial<MigrationPlan>;

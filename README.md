@@ -32,12 +32,14 @@ echo "$tag"            # look at it before going on
 mkdir ct-catalog-migration-pipeline && cd ct-catalog-migration-pipeline
 curl -fsSL "https://github.com/commercetools/ct-catalog-migration-pipeline/archive/refs/tags/$tag.tar.gz" \
   | tar -xz --strip-components=1
-npm ci
+npm ci --ignore-scripts
 npm test               # no network, no credentials, a few seconds
 ```
 
 Without the GitHub CLI, take the tag from the releases page. Node 22 or newer.
-No global install; every command runs through `npm run`.
+No global install; every command runs through `npm run`. `--ignore-scripts`
+keeps the install scripts of dependencies from running on your machine; none of
+them needs one, and CI installs the same way.
 
 **What you have is plain files.** There is no `origin` to detach and no embedded
 repository to ignore, so commit the directory with the engagement and change it
@@ -88,12 +90,30 @@ The engagement lives **beside** this repo, not inside it:
     migration.config.json            written from the step-0 interview
     DECISIONS.md                     append-only record of what was decided
     adapter/                         the only code written per engagement
-    feed/                            generated NDJSON — regenerated, disposable
-    out/                             pipeline artefacts — regenerated, gitignored
+    feed/                            generated NDJSON — regenerated, never committed
+    out/                             pipeline artefacts — regenerated, never committed
 ```
 
 `--out` defaults to `out` **relative to the config**, so pointing `--config` at
 the engagement writes the artefacts there.
+
+**Give the engagement its own `.gitignore` before the first commit.** This repo's
+`.gitignore` covers only its own folder: its `.env` files, `node_modules/`, and an
+`out/` at its root. The engagement's `out/` sits next to the config, outside it.
+Once customers or orders are in scope, `source-export/`, the feed,
+`out/plan.json` and `out/load-requests.json` hold names, email addresses and
+postal addresses, and a `git add .` in the engagement root would commit them.
+Start the engagement's `.gitignore` at `<engagement-root>/.gitignore` as:
+
+```text
+/source-export/
+/migration/feed/
+/migration/out/
+```
+
+Anchor the entries with the leading `/`. A bare `out/` would also match the audit
+fixtures this repo commits at `fixtures/*/out/plan.json`, which `npm test` reads,
+so a copy committed without them fails its own tests for the next person.
 
 ### Progress
 
@@ -154,8 +174,17 @@ has decided yet; `false` is the decision not to migrate that entity, and
 `validate` then ignores its records with one warning. An order naming a customer
 who is not migrated is refused: make it a guest order instead. The refusal is what
 stops an adapter that emits customers nobody agreed to move at the first stage.
-With the switch on, `plan.json` and `out/load-requests.json` hold personal data; keep
-`out/` out of version control, as the layout above does, and do not share it.
+With the switch on, the feed, `plan.json` and the `load-requests` and `load-result`
+files hold personal data. The pipeline writes every file in `out/` readable by its
+owner only (`0600`), and an `out/` it creates is `0700`; a directory that already
+exists keeps its mode. Keep them out of version control (the engagement's
+`.gitignore` above), do not share them, and delete them once the migration no
+longer needs them: a clean `verify` lists where they are. `teardown` reads
+`plan.json`, so that one stays until any trial load is removed.
+Diagnostics name records by key, never by email: a feed line that is not valid
+JSON is reported by line and column without the parser's quote of it, and an
+email address in an API error message is replaced by `[email]`, in the output
+and in `load-result.json`.
 
 The skill that accompanies this pipeline conducts these as an interview and
 writes the config from the answers, which is the intended path. The template

@@ -32,6 +32,7 @@ import type { MigrationPlan } from '../model/plan.js';
 import type { Diagnostic } from '../contract/validate.js';
 import type { ProjectSnapshot } from './reconcile.js';
 import { noProgress, type Progress } from '../progress/progress.js';
+import { maskEmails } from '../model/redact.js';
 
 /**
  * Keys per `key in (...)` predicate.
@@ -364,7 +365,7 @@ export async function fetchSnapshot(
 function describeError(err: unknown): string {
   const e = err as { statusCode?: number; status?: number; message?: string };
   const status = e.statusCode ?? e.status;
-  const message = e.message ?? String(err);
+  const message = maskEmails(e.message ?? String(err));
   if (status === 403) {
     return `${message} — the API Client lacks a read scope.`;
   }

@@ -2514,3 +2514,37 @@ test('operation errors: a failing operation with no recorded error is said so, n
   const r = await runLoad(clients, planWithOrders(['A-1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
   assert.match(r.diagnostics.find((x) => x.code === 'operation-errors')!.message, /no error was recorded/);
 });
+
+// ---------------------------------------------------------------------------
+// No email address in what load prints or saves
+//
+// Diagnostics and load-result.json are what gets pasted into tickets. An API error
+// can repeat the value it refused, and a duplicate customer email is the likeliest
+// one; the record is still named by its key.
+// ---------------------------------------------------------------------------
+
+test('redaction: an email in a refused request\'s errors is masked, in the diagnostic and in the result', async () => {
+  const { clients } = fakeClients({
+    failResourceKey: 'c3',
+    failBody: { errors: [{ code: 'DuplicateField', message: "A duplicate value '\"ada.lovelace@example.com\"' exists for field 'email'." }] },
+  });
+  const r = await runLoad(clients, planWithCustomers([person('c1'), person('c2'), person('c3')]), config(), {
+    execute: true,
+    only: ['customer'],
+    sleep: noSleep,
+  });
+  const d = r.diagnostics.find((x) => x.code === 'import-request-failed')!;
+  assert.match(d.message, /DuplicateField: A duplicate value '"\[email\]"' exists for field 'email'/);
+  assert.doesNotMatch(JSON.stringify(r), /ada\.lovelace@example\.com/, 'not in anything load returns, load-result.json included');
+});
+
+test('redaction: an email in a failing operation\'s errors is masked in the sample', async () => {
+  const failing = [
+    { state: 'validationFailed', resourceKey: 'BV1', errors: [{ code: 'InvalidField', message: "customerEmail 'grace@example.org' is not valid" }] },
+  ];
+  const { clients } = fakeClients({ states: { validationFailed: 1 }, failedOperations: failing });
+  const r = await runLoad(clients, planWithOrders(['BV1']), config(), { execute: true, only: ['order'], wait: true, sleep: noSleep });
+  const d = r.diagnostics.find((x) => x.code === 'operation-errors')!;
+  assert.match(d.message, /InvalidField: customerEmail '\[email\]' is not valid \(for example BV1\)/);
+  assert.doesNotMatch(JSON.stringify(r), /grace@example\.org/);
+});

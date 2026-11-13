@@ -6,7 +6,7 @@
 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -335,6 +335,20 @@ test('plan: customers survive the round trip through plan.json', () => {
   assert.deepEqual(back.customers, r.plan.customers);
   assert.equal(auditPlan(back, r.config).checked.customers, 1);
 });
+
+test(
+  'plan: the out/ it creates and the files it writes are readable by their owner only',
+  { skip: process.platform === 'win32' ? 'no POSIX file modes on Windows' : false },
+  () => {
+    // plan.json now holds names, emails and addresses.
+    const out = join(mkdtempSync(join(tmpdir(), 'ct-customers-out-')), 'migration', 'out');
+    writePlan(out, plan([...CATALOG, GROUP, ADA]).plan, false);
+    assert.equal(statSync(out).mode & 0o777, 0o700);
+    for (const file of ['plan.json', 'key-map.json', 'decisions.json']) {
+      assert.equal(statSync(join(out, file)).mode & 0o777, 0o600, file);
+    }
+  },
+);
 
 test('plan: a catalog-only plan.json carries no customers key', () => {
   const out = mkdtempSync(join(tmpdir(), 'ct-customers-out-'));
