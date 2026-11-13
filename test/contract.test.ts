@@ -92,6 +92,10 @@ test('broken-schema: parse and schema defects are caught, integrity is deferred'
   assert.equal(r.rejected, 3);
   assert.equal(hasErrors(r.diagnostics), true);
 
+  // The parser's own message can quote the line, and a feed line holds personal data.
+  const malformed = r.diagnostics.find((d) => d.code === 'malformed-json')!;
+  assert.match(malformed.message, /^Not valid JSON( at column \d+)?\.$/);
+
   // The readable-message fix: a bad locale tag must not report failures against
   // every branch of the schema's oneOf.
   const localeError = r.diagnostics.find(

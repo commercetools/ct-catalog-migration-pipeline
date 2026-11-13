@@ -181,6 +181,10 @@ exists keeps its mode. Keep them out of version control (the engagement's
 `.gitignore` above), do not share them, and delete them once the migration no
 longer needs them: a clean `verify` lists where they are. `teardown` reads
 `plan.json`, so that one stays until any trial load is removed.
+Diagnostics name records by key, never by email: a feed line that is not valid
+JSON is reported by line and column without the parser's quote of it, and an
+email address in an API error message is replaced by `[email]`, in the output
+and in `load-result.json`.
 
 The skill that accompanies this pipeline conducts these as an interview and
 writes the config from the answers, which is the intended path. The template
