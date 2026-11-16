@@ -161,7 +161,13 @@ export function loadCredentials(
     );
   }
 
-  if (region && !REGIONS.includes(region as Region) && !get('CTP_API_URL')) {
+  // The region is pasted into every host that is not given explicitly, so it is
+  // checked whenever one of them is derived from it. Checking it only when
+  // CTP_API_URL is unset let an unchecked value build the auth URL, where the
+  // client secret is sent: a stray '@' or '#' in it moves the host.
+  const regionBuildsAHost =
+    !get('CTP_AUTH_URL') || !get('CTP_API_URL') || !get('CTP_IMPORT_URL');
+  if (region && !REGIONS.includes(region as Region) && regionBuildsAHost) {
     throw new MissingCredentialsError(
       `CTP_REGION '${region}' is not a known region. Expected one of:\n` +
         REGIONS.map((r) => `  ${r}`).join('\n') +
@@ -178,6 +184,14 @@ export function loadCredentials(
     );
   }
 
+  for (const [name, url] of [
+    ['CTP_AUTH_URL', authUrl!],
+    ['CTP_API_URL', apiUrl!],
+    ['CTP_IMPORT_URL', importUrl!],
+  ] as const) {
+    assertSecureUrl(name, url);
+  }
+
   return {
     projectKey: projectKey!,
     clientId: clientId!,
@@ -187,6 +201,30 @@ export function loadCredentials(
     importUrl: stripSlash(importUrl!),
     ...(get('CTP_SCOPES') ? { scopes: get('CTP_SCOPES') } : {}),
   };
+}
+
+/** Hosts where plain http stays on this machine, for a local mock of the APIs. */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * The client ID and secret go to the auth URL in a Basic auth header, and the
+ * token to the other two on every request, so none of them may travel in
+ * plain text. A loopback host is the one exception: nothing leaves the machine.
+ */
+function assertSecureUrl(name: string, url: string): void {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new MissingCredentialsError(`${name} '${url}' is not a URL.`);
+  }
+  if (parsed.protocol === 'https:') return;
+  if (parsed.protocol === 'http:' && LOOPBACK.has(parsed.hostname)) return;
+  throw new MissingCredentialsError(
+    `${name} '${url}' does not use https. The client secret and the access token ` +
+      'are sent to these hosts, and over plain http anyone on the network path can ' +
+      'read them. Use the https URL.',
+  );
 }
 
 function stripSlash(url: string): string {
@@ -200,12 +238,37 @@ function deriveImportUrl(apiUrl: string | undefined): string | undefined {
   return match ? `${match[1]}import.${match[2]}` : undefined;
 }
 
+/**
+ * A warning per host outside commercetools.com. Not a refusal: a proxy in front
+ * of the APIs is a legitimate setup. But the client secret goes to the auth
+ * host, so a host nobody chose has to be visible before anything is sent, and a
+ * mistyped or tampered `.env` is the realistic way to get one.
+ */
+export function hostWarnings(credentials: Credentials): string[] {
+  const hosts: [string, string][] = [
+    ['auth', credentials.authUrl],
+    ['api', credentials.apiUrl],
+    ['import', credentials.importUrl],
+  ];
+  return hosts
+    .map(([label, url]) => [label, new URL(url).hostname] as const)
+    .filter(([, host]) => host !== 'commercetools.com' && !host.endsWith('.commercetools.com'))
+    .map(
+      ([label, host]) =>
+        `warn     the ${label} host ${host} is not under commercetools.com` +
+        (label === 'auth' ? '; the client secret is sent there' : '') +
+        '. Check it is the proxy or host you mean.',
+    );
+}
+
 /** Never log a secret; this is what goes in diagnostics. */
 export function describeCredentials(credentials: Credentials): string {
   return [
     `project  ${credentials.projectKey}`,
+    `auth     ${credentials.authUrl}`,
     `api      ${credentials.apiUrl}`,
     `import   ${credentials.importUrl}`,
     `client   ${credentials.clientId.slice(0, 4)}…${credentials.clientId.slice(-2)}`,
+    ...hostWarnings(credentials),
   ].join('\n');
 }

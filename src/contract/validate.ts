@@ -70,6 +70,7 @@ import {
   requiredCatalogModel,
 } from '../model/limits.js';
 import { noProgress, pollEvery, type Progress } from '../progress/progress.js';
+import { describeJsonError } from '../model/redact.js';
 
 export interface Diagnostic {
   severity: 'error' | 'warning';
@@ -221,7 +222,7 @@ export function validateFeed(
         diagnostics.push({
           severity: 'error',
           code: 'malformed-json',
-          message: `Not valid JSON: ${(err as Error).message}`,
+          message: describeJsonError(err),
           file,
           line,
         });

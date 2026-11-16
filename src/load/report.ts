@@ -6,22 +6,22 @@
  * byte for byte, not a summary of it.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { makePrivateDir, writePrivateFile } from '../model/private-file.js';
 
 import { recordCreatedPrerequisites } from './created.js';
 import type { LoadResult } from './run.js';
 import { stringifyArtefact } from '../model/artefact.js';
 
 export function writeLoadArtefacts(outDir: string, result: LoadResult): string {
-  mkdirSync(outDir, { recursive: true });
+  makePrivateDir(outDir);
   // A run restricted with --only writes beside the full run's record, not over
   // it: the file of the whole load is what says what the project was given.
   const suffix = result.only ? `-only-${result.only.join('+')}` : '';
   const fileName = `${result.executed ? 'load-result' : 'load-requests'}${suffix}.json`;
   const path = join(outDir, fileName);
 
-  writeFileSync(
+  writePrivateFile(
     path,
     stringifyArtefact(
       result.executed

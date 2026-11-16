@@ -6,8 +6,8 @@
  * and it should survive even if the plan is regenerated.
  */
 
-import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { makePrivateDir, writePrivateFile } from '../model/private-file.js';
 
 import {
   indexVariants,
@@ -31,7 +31,7 @@ export function writePlan(
   plan: MigrationPlan,
   includePayloads: boolean,
 ): PlanArtefacts {
-  mkdirSync(outDir, { recursive: true });
+  makePrivateDir(outDir);
 
   const planPath = join(outDir, 'plan.json');
   const variantCount = plan.products.reduce(
@@ -39,7 +39,7 @@ export function writePlan(
       n + (product.masterVariant ? 1 : 0) + (product.variants?.length ?? 0),
     plan.variants?.length ?? 0,
   );
-  writeFileSync(
+  writePrivateFile(
     planPath,
     stringifyArtefact(
       {
@@ -79,10 +79,10 @@ export function writePlan(
   );
 
   const keyMapPath = join(outDir, 'key-map.json');
-  writeFileSync(keyMapPath, JSON.stringify(plan.keyMap, null, 2) + '\n');
+  writePrivateFile(keyMapPath, JSON.stringify(plan.keyMap, null, 2) + '\n');
 
   const decisionsPath = join(outDir, 'decisions.json');
-  writeFileSync(decisionsPath, JSON.stringify(plan.decisions, null, 2) + '\n');
+  writePrivateFile(decisionsPath, JSON.stringify(plan.decisions, null, 2) + '\n');
 
   if (!includePayloads) return { planPath, keyMapPath, decisionsPath };
 
@@ -90,7 +90,7 @@ export function writePlan(
   // catches things a summary cannot — a price in the wrong currency, an
   // attribute that never got a value, a slug nobody would want in a URL.
   const payloadsPath = join(outDir, 'sample-payloads.md');
-  writeFileSync(payloadsPath, renderPayloads(plan));
+  writePrivateFile(payloadsPath, renderPayloads(plan));
   return { planPath, keyMapPath, decisionsPath, payloadsPath };
 }
 

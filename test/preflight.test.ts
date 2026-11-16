@@ -28,6 +28,7 @@ import type { Project, ProjectUpdate } from '@commercetools/platform-sdk';
 
 import {
   describeCredentials,
+  hostWarnings,
   loadCredentials,
   MissingCredentialsError,
   parseEnvFile,
@@ -244,6 +245,108 @@ test('credentials: an unknown region is rejected with the valid list', () => {
       }),
     /not a known region[\s\S]*europe-west1\.gcp/,
   );
+});
+
+const BASE = { CTP_PROJECT_KEY: 'p', CTP_CLIENT_ID: 'i', CTP_CLIENT_SECRET: 's', CTP_AMBIENT_OK: '1' };
+
+test('credentials: an unknown region is refused when it builds the auth host, even with CTP_API_URL set', () => {
+  // The check used to be skipped whenever CTP_API_URL was set, while the region
+  // still built the auth URL, the one the client secret is sent to. A stray
+  // '@' or '#' in it moves that host.
+  assert.throws(
+    () =>
+      loadCredentials('/nonexistent', {
+        ...BASE,
+        CTP_REGION: 'x@proxy.example#',
+        CTP_API_URL: 'https://api.europe-west1.gcp.commercetools.com',
+      }),
+    /not a known region/,
+  );
+});
+
+test('credentials: an unknown region is ignored when all three hosts are explicit', () => {
+  // Nothing is derived from it, which is what the refusal message tells the reader to do.
+  const c = loadCredentials('/nonexistent', {
+    ...BASE,
+    CTP_REGION: 'somewhere-new.gcp',
+    CTP_AUTH_URL: 'https://auth.somewhere-new.gcp.commercetools.com',
+    CTP_API_URL: 'https://api.somewhere-new.gcp.commercetools.com',
+    CTP_IMPORT_URL: 'https://import.somewhere-new.gcp.commercetools.com',
+  });
+  assert.equal(c.authUrl, 'https://auth.somewhere-new.gcp.commercetools.com');
+});
+
+test('credentials: a plain-http host is refused, naming the variable', () => {
+  for (const name of ['CTP_AUTH_URL', 'CTP_API_URL', 'CTP_IMPORT_URL'] as const) {
+    const env: Record<string, string> = {
+      ...BASE,
+      CTP_AUTH_URL: 'https://auth.europe-west1.gcp.commercetools.com',
+      CTP_API_URL: 'https://api.europe-west1.gcp.commercetools.com',
+      CTP_IMPORT_URL: 'https://import.europe-west1.gcp.commercetools.com',
+    };
+    env[name] = env[name].replace('https:', 'http:');
+    assert.throws(() => loadCredentials('/nonexistent', env), new RegExp(`${name} '[^']+' does not use https`));
+  }
+});
+
+test('credentials: an import host derived from a plain-http API host is refused too', () => {
+  assert.throws(
+    () =>
+      loadCredentials('/nonexistent', {
+        ...BASE,
+        CTP_AUTH_URL: 'https://auth.europe-west1.gcp.commercetools.com',
+        CTP_API_URL: 'http://api.europe-west1.gcp.commercetools.com',
+      }),
+    /does not use https/,
+  );
+});
+
+test('credentials: plain http to a loopback host is allowed, for a local mock', () => {
+  // Nothing leaves the machine.
+  for (const host of ['localhost:8080', '127.0.0.1:8080', '[::1]:8080']) {
+    const c = loadCredentials('/nonexistent', {
+      ...BASE,
+      CTP_AUTH_URL: `http://${host}`,
+      CTP_API_URL: `http://${host}`,
+      CTP_IMPORT_URL: `http://${host}`,
+    });
+    assert.equal(c.authUrl, `http://${host}`);
+  }
+});
+
+test('credentials: a value that is not a URL is refused', () => {
+  assert.throws(
+    () =>
+      loadCredentials('/nonexistent', {
+        ...BASE,
+        CTP_AUTH_URL: 'auth.europe-west1.gcp.commercetools.com',
+        CTP_API_URL: 'https://api.europe-west1.gcp.commercetools.com',
+      }),
+    /CTP_AUTH_URL 'auth\.europe-west1\.gcp\.commercetools\.com' is not a URL/,
+  );
+});
+
+test('credentials: no warning for commercetools hosts', () => {
+  const c = loadCredentials('/nonexistent', { ...BASE, CTP_REGION: 'europe-west1.gcp' });
+  assert.deepEqual(hostWarnings(c), []);
+});
+
+test('credentials: a host outside commercetools.com is warned about, not refused', () => {
+  // A proxy is legitimate; a host nobody chose has to be visible before the secret goes there.
+  const c = loadCredentials('/nonexistent', {
+    ...BASE,
+    CTP_CLIENT_SECRET: 'distinctive-secret-value',
+    CTP_AUTH_URL: 'https://auth.proxy.example',
+    CTP_API_URL: 'https://api.europe-west1.gcp.commercetools.com',
+    CTP_IMPORT_URL: 'https://import.europe-west1.gcp.commercetools.com',
+  });
+  const warnings = hostWarnings(c);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /auth host auth\.proxy\.example is not under commercetools\.com; the client secret is sent there/);
+  const described = describeCredentials(c);
+  assert.match(described, /auth {5}https:\/\/auth\.proxy\.example/);
+  assert.match(described, /warn {5}the auth host/);
+  assert.ok(!described.includes('distinctive-secret-value'), 'never the secret itself');
 });
 
 test('credentials: trailing slashes are stripped so paths do not double up', () => {

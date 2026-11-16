@@ -14,8 +14,9 @@
  * and the API still refuses a delete while something uses it.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { makePrivateDir, writePrivateFile } from '../model/private-file.js';
 
 import type { LoadResult } from './run.js';
 
@@ -80,6 +81,6 @@ export function recordCreatedPrerequisites(outDir: string, result: LoadResult): 
   }
   if (!grew) return;
 
-  mkdirSync(outDir, { recursive: true });
-  writeFileSync(join(outDir, CREATED_PREREQUISITES_FILE), JSON.stringify(merged, null, 2) + '\n');
+  makePrivateDir(outDir);
+  writePrivateFile(join(outDir, CREATED_PREREQUISITES_FILE), JSON.stringify(merged, null, 2) + '\n');
 }

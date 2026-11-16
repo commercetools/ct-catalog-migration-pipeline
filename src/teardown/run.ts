@@ -41,6 +41,7 @@ import { planBatches } from '../load/batches.js';
 import { chunk, fetchSnapshot, KEYS_PER_QUERY } from '../verify/snapshot.js';
 import type { ProjectSnapshot } from '../verify/reconcile.js';
 import { noProgress, type Progress } from '../progress/progress.js';
+import { maskEmails } from '../model/redact.js';
 
 const PROGRESS_LABELS: Record<TeardownKind, string> = {
   orders: 'orders',
@@ -190,7 +191,7 @@ function describe(err: unknown): string {
   const e = err as { message?: string; body?: { errors?: { message?: string }[] } };
   const status = statusOf(err);
   const detail = e?.body?.errors?.[0]?.message ?? e?.message ?? String(err);
-  return status === undefined ? detail : `${status}: ${detail}`;
+  return maskEmails(status === undefined ? detail : `${status}: ${detail}`);
 }
 
 async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {

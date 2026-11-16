@@ -40,6 +40,7 @@ import {
 import type { Diagnostic } from '../contract/validate.js';
 import { planBatches, summarise, type Batch, type LoadBatches } from './batches.js';
 import { formatDuration, noProgress, type Activity, type Progress } from '../progress/progress.js';
+import { maskEmails } from '../model/redact.js';
 
 export interface LoadOptions {
   /** False — the default — sends nothing. */
@@ -1303,7 +1304,7 @@ async function judgeCanary(
 
   const errorsOf = (list?: { code: string; message?: string }[]): string[] | undefined =>
     list && list.length > 0
-      ? list.map((e) => `${e.code}${e.message ? `: ${e.message}` : ''}`.slice(0, 600))
+      ? list.map((e) => maskEmails(`${e.code}${e.message ? `: ${e.message}` : ''}`).slice(0, 600))
       : undefined;
 
   interface Watched {
@@ -1654,7 +1655,7 @@ async function sampleOperationErrors(
         for (const op of res.body.results) {
           seen++;
           const reasons = (op.errors ?? []).map((e) =>
-            [e.code, e.message].filter((part) => part !== undefined && part !== '').join(': ').slice(0, 400),
+            maskEmails([e.code, e.message].filter((part) => part !== undefined && part !== '').join(': ')).slice(0, 400),
           );
           for (const reason of reasons.length > 0 ? reasons : ['(no error was recorded on the operation)']) {
             const key = `${state}\u0000${reason}`;
@@ -1798,7 +1799,7 @@ function messageOf(err: unknown): string {
   const detail = errorDetail(err);
   // The API's top-level message is generic ("Import request has some invalid
   // fields"); the field and the reason are in the body's `errors`.
-  return detail !== undefined && !base.includes(detail) ? `${base} (${detail})` : base;
+  return maskEmails(detail !== undefined && !base.includes(detail) ? `${base} (${detail})` : base);
 }
 
 /** At most this many entries of an error body's `errors` are printed. */
