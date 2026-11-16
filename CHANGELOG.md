@@ -1,5 +1,17 @@
 # ct-catalog-migration-pipeline
 
+## 0.4.1
+
+### Patch Changes
+
+- [#26](https://github.com/commercetools/ct-catalog-migration-pipeline/pull/26) [`43a3129`](https://github.com/commercetools/ct-catalog-migration-pipeline/commit/43a3129ab747390ef7dd96887dcb47f6b13af4d3) Thanks [@kafis](https://github.com/kafis)! - The credential hosts are checked before anything is sent. `CTP_REGION` is checked against the known regions whenever it builds a host; before, the check was skipped as soon as `CTP_API_URL` was set, while the region still built the auth URL the client secret is sent to. `CTP_AUTH_URL`, `CTP_API_URL` and `CTP_IMPORT_URL` must be https (plain http only to a loopback host, for a local mock), and a value that is not a URL is refused. A host outside commercetools.com is not refused, since a proxy is legitimate, but the credentials summary every command prints now shows the auth host and warns about such a host.
+
+- [#26](https://github.com/commercetools/ct-catalog-migration-pipeline/pull/26) [`43a3129`](https://github.com/commercetools/ct-catalog-migration-pipeline/commit/43a3129ab747390ef7dd96887dcb47f6b13af4d3) Thanks [@kafis](https://github.com/kafis)! - Every file the pipeline writes into `out/` (`plan.json`, `load-requests.json`, `load-result.json`, `teardown-result.json`, `progress.log` and the rest) is now readable by its owner only (`0600`), also when it overwrites a file of an earlier run, and an `out/` the pipeline creates is `0700`. A directory that already exists keeps its mode, because `--out` can name any directory. Once customers or orders are in scope these files hold names, email addresses and postal addresses, which Node's default mode left readable by every account on the machine. A clean `verify` of a plan with customers or orders now ends with a reminder naming the local copies of that data and saying to delete them once the migration no longer needs them, keeping `plan.json` until any trial load is torn down.
+
+- [#26](https://github.com/commercetools/ct-catalog-migration-pipeline/pull/26) [`43a3129`](https://github.com/commercetools/ct-catalog-migration-pipeline/commit/43a3129ab747390ef7dd96887dcb47f6b13af4d3) Thanks [@kafis](https://github.com/kafis)! - The README gives the engagement its own `.gitignore` (`/source-export/`, `/migration/feed/`, `/migration/out/`) and says why: the pipeline's `.gitignore` covers only its own folder, while the engagement's `out/` sits next to the config, and once customers or orders are in scope those folders hold personal data. The layout no longer calls the engagement's `out/` "gitignored", and the install step is `npm ci --ignore-scripts`, as in CI.
+
+- [#26](https://github.com/commercetools/ct-catalog-migration-pipeline/pull/26) [`43a3129`](https://github.com/commercetools/ct-catalog-migration-pipeline/commit/43a3129ab747390ef7dd96887dcb47f6b13af4d3) Thanks [@kafis](https://github.com/kafis)! - Diagnostics no longer carry personal data from the input or the API. A `malformed-json` diagnostic now says `Not valid JSON at column N.` instead of passing on the parser's message, which on current Node quotes a piece of the line; a `plan.json` that does not parse is reported the same way. An email address in an API error message (the refused request, a canary's refusal, the sampled reasons of failing operations, the teardown and verify errors) is replaced by `[email]`, in the printed output and in `load-result.json`; the record is still named by its key.
+
 ## 0.4.0
 
 ### Minor Changes
