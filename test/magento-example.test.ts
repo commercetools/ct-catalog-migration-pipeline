@@ -215,3 +215,21 @@ test('magento example: custom options and product links are counted as losses', 
   assert.equal(report.losses['custom-options (not carried by this example)']?.count, 1);
   assert.equal(report.losses['product-links: related, up-sell, cross-sell (not carried by this example)']?.count, 1);
 });
+
+test('magento example: a configurable product is taxed by its variants, and variants that disagree stop', async () => {
+  const tables = copy(await fixtureTables());
+  // The variants carry the class; the configurable product has none of its own.
+  const ints = rowsOf(tables, 'catalog_product_entity_int');
+  const parentClass = ints.find((r) => r.value_id === '11');
+  assert.ok(parentClass);
+  parentClass.value = '0';
+  ints.push({ value_id: '90', attribute_id: '132', store_id: '0', entity_id: '2', value: '2' }, { value_id: '91', attribute_id: '132', store_id: '0', entity_id: '3', value: '2' });
+  const { records } = convert(tables, OPTIONS);
+  assert.equal(byType(records, 'product').find((p) => p.code === 'MT01')?.taxCategory, 'taxable-goods');
+
+  rowsOf(tables, 'tax_class').push({ class_id: '5', class_name: 'Reduced', class_type: 'PRODUCT' });
+  const red = ints.find((r) => r.value_id === '91');
+  assert.ok(red);
+  red.value = '5';
+  stops(tables, /MT01: its variants carry different tax classes \(2: MT01-S-Blue; 5: MT01-M-Red\)/);
+});

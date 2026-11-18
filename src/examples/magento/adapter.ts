@@ -531,7 +531,7 @@ class MagentoAdapter {
       return Object.keys(out).length > 0 ? out : undefined;
     };
 
-    const emitProduct = (p: Row, categories: Set<string>, axes: string[]): string => {
+    const emitProduct = (p: Row, categories: Set<string>, axes: string[], taxClass: string | null): string => {
       const id = String(p.entity_id);
       const code = productCode(String(p.sku));
       const values = this.productValues.get(id);
@@ -548,7 +548,6 @@ class MagentoAdapter {
       if (axes.length > 0) record.axes = axes;
       const attributes = productAttributes(id);
       if (attributes) record.attributes = attributes;
-      const taxClass = value(id, 'tax_class_id');
       const taxCategory = taxClass ? taxCategoryOf.get(taxClass) : undefined;
       if (taxCategory) {
         record.taxCategory = taxCategory;
@@ -619,7 +618,7 @@ class MagentoAdapter {
         const master = this.options.masterVariants?.[String(p.sku)];
         if (master && !live.some((c) => c.sku === master)) throw new AdapterStop(`options.masterVariants names ${master} for ${p.sku}, which is not one of its enabled children.`);
         if (!master) this.note('decisions', 'no-master-variant-chosen (the pipeline takes the lowest SKU)', String(p.sku));
-        const code = emitProduct(p, categories, axes);
+        const code = emitProduct(p, categories, axes, this.configurableTaxClass(p, live, value));
         for (const c of [...live].sort((a, b) => String(a.sku).localeCompare(String(b.sku)))) emitVariant(c, code, axes, c.sku === master);
         continue;
       }
@@ -629,7 +628,7 @@ class MagentoAdapter {
         throw new AdapterStop(`${p.sku} has the product type "${type}", which this example does not map. Decide how it should load, then add it.`);
       }
       if (value(id, 'visibility') === '1') this.note('decisions', 'not-visible-individually-product-loaded', String(p.sku));
-      const code = emitProduct(p, assigned.get(id) ?? new Set(), []);
+      const code = emitProduct(p, assigned.get(id) ?? new Set(), [], value(id, 'tax_class_id'));
       emitVariant(p, code, [], true);
     }
 
@@ -654,6 +653,35 @@ class MagentoAdapter {
       this.report.losses['active-catalog-price-rules (discounts the shop applies, not carried)'] = { count: rules.length, examples: rules.slice(0, 5).map((r) => String(r.name)) };
     }
     return { variantIds };
+  }
+
+  /**
+   * Magento taxes a configurable product's children, not the product itself,
+   * while commercetools holds the tax category on the product. So the class
+   * comes from the children: one class among them is the product's, and
+   * children that disagree stop the run, because taking the parent's or the
+   * first child's class would charge the wrong rate on the others.
+   */
+  private configurableTaxClass(parent: Row, children: Row[], value: (id: string, code: string) => string | null): string | null {
+    const classes = new Map<string, string[]>();
+    for (const c of children) {
+      const cls = value(String(c.entity_id), 'tax_class_id');
+      if (cls && cls !== '0') classes.set(cls, [...(classes.get(cls) ?? []), String(c.sku)]);
+    }
+    if (classes.size > 1) {
+      throw new AdapterStop(
+        `${parent.sku}: its variants carry different tax classes (${[...classes].map(([cls, skus]) => `${cls}: ${skus.join(', ')}`).join('; ')}), ` +
+          'and commercetools holds one tax category per product. Ask whoever owns tax whether to split the product by class, hold the odd SKUs back, or take one class and record the rest as a loss.',
+      );
+    }
+    const own = value(String(parent.entity_id), 'tax_class_id');
+    const fromChildren = [...classes.keys()][0];
+    if (fromChildren === undefined) {
+      if (own) this.note('decisions', 'configurable-tax-class-from-product (variants have none)', String(parent.sku));
+      return own;
+    }
+    if (own && own !== '0' && own !== fromChildren) this.note('decisions', 'configurable-product-tax-class-differs-from-variants (variants used)', `${parent.sku}: ${own} vs ${fromChildren}`);
+    return fromChildren;
   }
 
   private attributeValue(code: string, raw: string, byStore: Map<string, string | null>, id: string): unknown {

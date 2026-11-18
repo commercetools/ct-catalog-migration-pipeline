@@ -67,6 +67,10 @@ mode is decided with the business.
 - a price with more decimal places than the currency, a fractional or negative
   stock quantity, a product type or attribute input type it does not map;
 - multi-source inventory with a source that `stockSources` does not map.
+- the variants of one configurable product carrying different tax classes.
+  Magento taxes the variants, commercetools holds one tax category per product,
+  so the class is taken from the variants and a disagreement is a question for
+  whoever owns tax.
 
 ## Input: the snapshot
 
