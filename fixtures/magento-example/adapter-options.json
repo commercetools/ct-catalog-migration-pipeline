@@ -1,0 +1,6 @@
+{
+  "locales": { "admin": "en-US", "default": "en-US", "german": "de-DE" },
+  "currency": "USD",
+  "fractionDigits": 2,
+  "masterVariants": { "MT01": "MT01-S-Blue" }
+}

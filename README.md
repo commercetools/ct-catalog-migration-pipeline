@@ -225,10 +225,21 @@ with a `_type`:
 `fixtures/` doubles as documentation: each directory is a runnable example of
 one behaviour, including the deliberately broken ones.
 
+### Example adapter
+
+`src/examples/magento/` holds an **example** adapter for a Magento Open Source
+2.4 database snapshot (a mysqldump file or one NDJSON file per table). It shows
+where the catalog lives in Magento's tables, where the data needs a decision,
+and how an adapter stops rather than guesses. It is not a supported adapter and
+was not written for your shop: profile the source and adapt the code before
+relying on anything it writes. Its [README](src/examples/magento/README.md)
+lists what it assumes and what it does not carry.
+
 ## What it will not do
 
 - **Parse your source.** That is the adapter's job, and the reason the contract
-  exists.
+  exists. The Magento example above is a starting point to adapt, not a parser
+  the pipeline runs.
 - **Change a tax category that exists.** Its rates also tax shipping and belong
   to whoever owns tax. `preflight` names any difference from the feed; `load`
   only creates what is missing.

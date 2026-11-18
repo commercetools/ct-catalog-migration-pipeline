@@ -1,0 +1,20 @@
+{
+  "feed": { "dir": "./feed" },
+  "target": { "catalogModel": "Classic", "priceMode": "embedded", "taxMode": "ExternalAmount" },
+  "market": {
+    "defaultLocale": "en-US",
+    "requiredLocales": ["en-US", "de-DE"],
+    "requiredCurrencies": ["USD"],
+    "currencyFractionDigits": { "USD": 2 }
+  },
+  "keys": { "prefix": "example" },
+  "media": { "baseUrl": "https://shop.example.com/media/catalog/product/" },
+  "productTypes": {
+    "onMissingDefinitions": "require",
+    "defaultKey": "catalog-default",
+    "defaultName": "Catalog default",
+    "productLevelStrategy": "sameForAll",
+    "searchableByDefault": true
+  },
+  "load": { "batchSize": 20, "maxOperationsPerContainer": 200000 }
+}
