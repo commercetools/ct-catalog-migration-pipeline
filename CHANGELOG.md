@@ -1,5 +1,11 @@
 # ct-catalog-migration-pipeline
 
+## 0.4.2
+
+### Patch Changes
+
+- [#28](https://github.com/commercetools/ct-catalog-migration-pipeline/pull/28) [`dd04049`](https://github.com/commercetools/ct-catalog-migration-pipeline/commit/dd04049d0e844c7d2929d7b4432e7ad43dd90e04) Thanks [@kafis](https://github.com/kafis)! - An example adapter for Magento Open Source 2.4 in `src/examples/magento/`. It reads a database snapshot, either a mysqldump file (`.sql` or `.sql.gz`, only the catalog tables parsed) or a directory of one NDJSON file per table, and writes a catalog feed plus a report that counts every decision and every loss. It stops on what it cannot decide safely: Adobe Commerce staging tables (`row_id`), a store-view value the feed cannot hold, two used options with the same label, an unknown HTML entity, excess price digits, fractional stock, an unmapped stock source, variants of one configurable product with different tax classes (the tax class comes from the variants, which is what Magento taxes). It is an example to adapt, not a supported adapter: profile the source before relying on any of its output. It is not a pipeline stage, and nothing else in the pipeline changes.
+
 ## 0.4.1
 
 ### Patch Changes
