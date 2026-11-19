@@ -1,0 +1,14 @@
+{
+  "locale": "en-GB",
+  "fractionDigits": 2,
+  "stockQuantity": "available",
+  "categories": {
+    "from": "collections",
+    "exclude": [
+      "frontpage"
+    ]
+  },
+  "metafields": {
+    "custom.material": "material"
+  }
+}

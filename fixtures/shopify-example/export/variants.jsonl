@@ -1,0 +1,20 @@
+{"id": "gid://shopify/ProductVariant/11", "sku": "TJ-MOSS-M", "inventoryItem": {"id": "gid://shopify/InventoryItem/11", "tracked": true}}
+{"id": "gid://shopify/MediaImage/302", "mediaContentType": "IMAGE", "alt": "Moss", "image": {"url": "https://cdn.shopify.com/s/files/1/0000/0001/products/tj-moss.jpg", "width": 1200, "height": 1600}, "__parentId": "gid://shopify/ProductVariant/11"}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 5}, {"name": "on_hand", "quantity": 7}], "__parentId": "gid://shopify/ProductVariant/11"}
+{"id": "gid://shopify/ProductVariant/12", "sku": "TJ-MOSS-L", "inventoryItem": {"id": "gid://shopify/InventoryItem/12", "tracked": true}}
+{"id": "gid://shopify/MediaImage/302", "mediaContentType": "IMAGE", "alt": "Moss", "image": {"url": "https://cdn.shopify.com/s/files/1/0000/0001/products/tj-moss.jpg", "width": 1200, "height": 1600}, "__parentId": "gid://shopify/ProductVariant/12"}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 0}, {"name": "on_hand", "quantity": 0}], "__parentId": "gid://shopify/ProductVariant/12"}
+{"id": "gid://shopify/ProductVariant/13", "sku": "TJ-SLATE-M", "inventoryItem": {"id": "gid://shopify/InventoryItem/13", "tracked": true}}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 3}, {"name": "on_hand", "quantity": 3}], "__parentId": "gid://shopify/ProductVariant/13"}
+{"id": "gid://shopify/ProductVariant/14", "sku": "TJ-SLATE-L", "inventoryItem": {"id": "gid://shopify/InventoryItem/14", "tracked": true}}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 2}, {"name": "on_hand", "quantity": 2}], "__parentId": "gid://shopify/ProductVariant/14"}
+{"id": "gid://shopify/ProductVariant/21", "sku": "BEANIE-01", "inventoryItem": {"id": "gid://shopify/InventoryItem/21", "tracked": true}}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 40}, {"name": "on_hand", "quantity": 41}], "__parentId": "gid://shopify/ProductVariant/21"}
+{"id": "gid://shopify/ProductVariant/31", "sku": "", "inventoryItem": {"id": "gid://shopify/InventoryItem/31", "tracked": false}}
+{"id": "gid://shopify/ProductVariant/32", "sku": "", "inventoryItem": {"id": "gid://shopify/InventoryItem/32", "tracked": false}}
+{"id": "gid://shopify/ProductVariant/41", "sku": "TENT-OLD", "inventoryItem": {"id": "gid://shopify/InventoryItem/41", "tracked": true}}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 1}, {"name": "on_hand", "quantity": 1}], "__parentId": "gid://shopify/ProductVariant/41"}
+{"id": "gid://shopify/ProductVariant/51", "sku": "MUG-350", "inventoryItem": {"id": "gid://shopify/InventoryItem/51", "tracked": false}}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 0}, {"name": "on_hand", "quantity": 0}], "__parentId": "gid://shopify/ProductVariant/51"}
+{"id": "gid://shopify/ProductVariant/52", "sku": "MUG-500", "inventoryItem": {"id": "gid://shopify/InventoryItem/52", "tracked": true}}
+{"location": {"id": "gid://shopify/Location/1", "name": "Main warehouse"}, "quantities": [{"name": "available", "quantity": 12}, {"name": "on_hand", "quantity": 12}], "__parentId": "gid://shopify/ProductVariant/52"}
