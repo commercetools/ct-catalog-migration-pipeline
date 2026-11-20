@@ -225,7 +225,7 @@ with a `_type`:
 `fixtures/` doubles as documentation: each directory is a runnable example of
 one behaviour, including the deliberately broken ones.
 
-### Example adapter
+### Example adapters
 
 `src/examples/magento/` holds an **example** adapter for a Magento Open Source
 2.4 database snapshot (a mysqldump file or one NDJSON file per table). It shows
@@ -235,11 +235,17 @@ was not written for your shop: profile the source and adapt the code before
 relying on anything it writes. Its [README](src/examples/magento/README.md)
 lists what it assumes and what it does not carry.
 
+`src/examples/shopify/` holds an **example** extractor and adapter for Shopify.
+The extractor copies the catalog out of the shop through the Admin GraphQL API
+(bulk operations, read scopes only) into files; the adapter turns those files
+into a feed and a report. The same caveats apply, and its
+[README](src/examples/shopify/README.md) lists them.
+
 ## What it will not do
 
 - **Parse your source.** That is the adapter's job, and the reason the contract
-  exists. The Magento example above is a starting point to adapt, not a parser
-  the pipeline runs.
+  exists. The Magento and Shopify examples above are starting points to adapt,
+  not parsers the pipeline runs.
 - **Change a tax category that exists.** Its rates also tax shipping and belong
   to whoever owns tax. `preflight` names any difference from the feed; `load`
   only creates what is missing.

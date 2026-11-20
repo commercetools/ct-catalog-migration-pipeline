@@ -1,0 +1,29 @@
+{
+  "apiVersion": "2026-10",
+  "extractedAt": "2026-11-19T10:00:00.000Z",
+  "shop": {
+    "name": "Example Outfitters",
+    "currencyCode": "GBP",
+    "taxesIncluded": true,
+    "ianaTimezone": "Europe/London"
+  },
+  "locations": [
+    {
+      "id": "gid://shopify/Location/1",
+      "name": "Main warehouse",
+      "isActive": true
+    }
+  ],
+  "shopLocales": [
+    {
+      "locale": "en",
+      "primary": true,
+      "published": true
+    },
+    {
+      "locale": "de",
+      "primary": false,
+      "published": true
+    }
+  ]
+}
