@@ -1,5 +1,11 @@
 # ct-catalog-migration-pipeline
 
+## 0.4.3
+
+### Patch Changes
+
+- [#30](https://github.com/commercetools/ct-catalog-migration-pipeline/pull/30) [`4729fe0`](https://github.com/commercetools/ct-catalog-migration-pipeline/commit/4729fe0c58ebedb1ffef51438487f13514a0a27d) Thanks [@kafis](https://github.com/kafis)! - An example extractor and adapter for Shopify in `src/examples/shopify/`. The extractor reads the catalog through the Admin GraphQL API with bulk operations, read-only: it refuses a token with any `write_` scope, sends the token only to the shop's `*.myshopify.com` host, stops when the shop serves a different API version than the one asked for, refuses versions before 2026-07 (which leave out collections built with the new collection model), and writes nothing for a failed bulk operation. The adapter turns that export into a catalog feed plus a report that counts every decision and every loss. It stops on what it cannot decide safely: a locale whose language is not the shop's primary one, a variant without a SKU (unless derivation was agreed), a SKU on two variants, two option values with one key, variants of one product that disagree on taxable, excess price digits, oversold or fractional stock, stock in locations no supply channel is named for, and a mapped metafield of a type it does not know. Gift cards are never carried. It is an example to adapt, not a supported adapter: profile the export before relying on any of its output. It is not a pipeline stage, and nothing else in the pipeline changes.
+
 ## 0.4.2
 
 ### Patch Changes
